@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AgentStartRequest } from "@local-pair-review/shared";
@@ -37,8 +37,16 @@ function environment(scenario: string, extra: Record<string, string> = {}): Reco
   return { ...process.env, FAKE_CLI_SCENARIO: scenario, ...extra };
 }
 
+async function waitForFile(path: string, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { await access(path); return; } catch { await Bun.sleep(5); }
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
 describe("CLI availability", () => {
-  test("reports Codex version with unknown auth and Claude subscription auth", async () => {
+  test("reports Codex and Claude subscription authentication when status is clear", async () => {
     const codex = new CodexCliDriver({ executablePath: codexFixture, environment: environment("normal") });
     const claude = new ClaudeCliDriver({ executablePath: claudeFixture, environment: environment("normal") });
 
@@ -46,7 +54,7 @@ describe("CLI availability", () => {
       installed: true,
       executablePath: codexFixture,
       version: "codex-cli 9.9.9-fake",
-      authentication: "unknown",
+      authentication: "authenticated",
       message: null,
     });
     expect(await claude.checkAvailability()).toEqual({
@@ -67,6 +75,50 @@ describe("CLI availability", () => {
     expect(claudeStatus.message).toContain("[REDACTED]");
     expect(claudeStatus.message).not.toContain("sk-fake-auth-secret");
     expect(git).toMatchObject({ installed: false, executablePath: null, authentication: "unknown" });
+  });
+
+  test("reports clear Codex unauthenticated state and unknown for unsupported auth probe", async () => {
+    const unauthenticated = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("codex-unauthenticated"),
+    });
+    const unsupported = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("codex-auth-unsupported"),
+    });
+
+    expect((await unauthenticated.checkAvailability()).authentication).toBe("unauthenticated");
+    expect((await unsupported.checkAvailability()).authentication).toBe("unknown");
+  });
+
+  test("passes an explicit cwd to every availability probe", async () => {
+    const directory = await workspace();
+    const probeLog = join(directory, "probes.jsonl");
+    const probeEnvironment = environment("normal", { FAKE_CLI_PROBE_LOG: probeLog });
+    const codex = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: probeEnvironment,
+      availabilityWorkingDirectory: directory,
+    });
+    const claude = new ClaudeCliDriver({
+      executablePath: claudeFixture,
+      environment: probeEnvironment,
+      availabilityWorkingDirectory: directory,
+    });
+
+    await codex.checkAvailability();
+    await claude.checkAvailability();
+    await checkGitAvailability(codexFixture, probeEnvironment, directory);
+    const probes = (await readFile(probeLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(probes.map((probe) => probe.args)).toEqual([
+      ["--version"],
+      ["login", "status"],
+      ["--version"],
+      ["auth", "status"],
+      ["--version"],
+    ]);
+    expect(probes.every((probe) => probe.cwd === directory || probe.cwd === `/private${directory}`)).toBe(true);
   });
 });
 
@@ -188,6 +240,57 @@ describe("Codex driver", () => {
       const latestHeartbeat = await readFile(heartbeatLog, "utf8").catch(() => "");
       if (stoppedHeartbeat && latestHeartbeat !== stoppedHeartbeat) process.kill(childPid, "SIGKILL");
     }
+  });
+
+  test("terminates the tracked process group when initial event persistence fails", async () => {
+    const directory = await workspace();
+    const pidLog = join(directory, "process.pid");
+    const heartbeatLog = join(directory, "process.heartbeat");
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("pre-stdin-heartbeat", {
+        FAKE_CLI_PID_LOG: pidLog,
+        FAKE_CLI_HEARTBEAT_LOG: heartbeatLog,
+      }),
+      cancellationGraceMs: 25,
+    });
+
+    const execution = driver.start(request(directory, { runId: "run-emit-failure" }), async () => {
+      await waitForFile(pidLog);
+      await waitForFile(heartbeatLog);
+      throw new Error("event persistence unavailable");
+    });
+    const settled = execution.then(() => undefined, (error: unknown) => error);
+    await waitForFile(pidLog);
+    await waitForFile(heartbeatLog);
+    const pid = Number(await readFile(pidLog, "utf8"));
+    let stoppedHeartbeat = "";
+
+    try {
+      expect(await settled).toMatchObject({ message: "event persistence unavailable" });
+      await Bun.sleep(25);
+      stoppedHeartbeat = await readFile(heartbeatLog, "utf8");
+      await Bun.sleep(100);
+      expect(await readFile(heartbeatLog, "utf8")).toBe(stoppedHeartbeat);
+    } finally {
+      const latestHeartbeat = await readFile(heartbeatLog, "utf8").catch(() => "");
+      if (stoppedHeartbeat && latestHeartbeat !== stoppedHeartbeat) process.kill(-pid, "SIGKILL");
+    }
+  });
+
+  test("honors an already-aborted signal without invoking the executable", async () => {
+    const directory = await workspace();
+    const invocationLog = join(directory, "must-not-exist.json");
+    const controller = new AbortController();
+    controller.abort();
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: invocationLog }),
+    });
+
+    await expect(driver.start(request(directory, { signal: controller.signal }), async () => {}))
+      .rejects.toMatchObject({ kind: "cancelled" });
+    expect(await Bun.file(invocationLog).exists()).toBe(false);
   });
 });
 

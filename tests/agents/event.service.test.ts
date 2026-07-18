@@ -76,4 +76,30 @@ describe("EventService", () => {
 
     expect(outcome).toBe("persisted");
   });
+
+  test("redacts generic sensitive JSON keys in raw and normalized payloads", async () => {
+    let persisted: PersistAgentEventInput | undefined;
+    const service = new EventService({
+      async append(input) {
+        persisted = input;
+        return { ...input.event, sequence: 1 };
+      },
+    }, { broadcast() {} });
+    const raw = JSON.stringify({
+      access_token: "access-secret",
+      authorization: "Basic auth-secret",
+      cookie: "session=cookie-secret",
+      nested: { password: "password-secret", client_secret: "client-secret" },
+    });
+
+    await service.publish(event({ raw, parsed: JSON.parse(raw) }));
+
+    const stored = JSON.stringify(persisted);
+    for (const secret of ["access-secret", "auth-secret", "cookie-secret", "password-secret", "client-secret"]) {
+      expect(stored).not.toContain(secret);
+    }
+    expect(stored).toContain("access_token");
+    expect(stored).toContain("client_secret");
+    expect(stored).toContain("[REDACTED]");
+  });
 });

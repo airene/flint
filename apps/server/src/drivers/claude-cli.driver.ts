@@ -13,7 +13,7 @@ export class ClaudeCliDriver extends StreamingCliDriver implements AgentDriver {
   }
 
   checkAvailability(): Promise<AgentAvailability> {
-    return checkClaudeAvailability(this.executablePath, this.environment);
+    return checkClaudeAvailability(this.executablePath, this.environment, this.availabilityWorkingDirectory);
   }
 
   start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {

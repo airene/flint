@@ -128,6 +128,7 @@ class RecordingTaskState implements TaskRunStatePort {
   constructor(
     private readonly order: string[],
     private readonly persistence: MemoryRunPersistence,
+    private readonly failSucceed = false,
   ) {}
 
   async queue(run: AgentRun): Promise<AgentRun> {
@@ -137,6 +138,7 @@ class RecordingTaskState implements TaskRunStatePort {
 
   async succeed(input: FinishRunInput & { taskId: string; runType: AgentRun["runType"] }): Promise<AgentRun> {
     this.order.push(`task:succeeded:${input.runType}`);
+    if (this.failSucceed) throw new Error("terminal transaction failed");
     return this.persistence.finish(input);
   }
 
@@ -146,12 +148,18 @@ class RecordingTaskState implements TaskRunStatePort {
   }
 }
 
-function service(order: string[], codexResult: AgentStartResult | AgentProcessError, claudeResult: AgentStartResult | AgentProcessError) {
+function service(
+  order: string[],
+  codexResult: AgentStartResult | AgentProcessError,
+  claudeResult: AgentStartResult | AgentProcessError,
+  behavior: { failEventType?: AgentEvent["type"]; failSucceed?: boolean } = {},
+) {
   const persistence = new MemoryRunPersistence(order);
   let sequence = 0;
   const events = new EventService({
     async append(input) {
       order.push(`event:persist:${input.event.type}`);
+      if (input.event.type === behavior.failEventType) throw new Error(`cannot persist ${input.event.type}`);
       return { ...input.event, sequence: ++sequence };
     },
   }, {
@@ -165,7 +173,7 @@ function service(order: string[], codexResult: AgentStartResult | AgentProcessEr
         claude: new ScenarioDriver("claude", claudeResult, order),
       },
       persistence,
-      taskState: new RecordingTaskState(order, persistence),
+      taskState: new RecordingTaskState(order, persistence, behavior.failSucceed),
       events,
       createId: () => "run-created-1",
       now: () => "2026-07-18T00:00:01.000Z",
@@ -191,6 +199,47 @@ describe("AgentRunService", () => {
       .toBeLessThan(order.indexOf("event:persist:session_started"));
     expect(persistence.finishes[0]?.patch).toMatchObject({ status: "completed", exitCode: 0 });
     expect(order).toContain("task:succeeded:developer_initial");
+    expect(order.indexOf("task:succeeded:developer_initial"))
+      .toBeLessThan(order.indexOf("event:persist:run_completed"));
+  });
+
+  test("does not persist completed when the terminal transaction fails", async () => {
+    const order: string[] = [];
+    const { agentRuns } = service(order, {
+      sessionId: "codex-session-exact",
+      finalMessage: "Done",
+      structuredOutput: null,
+    }, new AgentProcessError("failed", "unused"), { failSucceed: true });
+
+    const terminal = await (await agentRuns.start({
+      task: task(),
+      runType: "developer_initial",
+      prompt: "Build it",
+    })).completion;
+
+    expect(terminal.status).toBe("failed");
+    expect(order).not.toContain("event:persist:run_completed");
+    expect(order).toContain("event:persist:run_failed");
+  });
+
+  test("does not create a contradictory failed terminal when completed-event persistence fails", async () => {
+    const order: string[] = [];
+    const { agentRuns, persistence } = service(order, {
+      sessionId: "codex-session-exact",
+      finalMessage: "Done",
+      structuredOutput: null,
+    }, new AgentProcessError("failed", "unused"), { failEventType: "run_completed" });
+
+    const terminal = await (await agentRuns.start({
+      task: task(),
+      runType: "developer_initial",
+      prompt: "Build it",
+    })).completion;
+
+    expect(terminal.status).toBe("completed");
+    expect(persistence.finishes).toHaveLength(1);
+    expect(order).not.toContain("event:persist:run_failed");
+    expect(order.some((entry) => entry.startsWith("task:failed"))).toBe(false);
   });
 
   test("classifies cancellation and delegates task fallback with the captured session", async () => {
@@ -203,6 +252,26 @@ describe("AgentRunService", () => {
 
     expect(terminal).toMatchObject({ status: "cancelled", exitCode: 143, errorMessage: "cancelled by user" });
     expect(order).toContain("task:cancelled:developer_initial:none");
+  });
+
+  test("redacts token-bearing stderr before persisting a failed run", async () => {
+    const order: string[] = [];
+    const failure = new AgentProcessError(
+      "failed",
+      "OPENAI_API_KEY=plain-api-secret Authorization: Bearer bearer-secret",
+      23,
+    );
+    const { agentRuns } = service(order, failure, new AgentProcessError("failed", "unused"));
+
+    const terminal = await (await agentRuns.start({
+      task: task(),
+      runType: "developer_initial",
+      prompt: "Build it",
+    })).completion;
+
+    expect(terminal.errorMessage).toContain("[REDACTED]");
+    expect(terminal.errorMessage).not.toContain("plain-api-secret");
+    expect(terminal.errorMessage).not.toContain("bearer-secret");
   });
 
   test("creates reviewer runs with pending parse status and Claude provider", async () => {

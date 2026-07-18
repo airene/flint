@@ -69,34 +69,82 @@ function developerRun(status: AgentRun["status"] = "completed"): AgentRun {
 
 class FeedbackStarter {
   input: StartAgentRunInput | undefined;
+  readonly cancelledRunIds: string[] = [];
+  startCalls = 0;
+  startError: Error | null = null;
   constructor(private readonly terminal = developerRun()) {}
   async start(input: StartAgentRunInput): Promise<StartedAgentRun> {
+    this.startCalls += 1;
     this.input = input;
+    if (this.startError) throw this.startError;
     return { run: { ...this.terminal, status: "queued" }, completion: Promise.resolve(this.terminal) };
+  }
+
+  async cancel(runId: string): Promise<void> {
+    this.cancelledRunIds.push(runId);
   }
 }
 
 class MemoryDeliveryPersistence implements FeedbackDeliveryPersistencePort {
   readonly deliveries = new Map<string, FeedbackDelivery>();
+  readonly deliveryIdsByFingerprint = new Map<string, string>();
+  readonly activeLeases = new Map<string, string>();
   markedSent = false;
   allowStart = true;
+  attachError: Error | null = null;
 
-  async reserve(candidate: FeedbackDelivery) {
-    this.deliveries.set(candidate.id, candidate);
-    return { delivery: candidate, allowStart: this.allowStart };
+  private fingerprint(delivery: FeedbackDelivery): string {
+    return JSON.stringify([
+      delivery.taskId,
+      delivery.sourceReviewRunId,
+      delivery.selectedFindingIds,
+      delivery.finalText,
+    ]);
   }
 
-  async attachRun(deliveryId: string, runId: string): Promise<FeedbackDelivery> {
+  async reserve(candidate: FeedbackDelivery, leaseToken: string) {
+    const fingerprint = this.fingerprint(candidate);
+    const existingId = this.deliveryIdsByFingerprint.get(fingerprint);
+    const delivery = existingId ? this.deliveries.get(existingId)! : candidate;
+    if (!existingId) {
+      this.deliveryIdsByFingerprint.set(fingerprint, candidate.id);
+      this.deliveries.set(candidate.id, candidate);
+    }
+    if (!this.allowStart || delivery.sentAt !== null || this.activeLeases.has(delivery.id)) {
+      return { delivery, allowStart: false };
+    }
+    this.activeLeases.set(delivery.id, leaseToken);
+    return { delivery, allowStart: true };
+  }
+
+  async attachRun(deliveryId: string, runId: string, leaseToken: string): Promise<FeedbackDelivery> {
+    this.assertLease(deliveryId, leaseToken);
+    if (this.attachError) throw this.attachError;
     const delivery = { ...this.deliveries.get(deliveryId)!, targetDeveloperRunId: runId };
     this.deliveries.set(deliveryId, delivery);
     return delivery;
   }
 
-  async markSent(deliveryId: string, sentAt: string): Promise<FeedbackDelivery> {
+  async release(deliveryId: string, leaseToken: string): Promise<void> {
+    this.assertLease(deliveryId, leaseToken);
+    this.activeLeases.delete(deliveryId);
+  }
+
+  async markSent(deliveryId: string, leaseToken: string, sentAt: string): Promise<FeedbackDelivery> {
+    this.assertLease(deliveryId, leaseToken);
     this.markedSent = true;
     const delivery = { ...this.deliveries.get(deliveryId)!, sentAt };
     this.deliveries.set(deliveryId, delivery);
+    this.activeLeases.delete(deliveryId);
     return delivery;
+  }
+
+  expireLease(deliveryId: string): void {
+    this.activeLeases.delete(deliveryId);
+  }
+
+  private assertLease(deliveryId: string, leaseToken: string): void {
+    if (this.activeLeases.get(deliveryId) !== leaseToken) throw new Error("stale feedback lease");
   }
 }
 
@@ -146,6 +194,152 @@ describe("FeedbackService", () => {
     expect(completed.run.status).toBe("completed");
     expect(completed.delivery.sentAt).toBe("2026-07-18T00:00:03.000Z");
     expect(persistence.markedSent).toBe(true);
+  });
+
+  test("atomically starts only one run for concurrent identical feedback", async () => {
+    const starter = new FeedbackStarter();
+    const persistence = new MemoryDeliveryPersistence();
+    let id = 0;
+    const service = new FeedbackService({
+      agentRuns: starter,
+      persistence,
+      createId: () => `delivery-${++id}`,
+      createLeaseToken: () => `lease-${id}`,
+    });
+    const input = {
+      task: task(),
+      sourceReviewRunId: "review-run-1",
+      selectedFindingIds: ["finding-1"],
+      finalText: "Same feedback",
+    };
+
+    const results = await Promise.allSettled([service.send(input), service.send(input)]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason).toBeInstanceOf(DuplicateFeedbackError);
+    expect(starter.startCalls).toBe(1);
+  });
+
+  test("releases the reservation when starting the run fails so a retry can start", async () => {
+    const starter = new FeedbackStarter();
+    starter.startError = new Error("spawn failed");
+    const persistence = new MemoryDeliveryPersistence();
+    let id = 0;
+    const service = new FeedbackService({
+      agentRuns: starter,
+      persistence,
+      createId: () => `delivery-${++id}`,
+      createLeaseToken: () => `lease-${id}`,
+    });
+    const input = {
+      task: task(),
+      sourceReviewRunId: "review-run-1",
+      selectedFindingIds: ["finding-1"],
+      finalText: "Retryable feedback",
+    };
+
+    await expect(service.send(input)).rejects.toThrow("spawn failed");
+    starter.startError = null;
+    const retried = await service.send(input);
+
+    expect(retried.delivery.id).toBe("delivery-1");
+    expect(retried.run.id).toBe("developer-feedback-run-1");
+  });
+
+  test("cancels the started run and releases the reservation when attaching it fails", async () => {
+    const starter = new FeedbackStarter();
+    const persistence = new MemoryDeliveryPersistence();
+    persistence.attachError = new Error("attach failed");
+    let id = 0;
+    const service = new FeedbackService({
+      agentRuns: starter,
+      persistence,
+      createId: () => `delivery-${++id}`,
+      createLeaseToken: () => `lease-${id}`,
+    });
+    const input = {
+      task: task(),
+      sourceReviewRunId: "review-run-1",
+      selectedFindingIds: ["finding-1"],
+      finalText: "Retry after attach failure",
+    };
+
+    await expect(service.send(input)).rejects.toThrow("attach failed");
+    expect(starter.cancelledRunIds).toEqual(["developer-feedback-run-1"]);
+    persistence.attachError = null;
+    const retried = await service.send(input);
+
+    expect(retried.delivery.id).toBe("delivery-1");
+  });
+
+  test("releases the reservation after a failed run so the retained draft can be retried", async () => {
+    const persistence = new MemoryDeliveryPersistence();
+    let id = 0;
+    const options = {
+      persistence,
+      createId: () => `delivery-${++id}`,
+      createLeaseToken: () => `lease-${id}`,
+    };
+    const input = {
+      task: task(),
+      sourceReviewRunId: "review-run-1",
+      selectedFindingIds: ["finding-1"],
+      finalText: "Retry after terminal failure",
+    };
+    const failed = await new FeedbackService({
+      ...options,
+      agentRuns: new FeedbackStarter(developerRun("failed")),
+    }).send(input);
+
+    expect((await failed.completion).run.status).toBe("failed");
+    const retried = await new FeedbackService({
+      ...options,
+      agentRuns: new FeedbackStarter(),
+    }).send(input);
+
+    expect(retried.delivery.id).toBe("delivery-1");
+  });
+
+  test("does not let an old completion mark a delivery sent after a new lease is reserved", async () => {
+    let completeFirst!: (run: AgentRun) => void;
+    const firstCompletion = new Promise<AgentRun>((resolve) => { completeFirst = resolve; });
+    let startCount = 0;
+    const starter = {
+      cancelledRunIds: [] as string[],
+      async start(): Promise<StartedAgentRun> {
+        startCount += 1;
+        const run = { ...developerRun(), id: `developer-feedback-run-${startCount}`, status: "queued" as const };
+        return {
+          run,
+          completion: startCount === 1 ? firstCompletion : Promise.resolve(developerRun()),
+        };
+      },
+      async cancel(runId: string): Promise<void> {
+        this.cancelledRunIds.push(runId);
+      },
+    };
+    const persistence = new MemoryDeliveryPersistence();
+    let id = 0;
+    const service = new FeedbackService({
+      agentRuns: starter,
+      persistence,
+      createId: () => `delivery-${++id}`,
+      createLeaseToken: () => `lease-${id}`,
+    });
+    const input = {
+      task: task(),
+      sourceReviewRunId: "review-run-1",
+      selectedFindingIds: ["finding-1"],
+      finalText: "Lease protected feedback",
+    };
+
+    const first = await service.send(input);
+    persistence.expireLease(first.delivery.id);
+    await service.send(input);
+    completeFirst(developerRun());
+
+    await expect(first.completion).rejects.toThrow("stale feedback lease");
   });
 
   test("rejects an atomically detected duplicate without launching another run", async () => {

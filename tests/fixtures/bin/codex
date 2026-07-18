@@ -4,9 +4,40 @@ const args = process.argv.slice(2);
 const scenario = process.env.FAKE_CLI_SCENARIO ?? "normal";
 const invocationLog = process.env.FAKE_CLI_INVOCATION_LOG;
 
+async function recordProbe(): Promise<void> {
+  const probeLog = process.env.FAKE_CLI_PROBE_LOG;
+  if (!probeLog) return;
+  const existing = await Bun.file(probeLog).text().catch(() => "");
+  await Bun.write(probeLog, `${existing}${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+}
+
 if (args[0] === "--version") {
+  await recordProbe();
   console.log("codex-cli 9.9.9-fake");
   process.exit(0);
+}
+if (args[0] === "login" && args[1] === "status") {
+  await recordProbe();
+  if (scenario === "codex-unauthenticated") {
+    console.error("Not logged in");
+    process.exit(1);
+  }
+  if (scenario === "codex-auth-unsupported") {
+    console.error("error: unrecognized subcommand 'login'");
+    process.exit(2);
+  }
+  console.log("Logged in using ChatGPT subscription");
+  process.exit(0);
+}
+
+if (scenario === "pre-stdin-heartbeat") {
+  const pidLog = process.env.FAKE_CLI_PID_LOG;
+  const heartbeatLog = process.env.FAKE_CLI_HEARTBEAT_LOG;
+  if (pidLog) await Bun.write(pidLog, String(process.pid));
+  if (heartbeatLog) {
+    await Bun.write(heartbeatLog, String(Date.now()));
+    setInterval(() => { void Bun.write(heartbeatLog, String(Date.now())); }, 10);
+  }
 }
 
 const prompt = await Bun.stdin.text();

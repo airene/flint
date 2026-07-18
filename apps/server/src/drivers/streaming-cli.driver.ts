@@ -6,6 +6,7 @@ import type { ParsedAgentLine } from "./parser-types";
 export interface StreamingDriverOptions {
   executablePath: string;
   environment?: Readonly<Record<string, string | undefined>>;
+  availabilityWorkingDirectory?: string;
   cancellationGraceMs?: number;
 }
 
@@ -39,11 +40,13 @@ async function readLines(
 export abstract class StreamingCliDriver {
   protected readonly executablePath: string;
   protected readonly environment: Readonly<Record<string, string | undefined>>;
+  protected readonly availabilityWorkingDirectory: string;
   private readonly supervisor: ProcessSupervisor;
 
   constructor(options: StreamingDriverOptions) {
     this.executablePath = options.executablePath;
     this.environment = options.environment ?? process.env;
+    this.availabilityWorkingDirectory = options.availabilityWorkingDirectory ?? process.cwd();
     this.supervisor = new ProcessSupervisor(options.cancellationGraceMs);
   }
 
@@ -54,6 +57,9 @@ export abstract class StreamingCliDriver {
     request: AgentStartRequest,
     emit: (event: AgentEvent) => Promise<void>,
   ): Promise<AgentStartResult> {
+    if (request.signal?.aborted) {
+      throw new AgentProcessError("cancelled", "Agent run was cancelled before process start.");
+    }
     const args = this.arguments(request.sessionId);
     let process: Bun.PipedSubprocess;
     try {
@@ -70,6 +76,7 @@ export abstract class StreamingCliDriver {
     }
 
     this.supervisor.track(request.runId, process);
+    const exited = process.exited;
     const state: StreamState = {
       sessionId: request.sessionId ?? null,
       finalMessage: null,
@@ -82,6 +89,9 @@ export abstract class StreamingCliDriver {
     request.signal?.addEventListener("abort", abort, { once: true });
 
     try {
+      if (request.signal?.aborted) {
+        throw new AgentProcessError("cancelled", "Agent run was cancelled before process setup.");
+      }
       await emit({
         sequence: 0,
         timestamp: new Date().toISOString(),
@@ -119,14 +129,7 @@ export abstract class StreamingCliDriver {
         });
       });
 
-      let exitCode: number;
-      try {
-        [exitCode] = await Promise.all([process.exited, stdout, stderr]);
-      } catch (error) {
-        await this.supervisor.cancel(request.runId);
-        await process.exited;
-        throw error;
-      }
+      const [exitCode] = await Promise.all([exited, stdout, stderr]);
 
       const cancelled = this.supervisor.release(request.runId);
       if (cancelled) throw new AgentProcessError("cancelled", "Agent run was cancelled.", exitCode);
@@ -145,6 +148,12 @@ export abstract class StreamingCliDriver {
         finalMessage: state.finalMessage,
         structuredOutput: state.structuredOutput,
       };
+    } catch (error) {
+      if (this.supervisor.isActive(request.runId)) {
+        await this.supervisor.cancel(request.runId);
+        await exited;
+      }
+      throw error;
     } finally {
       request.signal?.removeEventListener("abort", abort);
       this.supervisor.release(request.runId);

@@ -35,6 +35,10 @@ export class ProcessSupervisor {
     this.active.set(runId, process);
   }
 
+  isActive(runId: string): boolean {
+    return this.active.has(runId);
+  }
+
   async cancel(runId: string): Promise<void> {
     const child = this.active.get(runId);
     if (!child) return;

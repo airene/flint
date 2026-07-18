@@ -4,11 +4,20 @@ const args = process.argv.slice(2);
 const scenario = process.env.FAKE_CLI_SCENARIO ?? "normal";
 const invocationLog = process.env.FAKE_CLI_INVOCATION_LOG;
 
+async function recordProbe(): Promise<void> {
+  const probeLog = process.env.FAKE_CLI_PROBE_LOG;
+  if (!probeLog) return;
+  const existing = await Bun.file(probeLog).text().catch(() => "");
+  await Bun.write(probeLog, `${existing}${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+}
+
 if (args[0] === "--version") {
+  await recordProbe();
   console.log("claude-code 8.8.8-fake");
   process.exit(0);
 }
 if (args[0] === "auth" && args[1] === "status") {
+  await recordProbe();
   if (scenario === "unauthenticated") {
     console.error("Not logged in; OPENAI_API_KEY=sk-fake-auth-secret");
     process.exit(1);

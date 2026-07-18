@@ -10,6 +10,7 @@ import type {
   Task,
 } from "@local-pair-review/shared";
 import { AgentProcessError } from "../utils/process-supervisor";
+import { redactSensitive } from "../utils/redact";
 import type { EventService } from "./event.service";
 
 export interface FinishRunInput {
@@ -160,13 +161,17 @@ export class AgentRunService {
         capturedSession = result.sessionId;
         await this.persistence.recordSession(run.id, run.taskId, run.provider, result.sessionId);
       }
-      await this.events.publish(this.lifecycleEvent(run, "run_completed", { finalMessage: result.finalMessage }));
       const terminal = await this.taskState.succeed({
         runId: run.id,
         taskId: run.taskId,
         runType: run.runType,
         patch: this.successPatch(run, result),
       });
+      try {
+        await this.events.publish(this.lifecycleEvent(run, "run_completed", { finalMessage: result.finalMessage }));
+      } catch {
+        // The completed Run/Task transaction is authoritative; never emit a contradictory failure.
+      }
       return terminal;
     } catch (error) {
       const cancelled = error instanceof AgentProcessError && error.kind === "cancelled";
@@ -191,7 +196,7 @@ export class AgentRunService {
           exitCode: error instanceof AgentProcessError ? error.exitCode : null,
           finalMessage: null,
           structuredOutput: null,
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorMessage: redactSensitive(error instanceof Error ? error.message : String(error)),
           finishedAt: this.now(),
         },
       });

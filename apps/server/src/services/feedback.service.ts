@@ -8,9 +8,10 @@ export interface ReserveFeedbackResult {
 
 export interface FeedbackDeliveryPersistencePort {
   /** Phase 3 implements this as an atomic duplicate check + draft insert/reuse. */
-  reserve(candidate: FeedbackDelivery): Promise<ReserveFeedbackResult>;
-  attachRun(deliveryId: string, runId: string): Promise<FeedbackDelivery>;
-  markSent(deliveryId: string, sentAt: string): Promise<FeedbackDelivery>;
+  reserve(candidate: FeedbackDelivery, leaseToken: string): Promise<ReserveFeedbackResult>;
+  attachRun(deliveryId: string, runId: string, leaseToken: string): Promise<FeedbackDelivery>;
+  release(deliveryId: string, leaseToken: string): Promise<void>;
+  markSent(deliveryId: string, leaseToken: string, sentAt: string): Promise<FeedbackDelivery>;
 }
 
 export class DuplicateFeedbackError extends Error {
@@ -39,9 +40,10 @@ export interface StartedFeedback {
 }
 
 interface FeedbackServiceOptions {
-  agentRuns: AgentRunStarterPort;
+  agentRuns: AgentRunStarterPort & { cancel(runId: string): Promise<void> };
   persistence: FeedbackDeliveryPersistencePort;
   createId?: () => string;
+  createLeaseToken?: () => string;
   now?: () => string;
 }
 
@@ -87,10 +89,12 @@ ${selected.map(findingBlock).join("\n\n")}
 
 export class FeedbackService {
   private readonly createId: () => string;
+  private readonly createLeaseToken: () => string;
   private readonly now: () => string;
 
   constructor(private readonly options: FeedbackServiceOptions) {
     this.createId = options.createId ?? (() => crypto.randomUUID());
+    this.createLeaseToken = options.createLeaseToken ?? (() => crypto.randomUUID());
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -113,29 +117,60 @@ export class FeedbackService {
       sentAt: null,
       createdAt: this.now(),
     };
-    const reservation = await this.options.persistence.reserve(candidate);
+    const leaseToken = this.createLeaseToken();
+    const reservation = await this.options.persistence.reserve(candidate, leaseToken);
     if (!reservation.allowStart) throw new DuplicateFeedbackError();
 
-    const started = await this.options.agentRuns.start({
-      task: input.task,
-      runType: "developer_feedback",
-      prompt: input.finalText,
-      sessionId: input.task.developerSessionId,
-    });
-    const delivery = await this.options.persistence.attachRun(reservation.delivery.id, started.run.id);
+    let started;
+    try {
+      started = await this.options.agentRuns.start({
+        task: input.task,
+        runType: "developer_feedback",
+        prompt: input.finalText,
+        sessionId: input.task.developerSessionId,
+      });
+    } catch (error) {
+      await this.options.persistence.release(reservation.delivery.id, leaseToken);
+      throw error;
+    }
+
+    let delivery: FeedbackDelivery;
+    try {
+      delivery = await this.options.persistence.attachRun(reservation.delivery.id, started.run.id, leaseToken);
+    } catch (error) {
+      try {
+        await this.options.agentRuns.cancel(started.run.id);
+      } finally {
+        await this.options.persistence.release(reservation.delivery.id, leaseToken);
+      }
+      throw error;
+    }
     return {
       run: started.run,
       delivery,
-      completion: this.finish(delivery, started.completion),
+      completion: this.finish(delivery, leaseToken, started.completion),
     };
   }
 
-  private async finish(delivery: FeedbackDelivery, completion: Promise<AgentRun>): Promise<FeedbackCompletion> {
-    const run = await completion;
-    if (run.status !== "completed") return { run, delivery };
+  private async finish(
+    delivery: FeedbackDelivery,
+    leaseToken: string,
+    completion: Promise<AgentRun>,
+  ): Promise<FeedbackCompletion> {
+    let run: AgentRun;
+    try {
+      run = await completion;
+    } catch (error) {
+      await this.options.persistence.release(delivery.id, leaseToken);
+      throw error;
+    }
+    if (run.status !== "completed") {
+      await this.options.persistence.release(delivery.id, leaseToken);
+      return { run, delivery };
+    }
     return {
       run,
-      delivery: await this.options.persistence.markSent(delivery.id, this.now()),
+      delivery: await this.options.persistence.markSent(delivery.id, leaseToken, this.now()),
     };
   }
 }

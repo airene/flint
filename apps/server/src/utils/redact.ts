@@ -1,12 +1,19 @@
-const SENSITIVE_KEY = /(?:api[_-]?key|auth[_-]?token|access[_-]?token|authorization|cookie)/i;
-const KEY_VALUE = /((?:"?(?:OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)"?)\s*[=:]\s*["']?)[^\s,"']+/gi;
+const SENSITIVE_KEY = /(?:api[_-]?key|auth(?:orization)?|auth[_-]?token|access[_-]?token|cookie|password|secret|token)/i;
+const KEY_VALUE = /((?:"?[A-Za-z0-9_-]*(?:api[_-]?key|auth(?:orization)?|cookie|password|secret|token)[A-Za-z0-9_-]*"?)\s*[=:]\s*["']?)[^\s,"']+/gi;
 const BEARER = /(Bearer\s+)[A-Za-z0-9._~+/-]+/gi;
 const COMMON_TOKEN = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
 
 function redactString(value: string): string {
+  if (/^\s*[{[]/.test(value)) {
+    try {
+      return JSON.stringify(redactSensitive(JSON.parse(value)));
+    } catch {
+      // Preserve non-JSON diagnostic text and apply token-pattern redaction below.
+    }
+  }
   return value
-    .replace(KEY_VALUE, "$1[REDACTED]")
     .replace(BEARER, "$1[REDACTED]")
+    .replace(KEY_VALUE, "$1[REDACTED]")
     .replace(COMMON_TOKEN, "[REDACTED]");
 }
 

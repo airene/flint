@@ -13,7 +13,7 @@ export class CodexCliDriver extends StreamingCliDriver implements AgentDriver {
   }
 
   checkAvailability(): Promise<AgentAvailability> {
-    return checkCodexAvailability(this.executablePath, this.environment);
+    return checkCodexAvailability(this.executablePath, this.environment, this.availabilityWorkingDirectory);
   }
 
   start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
