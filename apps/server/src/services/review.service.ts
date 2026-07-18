@@ -121,12 +121,13 @@ export class ReviewService {
   ): Promise<ReviewOutcome> {
     const terminal = await completion;
     const endSnapshot = await this.options.context.capture(task);
+    const stale = endSnapshot.snapshotHash !== startSnapshotHash;
     if (terminal.status !== "completed") {
       return {
         run: terminal,
         result: null,
         findings: [],
-        stale: endSnapshot.snapshotHash !== startSnapshotHash,
+        stale,
         startSnapshotHash,
         endSnapshotHash: endSnapshot.snapshotHash,
       };
@@ -138,12 +139,15 @@ export class ReviewService {
       await this.options.events.publish(this.reviewEvent(run, "review_parse_failed", {
         rawStructuredOutput: terminal.structuredOutput,
         issues: parsed.error.issues,
+        stale,
+        startSnapshotHash,
+        endSnapshotHash: endSnapshot.snapshotHash,
       }));
       return {
         run,
         result: null,
         findings: [],
-        stale: endSnapshot.snapshotHash !== startSnapshotHash,
+        stale,
         startSnapshotHash,
         endSnapshotHash: endSnapshot.snapshotHash,
       };
@@ -165,12 +169,15 @@ export class ReviewService {
       summary: parsed.data.summary,
       verdict: parsed.data.verdict,
       findingCount: findings.length,
+      stale,
+      startSnapshotHash,
+      endSnapshotHash: endSnapshot.snapshotHash,
     }));
     return {
       run,
       result: parsed.data,
       findings,
-      stale: endSnapshot.snapshotHash !== startSnapshotHash,
+      stale,
       startSnapshotHash,
       endSnapshotHash: endSnapshot.snapshotHash,
     };

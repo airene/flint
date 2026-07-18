@@ -18,6 +18,7 @@ import {
   type AgentEvent,
   type AgentRun,
   type CliStatusResponse,
+  type CliRecheckRequest,
   type Project,
   type ReviewFinding,
   type Task,
@@ -28,6 +29,7 @@ import { ClaudeCliDriver } from "../drivers/claude-cli.driver";
 import { checkGitAvailability } from "../drivers/cli-availability";
 import { CodexCliDriver } from "../drivers/codex-cli.driver";
 import { AgentRunService } from "../services/agent-run.service";
+import { AppSettingsService } from "../services/app-settings.service";
 import { EventService } from "../services/event.service";
 import { FeedbackService, composeFeedback } from "../services/feedback.service";
 import { GitService } from "../services/git.service";
@@ -88,7 +90,13 @@ function eventFor(run: AgentRun, type: AgentEvent["type"], timestamp: string): A
 export async function createApplication(options: ApplicationOptions = {}): Promise<LocalPairReviewApplication> {
   const environment = options.environment ?? process.env;
   const database = createDatabase(options.databasePath ?? ":memory:");
-  const gitExecutable = options.gitExecutable ?? "git";
+  const settings = new AppSettingsService(database, {
+    codexExecutable: options.codexExecutable ?? "codex",
+    claudeExecutable: options.claudeExecutable ?? "claude",
+    gitExecutable: options.gitExecutable ?? "git",
+  });
+  let cliExecutables = settings.loadCliExecutables();
+  let gitExecutable = cliExecutables.gitExecutable;
   const git = new GitService(gitExecutable);
   const projects = new ProjectService(database, gitExecutable);
   const tasks = new TaskService(database, git);
@@ -96,12 +104,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const hub = new EventHub();
   const events = new EventService(ports, hub);
   const codex = new CodexCliDriver({
-    executablePath: options.codexExecutable ?? "codex",
+    executablePath: cliExecutables.codexExecutable,
     environment,
     availabilityWorkingDirectory: process.cwd(),
   });
   const claude = new ClaudeCliDriver({
-    executablePath: options.claudeExecutable ?? "claude",
+    executablePath: cliExecutables.claudeExecutable,
     environment,
     availabilityWorkingDirectory: process.cwd(),
   });
@@ -191,7 +199,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (method === "GET" && path === "/api/health") return json({ status: "ok" });
       if (method === "GET" && path === "/api/system/clis") return json(await clis());
       if (method === "POST" && path === "/api/system/clis/recheck") {
-        await body(request, cliRecheckRequestSchema);
+        const input: CliRecheckRequest = await body(request, cliRecheckRequestSchema);
+        if (Object.keys(input).length > 0) {
+          cliExecutables = settings.updateCliExecutables(input);
+          gitExecutable = cliExecutables.gitExecutable;
+          codex.setExecutablePath(cliExecutables.codexExecutable);
+          claude.setExecutablePath(cliExecutables.claudeExecutable);
+          git.setExecutablePath(gitExecutable);
+          projects.setGitExecutablePath(gitExecutable);
+          cliStatus = null;
+        }
         return json(await clis(true));
       }
 
@@ -331,7 +348,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/git\/(status|diff|files)$/);
       if (parameters && method === "GET") {
         const task = await requireTask(parameters[0]!);
-        if (parameters[1] === "status") return json(await git.status(task.workingDirectory));
+        if (parameters[1] === "status") {
+          const [status, snapshotHash] = await Promise.all([
+            git.status(task.workingDirectory),
+            git.snapshotHash(task.workingDirectory, task.baseCommit),
+          ]);
+          return json({ ...status, snapshotHash });
+        }
         if (parameters[1] === "diff") return json(await git.diff(task.workingDirectory, task.baseCommit));
         return json(await git.files(task.workingDirectory));
       }

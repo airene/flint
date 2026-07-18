@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AgentStartRequest } from "@local-pair-review/shared";
@@ -74,7 +74,7 @@ describe("CLI availability", () => {
     expect(claudeStatus.authentication).toBe("unauthenticated");
     expect(claudeStatus.message).toContain("[REDACTED]");
     expect(claudeStatus.message).not.toContain("sk-fake-auth-secret");
-    expect(git).toMatchObject({ installed: false, executablePath: null, authentication: "unknown" });
+    expect(git).toMatchObject({ installed: false, executablePath: "/definitely/missing/git", authentication: "unknown" });
   });
 
   test("reports clear Codex unauthenticated state and unknown for unsupported auth probe", async () => {
@@ -123,6 +123,25 @@ describe("CLI availability", () => {
 });
 
 describe("Codex driver", () => {
+  test("the E2E Fake Codex scenario edits only its supplied temporary repository", async () => {
+    const directory = await workspace();
+    await mkdir(join(directory, "src"));
+    const driver = new CodexCliDriver({ executablePath: codexFixture, environment: environment("e2e") });
+
+    await driver.start(request(directory), async () => {});
+
+    expect(await readFile(join(directory, "src", "input.ts"), "utf8")).toContain("E2E Fake Codex");
+  });
+
+  test("the E2E Fake Codex scenario rejects feedback that is not an exact-session resume", async () => {
+    const directory = await workspace();
+    await mkdir(join(directory, "src"));
+    const driver = new CodexCliDriver({ executablePath: codexFixture, environment: environment("e2e") });
+
+    await expect(driver.start(request(directory, { prompt: "Fix the selected validation finding." }), async () => {}))
+      .rejects.toBeInstanceOf(AgentProcessError);
+  });
+
   test("streams complete events, stdin, explicit cwd, and exact resume arguments", async () => {
     const directory = await workspace();
     const log = join(directory, "invocation.json");
@@ -295,6 +314,15 @@ describe("Codex driver", () => {
 });
 
 describe("Claude driver", () => {
+  test("the E2E Fake Claude scenario returns its structured finding", async () => {
+    const directory = await workspace();
+    const driver = new ClaudeCliDriver({ executablePath: claudeFixture, environment: environment("e2e") });
+
+    const result = await driver.start(request(directory), async () => {});
+
+    expect(result.structuredOutput).toMatchObject({ verdict: "changes_suggested", findings: [{ title: "Validate input" }] });
+  });
+
   test("streams the complete structured result and enforces CLI read-only arguments", async () => {
     const directory = await workspace();
     const log = join(directory, "invocation.json");

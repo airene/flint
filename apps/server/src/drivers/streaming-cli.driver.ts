@@ -38,7 +38,7 @@ async function readLines(
 }
 
 export abstract class StreamingCliDriver {
-  protected readonly executablePath: string;
+  protected executablePath: string;
   protected readonly environment: Readonly<Record<string, string | undefined>>;
   protected readonly availabilityWorkingDirectory: string;
   private readonly supervisor: ProcessSupervisor;
@@ -48,6 +48,10 @@ export abstract class StreamingCliDriver {
     this.environment = options.environment ?? process.env;
     this.availabilityWorkingDirectory = options.availabilityWorkingDirectory ?? process.cwd();
     this.supervisor = new ProcessSupervisor(options.cancellationGraceMs);
+  }
+
+  setExecutablePath(executablePath: string): void {
+    this.executablePath = executablePath;
   }
 
   protected abstract arguments(sessionId?: string): string[];

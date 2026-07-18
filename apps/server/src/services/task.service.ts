@@ -33,6 +33,13 @@ export class ProjectWriteRunConflictError extends Error {
   }
 }
 
+export class CompletedTaskReadOnlyError extends Error {
+  constructor(readonly taskId: string) {
+    super("Completed task history is read-only");
+    this.name = "CompletedTaskReadOnlyError";
+  }
+}
+
 export interface CreateTaskInput {
   title: string;
   originalPrompt: string;

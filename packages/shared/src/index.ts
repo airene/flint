@@ -325,6 +325,7 @@ export type GitStatusRequest = z.infer<typeof gitStatusRequestSchema>;
 export const gitStatusResponseSchema = z.object({
   clean: z.boolean(),
   files: z.array(gitFileStatusSchema),
+  snapshotHash: z.string().min(1).optional(),
 }).strict();
 export type GitStatusResponse = z.infer<typeof gitStatusResponseSchema>;
 
@@ -349,6 +350,8 @@ export type GitFileDiffRequest = z.infer<typeof gitFileDiffRequestSchema>;
 export const gitFileDiffResponseSchema = z.object({
   file: gitFileStatusSchema,
   patch: z.string(),
+  originalText: z.string().nullable(),
+  modifiedText: z.string().nullable(),
 }).strict();
 export type GitFileDiffResponse = z.infer<typeof gitFileDiffResponseSchema>;
 
@@ -369,7 +372,12 @@ export const cliStatusResponseSchema = z.object({
   git: agentAvailabilitySchema,
 }).strict();
 export type CliStatusResponse = z.infer<typeof cliStatusResponseSchema>;
-export const cliRecheckRequestSchema = z.object({}).strict();
+const cliExecutableOverrideSchema = z.string().min(1).nullable().optional();
+export const cliRecheckRequestSchema = z.object({
+  codexExecutable: cliExecutableOverrideSchema,
+  claudeExecutable: cliExecutableOverrideSchema,
+  gitExecutable: cliExecutableOverrideSchema,
+}).strict();
 export type CliRecheckRequest = z.infer<typeof cliRecheckRequestSchema>;
 export const cliRecheckResponseSchema = cliStatusResponseSchema;
 export type CliRecheckResponse = z.infer<typeof cliRecheckResponseSchema>;

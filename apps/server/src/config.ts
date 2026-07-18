@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 export interface AppConfig {
   hostname: "127.0.0.1";
@@ -8,6 +8,7 @@ export interface AppConfig {
   codexExecutable: string;
   claudeExecutable: string;
   gitExecutable: string;
+  webRoot: string;
 }
 
 function executable(value: string | undefined, fallback: string): string {
@@ -22,9 +23,12 @@ export function loadConfig(environment: Readonly<Record<string, string | undefin
   return {
     hostname: "127.0.0.1",
     port,
-    databasePath: environment.LOCAL_PAIR_REVIEW_DATABASE ?? join(homedir(), ".local-pair-review", "data.sqlite"),
+    databasePath: environment.LOCAL_PAIR_REVIEW_DATABASE ?? join(homedir(), ".local-pair-review", "data", "app.db"),
     codexExecutable: executable(environment.CODEX_EXECUTABLE, "codex"),
     claudeExecutable: executable(environment.CLAUDE_EXECUTABLE, "claude"),
     gitExecutable: executable(environment.GIT_EXECUTABLE, "git"),
+    webRoot: environment.LOCAL_PAIR_REVIEW_WEB_ROOT
+      ? executable(environment.LOCAL_PAIR_REVIEW_WEB_ROOT, "")
+      : resolve(import.meta.dir, "../../web/dist"),
   };
 }

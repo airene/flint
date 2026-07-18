@@ -65,6 +65,53 @@ afterEach(async () => {
 });
 
 describe("local server API assembly", () => {
+  test("persists absolute CLI executable overrides and restores or resets them across restarts", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-settings-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const databasePath = join(dataDirectory, "app.sqlite");
+    const missingCodex = join(dataDirectory, "missing-codex");
+    const options = {
+      databasePath,
+      codexExecutable: missingCodex,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    };
+
+    const first = await createApplication(options);
+    const saved = await first.handle(new Request("http://127.0.0.1/api/system/clis/recheck", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ codexExecutable: codexFixture }),
+    }));
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      codex: { installed: true, executablePath: codexFixture },
+    });
+    await first.shutdown();
+
+    const second = await createApplication(options);
+    const restored = await second.handle(new Request("http://127.0.0.1/api/system/clis"));
+    expect(await restored.json()).toMatchObject({
+      codex: { installed: true, executablePath: codexFixture },
+    });
+    const rejected = await second.handle(new Request("http://127.0.0.1/api/system/clis/recheck", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ codexExecutable: "relative/codex", claudeExecutable: "/also/not/written" }),
+    }));
+    expect(rejected.status).toBe(400);
+
+    const reset = await second.handle(new Request("http://127.0.0.1/api/system/clis/recheck", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ codexExecutable: null }),
+    }));
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ codex: { installed: false, executablePath: missingCodex } });
+    await second.shutdown();
+  });
+
   test("runs the Fake CLI developer, review, finding, feedback, event replay loop", async () => {
     const rootPath = await repository();
     const { baseUrl, environment, server } = await fixtureServer();
@@ -77,6 +124,9 @@ describe("local server API assembly", () => {
       method: "POST", body: JSON.stringify({ title: "API loop", originalPrompt: "Implement input validation." }),
     });
     expect(createdTask.status).toBe(201);
+    const gitStatus = await request<{ clean: boolean; snapshotHash: string }>(baseUrl, `/api/tasks/${createdTask.body.id}/git/status`);
+    expect(gitStatus.body).toMatchObject({ clean: true });
+    expect(gitStatus.body.snapshotHash).toHaveLength(64);
 
     const developed = await request<{ run: AgentRun }>(baseUrl, `/api/tasks/${createdTask.body.id}/develop`, {
       method: "POST", body: JSON.stringify({}),
@@ -182,6 +232,37 @@ describe("local server API assembly", () => {
       method: "DELETE", body: JSON.stringify({ confirm: true }),
     });
     expect(deleteConflict).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+  });
+
+  test("keeps completed review findings read-only", async () => {
+    const rootPath = await repository();
+    const { baseUrl } = await fixtureServer();
+    const project = await request<{ id: string }>(baseUrl, "/api/projects", {
+      method: "POST", body: JSON.stringify({ rootPath }),
+    });
+    const task = await request<Task>(baseUrl, `/api/projects/${project.body.id}/tasks`, {
+      method: "POST", body: JSON.stringify({ title: "history", originalPrompt: "history" }),
+    });
+    await request(baseUrl, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
+    await waitForTask(baseUrl, task.body.id, "ready_for_review");
+    await request(baseUrl, `/api/tasks/${task.body.id}/review`, { method: "POST", body: "{}" });
+    await waitForTask(baseUrl, task.body.id, "waiting_for_human");
+    const [finding] = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${task.body.id}/findings`)).body;
+    await request(baseUrl, `/api/tasks/${task.body.id}/complete`, { method: "POST", body: "{}" });
+
+    const updated = await request<{ code: string }>(baseUrl, `/api/findings/${finding!.id}`, {
+      method: "PATCH", body: JSON.stringify({ selected: false, userNote: "mutated" }),
+    });
+    const selected = await request<{ code: string }>(baseUrl, `/api/tasks/${task.body.id}/findings/select`, {
+      method: "POST", body: JSON.stringify({ mode: "none" }),
+    });
+
+    expect(updated).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+    expect(selected).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+    expect((await request<ReviewFinding[]>(baseUrl, `/api/tasks/${task.body.id}/findings`)).body[0]).toMatchObject({
+      selected: true,
+      userNote: null,
+    });
   });
 
   test("recovers persisted active runs as interrupted and restores a usable task state", async () => {

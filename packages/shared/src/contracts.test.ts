@@ -100,7 +100,7 @@ test("Git response DTOs distinguish status, aggregate diff, files, and file diff
     binary: false,
   };
 
-  expectStrict("gitStatusResponseSchema", { clean: false, files: [file] });
+  expectStrict("gitStatusResponseSchema", { clean: false, files: [file], snapshotHash: "snapshot-1" });
   expectStrict("gitDiffResponseSchema", {
     baseCommit: "abc123",
     trackedPatch: "diff --git",
@@ -111,7 +111,7 @@ test("Git response DTOs distinguish status, aggregate diff, files, and file diff
   });
   expectStrict("gitFilesResponseSchema", { files: [file] });
   expectStrict("gitFileDiffRequestSchema", { path: "src/example.ts" });
-  expectStrict("gitFileDiffResponseSchema", { file, patch: "diff --git" });
+  expectStrict("gitFileDiffResponseSchema", { file, patch: "diff --git", originalText: "before", modifiedText: "after" });
 });
 
 test("CLI status and recheck responses use strict availability records", () => {

@@ -6,6 +6,7 @@ import {
 } from "../services/project.service";
 import {
   DirtyWorkingTreeError,
+  CompletedTaskReadOnlyError,
   InvalidTaskTransitionError,
   ProjectWriteRunConflictError,
   TaskTransitionConflictError,
@@ -60,6 +61,7 @@ export function errorResponse(error: unknown): Response {
     || error instanceof ActiveProjectRunError
     || error instanceof ConfirmationRequiredError
     || error instanceof DirtyWorkingTreeError
+    || error instanceof CompletedTaskReadOnlyError
     || error instanceof InvalidTaskTransitionError
     || error instanceof TaskTransitionConflictError
     || error instanceof ProjectWriteRunConflictError

@@ -66,6 +66,20 @@ switch (scenario) {
   case "resume":
     emitNormal();
     break;
+  case "e2e":
+    if (prompt.includes("[e2e:fail]")) {
+      emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+      console.error("Fake Codex E2E failure requested by test prompt");
+      process.exit(23);
+    }
+    if (/selected validation finding/i.test(prompt)
+      && (args[1] !== "resume" || args[2] !== "codex-session-fake-123")) {
+      console.error("Fake Codex E2E feedback must use the exact persisted session ID");
+      process.exit(24);
+    }
+    await Bun.write("src/input.ts", "export const input = 'E2E Fake Codex edit';\n");
+    emitNormal();
+    break;
   case "invalid-json":
     emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
     console.log("{not-json");

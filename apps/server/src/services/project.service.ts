@@ -36,7 +36,11 @@ export interface ProjectRemovalInfo {
 function now(): string { return new Date().toISOString(); }
 
 export class ProjectService {
-  constructor(private readonly database: AppDatabase, private readonly gitExecutable = "git") {}
+  constructor(private readonly database: AppDatabase, private gitExecutable = "git") {}
+
+  setGitExecutablePath(executable: string): void {
+    this.gitExecutable = executable;
+  }
 
   async add(path: string): Promise<Project> {
     const rootPath = await canonicalGitRoot(path, this.gitExecutable);

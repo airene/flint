@@ -167,12 +167,17 @@ describe("ReviewService", () => {
   });
 
   test("marks review output stale when the ending snapshot differs", async () => {
-    const { service } = setup({ summary: "Pass", verdict: "pass", findings: [] }, ["snapshot-start", "snapshot-end"]);
+    const { service, emitted } = setup({ summary: "Pass", verdict: "pass", findings: [] }, ["snapshot-start", "snapshot-end"]);
 
     const outcome = await (await service.start(task())).completion;
 
     expect(outcome.stale).toBe(true);
     expect(outcome.startSnapshotHash).toBe("snapshot-start");
     expect(outcome.endSnapshotHash).toBe("snapshot-end");
+    expect(emitted.at(-1)?.payload).toMatchObject({
+      stale: true,
+      startSnapshotHash: "snapshot-start",
+      endSnapshotHash: "snapshot-end",
+    });
   });
 });

@@ -91,6 +91,7 @@ const emitNormal = (structuredOutput: unknown = validStructuredOutput) => {
 switch (scenario) {
   case "normal":
   case "resume":
+  case "e2e":
     emitNormal();
     break;
   case "schema-failure":

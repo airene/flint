@@ -32,10 +32,10 @@ async function runCommand(
   }
 }
 
-function unavailable(name: string): AgentAvailability {
+function unavailable(name: string, executablePath: string): AgentAvailability {
   return {
     installed: false,
-    executablePath: null,
+    executablePath,
     version: null,
     authentication: "unknown",
     message: `${name} CLI is not installed or is not executable.`,
@@ -48,7 +48,7 @@ export async function checkCodexAvailability(
   cwd = process.cwd(),
 ): Promise<AgentAvailability> {
   const version = await runCommand([executablePath, "--version"], environment, cwd);
-  if (!version || version.exitCode !== 0) return unavailable("Codex");
+  if (!version || version.exitCode !== 0) return unavailable("Codex", executablePath);
   const auth = await runCommand([executablePath, "login", "status"], environment, cwd);
   const authOutput = `${auth?.stdout ?? ""}\n${auth?.stderr ?? ""}`.trim();
   const authentication = /(?:not logged in|unauthenticated)/i.test(authOutput)
@@ -71,7 +71,7 @@ export async function checkClaudeAvailability(
   cwd = process.cwd(),
 ): Promise<AgentAvailability> {
   const version = await runCommand([executablePath, "--version"], environment, cwd);
-  if (!version || version.exitCode !== 0) return unavailable("Claude");
+  if (!version || version.exitCode !== 0) return unavailable("Claude", executablePath);
   const auth = await runCommand([executablePath, "auth", "status"], environment, cwd);
   const authenticated = auth?.exitCode === 0;
   return {
@@ -89,7 +89,7 @@ export async function checkGitAvailability(
   cwd = process.cwd(),
 ): Promise<AgentAvailability> {
   const version = await runCommand([executablePath, "--version"], environment, cwd);
-  if (!version || version.exitCode !== 0) return unavailable("Git");
+  if (!version || version.exitCode !== 0) return unavailable("Git", executablePath);
   return {
     installed: true,
     executablePath,

@@ -9,7 +9,7 @@ const application = await createApplication({
   claudeExecutable: config.claudeExecutable,
   gitExecutable: config.gitExecutable,
 });
-const server = createServer({ port: config.port, application });
+const server = createServer({ port: config.port, application, webRoot: config.webRoot });
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {

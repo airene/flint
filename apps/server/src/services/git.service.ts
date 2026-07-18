@@ -67,8 +67,27 @@ async function readUntrackedContent(rootPath: string, path: string): Promise<Unt
   }
 }
 
+async function readWorkingTreeText(rootPath: string, path: string): Promise<string | null> {
+  validateRepositoryRelativePath(path);
+  const absolutePath = resolve(rootPath, path);
+  const metadata = await lstat(absolutePath);
+  if (metadata.isSymbolicLink()) return readlink(absolutePath);
+  if (!metadata.isFile()) return null;
+  const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const bytes = await handle.readFile();
+    return hasNul(bytes) ? null : decoder.decode(bytes);
+  } finally {
+    await handle.close();
+  }
+}
+
 export class GitService {
-  constructor(private readonly executable = "git") {}
+  constructor(private executable = "git") {}
+
+  setExecutablePath(executable: string): void {
+    this.executable = executable;
+  }
 
   async head(rootPath: string): Promise<string> {
     return command(this.executable, rootPath, ["rev-parse", "HEAD"]).trim();
@@ -127,11 +146,16 @@ export class GitService {
     validateRepositoryRelativePath(path);
     const file = (await this.status(rootPath)).files.find((candidate) => candidate.path === path);
     if (!file) throw new Error("File is not changed in this task");
-    if (file.binary) return { file, patch: "" };
+    if (file.binary) return { file, patch: "", originalText: null, modifiedText: null };
     const patch = !file.tracked
       ? command(this.executable, rootPath, ["diff", "--no-index", "--", "/dev/null", path], true)
       : command(this.executable, rootPath, ["diff", baseCommit, "--", path]);
-    return { file, patch };
+    const originalPath = file.previousPath ?? path;
+    const originalText = file.status === "added" || file.status === "untracked"
+      ? ""
+      : command(this.executable, rootPath, ["show", `${baseCommit}:${originalPath}`], true);
+    const modifiedText = file.status === "deleted" ? "" : await readWorkingTreeText(rootPath, path);
+    return { file, patch, originalText, modifiedText };
   }
 
   async snapshotHash(rootPath: string, baseCommit: string): Promise<string> {

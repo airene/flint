@@ -24,7 +24,7 @@ import type { EventPersistencePort, PersistAgentEventInput } from "../services/e
 import type { FeedbackDeliveryPersistencePort, ReserveFeedbackResult } from "../services/feedback.service";
 import type { ReviewPersistencePort } from "../services/review.service";
 import { GitService } from "../services/git.service";
-import { InvalidTaskTransitionError, ProjectWriteRunConflictError } from "../services/task.service";
+import { CompletedTaskReadOnlyError, InvalidTaskTransitionError, ProjectWriteRunConflictError } from "../services/task.service";
 
 const activeStatuses = ["queued", "running"] as const;
 
@@ -266,20 +266,30 @@ export class DatabasePorts implements
   }
 
   async updateFinding(findingId: string, changes: Partial<Pick<ReviewFinding, "selected" | "dismissed" | "userNote">>): Promise<ReviewFinding | null> {
-    await this.database.db.update(reviewFindings).set(changes).where(eq(reviewFindings.id, findingId)).run();
-    return (await this.database.db.select().from(reviewFindings).where(eq(reviewFindings.id, findingId)).get() as ReviewFinding | undefined) ?? null;
+    return this.database.db.transaction((transaction) => {
+      const finding = transaction.select().from(reviewFindings).where(eq(reviewFindings.id, findingId)).get();
+      if (!finding) return null;
+      const task = transaction.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, finding.taskId)).get();
+      if (task?.status === "completed") throw new CompletedTaskReadOnlyError(finding.taskId);
+      transaction.update(reviewFindings).set(changes).where(eq(reviewFindings.id, findingId)).run();
+      return transaction.select().from(reviewFindings).where(eq(reviewFindings.id, findingId)).get() as ReviewFinding;
+    }, { behavior: "immediate" });
   }
 
   async selectFindings(taskId: string, mode: FindingSelectionMode): Promise<ReviewFinding[]> {
-    const findings = await this.listFindings(taskId);
-    this.database.db.transaction((transaction) => {
+    return this.database.db.transaction((transaction) => {
+      const task = transaction.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskId)).get();
+      if (task?.status === "completed") throw new CompletedTaskReadOnlyError(taskId);
+      const findings = transaction.select().from(reviewFindings).where(eq(reviewFindings.taskId, taskId))
+        .orderBy(asc(reviewFindings.createdAt), asc(reviewFindings.id)).all() as ReviewFinding[];
       for (const finding of findings) {
         const selected = mode === "all" || (mode === "P0" && finding.severity === "P0")
           || (mode === "P0_P1" && finding.severity !== "P2");
         transaction.update(reviewFindings).set({ selected }).where(eq(reviewFindings.id, finding.id)).run();
       }
+      return transaction.select().from(reviewFindings).where(eq(reviewFindings.taskId, taskId))
+        .orderBy(asc(reviewFindings.createdAt), asc(reviewFindings.id)).all() as ReviewFinding[];
     }, { behavior: "immediate" });
-    return this.listFindings(taskId);
   }
 
   async recoverInterrupted(runIds?: string[]): Promise<AgentRun[]> {

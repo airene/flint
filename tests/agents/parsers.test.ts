@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { agentEventSchema } from "../../packages/shared/src";
 import { parseClaudeEventLine } from "../../apps/server/src/drivers/claude-event.parser";
 import { parseCodexEventLine } from "../../apps/server/src/drivers/codex-event.parser";
 
@@ -9,6 +10,22 @@ const context = {
 };
 
 describe("Codex JSONL parser", () => {
+  test("emits only public event fields when given an extended driver request", () => {
+    const extendedContext = {
+      ...context,
+      workingDirectory: "/private/repository",
+      prompt: "private implementation prompt",
+      sessionId: "existing-session",
+    };
+
+    const parsed = parseCodexEventLine(JSON.stringify({ type: "turn.started" }), extendedContext);
+
+    expect(agentEventSchema.safeParse(parsed.event).success).toBe(true);
+    expect(parsed.event).not.toHaveProperty("workingDirectory");
+    expect(parsed.event).not.toHaveProperty("prompt");
+    expect(parsed.event).not.toHaveProperty("sessionId");
+  });
+
   test("extracts exact session and terminal information from complete events", () => {
     const session = parseCodexEventLine(JSON.stringify({
       type: "thread.started",

@@ -73,11 +73,15 @@ describe("GitService", () => {
     git(root, "add", "added.txt");
     await Bun.write(join(root, "added.txt"), "staged added\nworking added\n");
 
-    const modifiedPatch = (await service.fileDiff(root, baseCommit, "tracked.txt")).patch;
-    const addedPatch = (await service.fileDiff(root, baseCommit, "added.txt")).patch;
+    const modified = await service.fileDiff(root, baseCommit, "tracked.txt");
+    const added = await service.fileDiff(root, baseCommit, "added.txt");
+    const modifiedPatch = modified.patch;
+    const addedPatch = added.patch;
 
     expect(modifiedPatch).toContain("working tracked");
     expect(addedPatch).toContain("working added");
+    expect(modified).toMatchObject({ originalText: "before\n", modifiedText: "working tracked\n" });
+    expect(added).toMatchObject({ originalText: "", modifiedText: "staged added\nworking added\n" });
   });
 
   test("reports tracked, staged, untracked, deleted, and binary changes with separate patches", async () => {
@@ -114,7 +118,7 @@ describe("GitService", () => {
 
     const first = await service.snapshotHash(root, baseCommit);
     const binary = await service.fileDiff(root, baseCommit, "image.bin");
-    expect(binary.patch).toBe("");
+    expect(binary).toMatchObject({ patch: "", originalText: null, modifiedText: null });
 
     const parts = await service.diff(root, baseCommit);
     const untracked = await Promise.all(["a.txt", "b.txt", "image.bin"].map(async (path) => ({

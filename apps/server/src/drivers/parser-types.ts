@@ -26,7 +26,9 @@ export function rawEvent(
     event: {
       sequence: 0,
       timestamp: new Date().toISOString(),
-      ...context,
+      projectId: context.projectId,
+      taskId: context.taskId,
+      runId: context.runId,
       source,
       type: "raw",
       payload: error === undefined
@@ -46,7 +48,9 @@ export function parsedEvent(
   return {
     sequence: 0,
     timestamp: new Date().toISOString(),
-    ...context,
+    projectId: context.projectId,
+    taskId: context.taskId,
+    runId: context.runId,
     source,
     type,
     payload: { raw, parsed },
