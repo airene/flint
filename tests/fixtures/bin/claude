@@ -49,6 +49,16 @@ const validStructuredOutput = {
     endLine: 9,
   }],
 };
+const initialReviewStructuredOutput = {
+  ...validStructuredOutput,
+  summary: "Initial review found one issue.",
+  findings: validStructuredOutput.findings.map((finding) => ({ ...finding, title: "Validate input · initial" })),
+};
+const followUpReviewStructuredOutput = {
+  ...validStructuredOutput,
+  summary: "Follow-up review found one issue.",
+  findings: validStructuredOutput.findings.map((finding) => ({ ...finding, title: "Validate input · follow-up" })),
+};
 const emit = (value: unknown) => console.log(JSON.stringify(value));
 const emitNormal = (structuredOutput: unknown = validStructuredOutput) => {
   emit({
@@ -88,11 +98,34 @@ const emitNormal = (structuredOutput: unknown = validStructuredOutput) => {
   });
 };
 
+function argumentAfter(flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
 switch (scenario) {
   case "normal":
   case "resume":
-  case "e2e":
     emitNormal();
+    break;
+  case "e2e":
+    if (/configured Claude developer session/i.test(prompt)
+      && (
+        argumentAfter("--resume") !== "claude-session-fake-456"
+        || argumentAfter("--permission-mode") !== "acceptEdits"
+        || args.includes("--json-schema")
+      )) {
+      console.error("Fake Claude E2E feedback must resume the exact developer session with acceptEdits");
+      process.exit(24);
+    }
+    if (args.includes("--json-schema")) {
+      const reviewedInput = await Bun.file("src/input.ts").text().catch(() => "");
+      emitNormal(reviewedInput.includes("E2E Fake Codex follow-up edit")
+        ? followUpReviewStructuredOutput
+        : initialReviewStructuredOutput);
+    } else {
+      emitNormal();
+    }
     break;
   case "schema-failure":
     emitNormal({ summary: "Invalid", verdict: "unknown", findings: [] });

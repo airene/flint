@@ -4,15 +4,14 @@ import type { AgentEvent, AgentRun } from "@local-pair-review/shared";
 
 const props = defineProps<{
   title: string;
-  provider: "codex" | "claude";
-  runs: AgentRun[];
+  run: AgentRun;
   events: AgentEvent[];
 }>();
 
-const providerRuns = computed(() => props.runs.filter((run) => run.provider === props.provider));
-const latest = computed(() => providerRuns.value.at(-1) ?? null);
 const messages = computed(() => props.events.filter((event) => (
-  event.source === props.provider && ["message", "plan", "command", "tool", "file_changed", "usage", "turn_completed", "stderr"].includes(event.type)
+  event.runId === props.run.id
+  && event.source === props.run.provider
+  && ["message", "plan", "command", "tool", "file_changed", "usage", "turn_completed", "stderr"].includes(event.type)
 )).slice(-24));
 
 function eventText(event: AgentEvent): string {
@@ -28,28 +27,27 @@ function eventText(event: AgentEvent): string {
 <template>
   <section class="panel agent-panel">
     <header class="panel-header">
-      <h2 class="panel-title"><span :class="['agent-orb', provider]" />{{ title }}</h2>
-      <span v-if="latest" :class="['badge', latest.status === 'completed' ? 'completed' : latest.status === 'running' ? 'running' : latest.status]">{{ latest.status }}</span>
-      <span v-else class="badge">idle</span>
+      <h2 class="panel-title"><span :class="['agent-orb', run.provider]" />{{ title }}</h2>
+      <span :class="['badge', run.status === 'completed' ? 'completed' : run.status === 'running' ? 'running' : run.status]">{{ run.status }}</span>
     </header>
-    <div v-if="latest" class="panel-body agent-summary">
+    <div class="panel-body agent-summary">
       <div class="run-meta mono">
-        <span>{{ latest.runType }}</span><span>·</span><span>{{ latest.externalSessionId ?? "session pending" }}</span>
+        <span>{{ run.runType }}</span><span>·</span><span>{{ run.provider }}</span><span>·</span><span>{{ run.externalSessionId ?? "session pending" }}</span>
       </div>
-      <div v-if="!['queued', 'running'].includes(latest.status)" class="terminal-meta mono">
-        <span>exit {{ latest.exitCode ?? "n/a" }}</span><span>·</span><span>{{ latest.finishedAt ? new Date(latest.finishedAt).toLocaleTimeString() : latest.status }}</span>
+      <div v-if="!['queued', 'running'].includes(run.status)" class="terminal-meta mono">
+        <span>exit {{ run.exitCode ?? "n/a" }}</span><span>·</span><span>{{ run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString() : run.status }}</span>
       </div>
       <div class="prompt-block">
         <span class="mini-label">Prompt</span>
-        <p>{{ latest.prompt }}</p>
+        <p>{{ run.prompt }}</p>
       </div>
-      <div v-if="latest.finalMessage" class="message-block">
+      <div v-if="run.finalMessage" class="message-block">
         <span class="mini-label">Final response</span>
-        <p>{{ latest.finalMessage }}</p>
+        <p>{{ run.finalMessage }}</p>
       </div>
-      <div v-if="latest.errorMessage" class="message-block error-text">
-        <span class="mini-label">Error · exit {{ latest.exitCode ?? "?" }}</span>
-        <p>{{ latest.errorMessage }}</p>
+      <div v-if="run.errorMessage" class="message-block error-text">
+        <span class="mini-label">Error · exit {{ run.exitCode ?? "?" }}</span>
+        <p>{{ run.errorMessage }}</p>
       </div>
       <details v-if="messages.length" class="event-details">
         <summary>{{ messages.length }} recent stream events</summary>
@@ -60,7 +58,6 @@ function eventText(event: AgentEvent): string {
         </div>
       </details>
     </div>
-    <div v-else class="empty-state"><strong>No {{ provider }} run yet</strong><span>Start an action to see its session and stream.</span></div>
   </section>
 </template>
 

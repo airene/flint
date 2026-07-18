@@ -126,6 +126,91 @@ describe("local server API assembly", () => {
     await second.shutdown();
   });
 
+  test("returns legacy role provider defaults for newly created tasks", async () => {
+    const rootPath = await repository();
+    const application = await createApplication({
+      databasePath: ":memory:",
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const projectResponse = await application.handle(new Request("http://127.0.0.1/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rootPath }),
+      }));
+      const project = await projectResponse.json() as { id: string };
+      const taskResponse = await application.handle(new Request(`http://127.0.0.1/api/projects/${project.id}/tasks`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Role defaults", originalPrompt: "Implement it" }),
+      }));
+
+      expect(taskResponse.status).toBe(201);
+      expect(await taskResponse.json()).toMatchObject({ developerProvider: "codex", reviewerProvider: "claude" });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("exposes registered providers and applies saved role defaults only to new tasks", async () => {
+    const rootPath = await repository();
+    const application = await createApplication({
+      databasePath: ":memory:",
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const initial = await application.handle(new Request("http://127.0.0.1/api/system/settings"));
+      expect(initial.status).toBe(200);
+      expect(await initial.json()).toMatchObject({
+        providers: [
+          { id: "codex", roles: ["developer", "reviewer"], availability: { installed: true } },
+          { id: "claude", roles: ["developer", "reviewer"], availability: { installed: true } },
+        ],
+        roles: { developerProvider: "codex", reviewerProvider: "claude" },
+        git: { installed: true },
+      });
+
+      const projectResponse = await application.handle(new Request("http://127.0.0.1/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rootPath }),
+      }));
+      const project = await projectResponse.json() as { id: string };
+      const before = await application.handle(new Request(`http://127.0.0.1/api/projects/${project.id}/tasks`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Before role change", originalPrompt: "Implement it" }),
+      }));
+      const beforeTask = await before.json() as Task;
+
+      const updated = await application.handle(new Request("http://127.0.0.1/api/system/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ developerProvider: "claude", reviewerProvider: "codex" }),
+      }));
+      expect(updated.status).toBe(200);
+      expect(await updated.json()).toMatchObject({
+        roles: { developerProvider: "claude", reviewerProvider: "codex" },
+      });
+
+      const after = await application.handle(new Request(`http://127.0.0.1/api/projects/${project.id}/tasks`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "After role change", originalPrompt: "Implement it" }),
+      }));
+      expect(beforeTask).toMatchObject({ developerProvider: "codex", reviewerProvider: "claude" });
+      expect(await after.json()).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
   test("runs the Fake CLI developer, review, finding, feedback, event replay loop", async () => {
     const rootPath = await repository();
     const { baseUrl, environment, server } = await fixtureServer();

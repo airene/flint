@@ -22,7 +22,8 @@ const initialSchema = `
     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL, original_prompt TEXT NOT NULL, working_directory TEXT NOT NULL,
     base_commit TEXT NOT NULL, latest_snapshot_hash TEXT,
-    status TEXT NOT NULL, developer_session_id TEXT, reviewer_session_id TEXT,
+    status TEXT NOT NULL, developer_provider TEXT NOT NULL DEFAULT 'codex', reviewer_provider TEXT NOT NULL DEFAULT 'claude',
+    developer_session_id TEXT, reviewer_session_id TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
   );
   CREATE INDEX IF NOT EXISTS tasks_project_id_index ON tasks(project_id);
@@ -69,10 +70,31 @@ const initialSchema = `
   CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 `;
 
+function migrateTaskProviderColumns(sqlite: Database): void {
+  const columns = new Set(
+    (sqlite.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!columns.has("developer_provider")) {
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN developer_provider TEXT NOT NULL DEFAULT 'codex'");
+  }
+  if (!columns.has("reviewer_provider")) {
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN reviewer_provider TEXT NOT NULL DEFAULT 'claude'");
+  }
+  sqlite.exec(`
+    UPDATE tasks
+    SET developer_provider = 'codex'
+    WHERE developer_provider IS NULL OR developer_provider = '';
+    UPDATE tasks
+    SET reviewer_provider = 'claude'
+    WHERE reviewer_provider IS NULL OR reviewer_provider = '';
+  `);
+}
+
 export function createDatabase(path = ":memory:"): AppDatabase {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path);
   sqlite.exec("PRAGMA foreign_keys = ON");
   sqlite.exec(initialSchema);
+  migrateTaskProviderColumns(sqlite);
   return { db: drizzle(sqlite, { schema }), sqlite, close: () => sqlite.close() };
 }

@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { AgentRun, AgentRunType, Task } from "@local-pair-review/shared";
 import { DatabasePorts } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
 import { ProjectService, ConfirmationRequiredError, DuplicateProjectError } from "../../apps/server/src/services/project.service";
+import { AppSettingsService } from "../../apps/server/src/services/app-settings.service";
 import {
   TaskService,
   DirtyWorkingTreeError,
@@ -138,6 +140,87 @@ describe("projects", () => {
 });
 
 describe("tasks", () => {
+  test("migrates legacy tasks with the original Codex developer and Claude reviewer defaults", () => {
+    const databasePath = join(temporaryDirectory(), "legacy.db");
+    const legacy = new Database(databasePath);
+    legacy.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE,
+        default_developer TEXT NOT NULL DEFAULT 'codex', default_reviewer TEXT NOT NULL DEFAULT 'claude',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_opened_at TEXT
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, original_prompt TEXT NOT NULL,
+        working_directory TEXT NOT NULL, base_commit TEXT NOT NULL, latest_snapshot_hash TEXT, status TEXT NOT NULL,
+        developer_session_id TEXT, reviewer_session_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO projects VALUES ('project_legacy', 'Legacy', '/tmp/legacy', 'codex', 'claude', '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z', NULL);
+      INSERT INTO tasks VALUES ('task_legacy', 'project_legacy', 'Legacy task', 'Prompt', '/tmp/legacy', 'abc123', NULL, 'draft', NULL, NULL, '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z', NULL);
+    `);
+    legacy.close();
+
+    const migrated = createDatabase(databasePath);
+    try {
+      expect(migrated.sqlite.query("select developer_provider, reviewer_provider from tasks where id = 'task_legacy'").get())
+        .toEqual({ developer_provider: "codex", reviewer_provider: "claude" });
+      createDatabase(databasePath).close();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  test("persists global role defaults and snapshots them when creating a task", async () => {
+    const root = repository();
+    const database = createDatabase(join(temporaryDirectory(), "settings.db"));
+    const projects = new ProjectService(database);
+    const settings = new AppSettingsService(database, {
+      codexExecutable: "codex",
+      claudeExecutable: "claude",
+      gitExecutable: "git",
+    });
+    settings.updateAgentRoles({ developerProvider: "claude", reviewerProvider: "codex" });
+    const taskService = new TaskService(database, undefined, settings);
+    const project = await projects.add(root);
+
+    const first = await taskService.create(project.id, { title: "First", originalPrompt: "Do work" });
+    expect(first).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
+    settings.updateAgentRoles({ developerProvider: "codex", reviewerProvider: "claude" });
+    expect(settings.loadAgentRoles()).toEqual({ developerProvider: "codex", reviewerProvider: "claude" });
+    expect(await taskService.get(first.id)).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
+
+    const second = await taskService.create(project.id, { title: "Second", originalPrompt: "Do more work" });
+    expect(second).toMatchObject({ developerProvider: "codex", reviewerProvider: "claude" });
+    database.close();
+  });
+
+  test("applies partial settings patches without overwriting omitted role defaults", async () => {
+    const database = createDatabase(join(temporaryDirectory(), "partial-settings.db"));
+    const settings = new AppSettingsService(database, {
+      codexExecutable: "codex",
+      claudeExecutable: "claude",
+      gitExecutable: "git",
+    });
+
+    const first = settings.updateSettings({
+      codexExecutable: "/opt/codex",
+      developerProvider: "claude",
+    });
+    expect(first).toEqual({
+      cliExecutables: { codexExecutable: "/opt/codex", claudeExecutable: "claude", gitExecutable: "git" },
+      roles: { developerProvider: "claude", reviewerProvider: "claude" },
+    });
+
+    await Promise.all([
+      Promise.resolve().then(() => settings.updateSettings({ developerProvider: "codex" })),
+      Promise.resolve().then(() => settings.updateSettings({ reviewerProvider: "codex" })),
+    ]);
+
+    expect(settings.loadAgentRoles()).toEqual({ developerProvider: "codex", reviewerProvider: "codex" });
+    expect(settings.loadCliExecutables()).toEqual({ codexExecutable: "/opt/codex", claudeExecutable: "claude", gitExecutable: "git" });
+    database.close();
+  });
+
   test("requires explicit acknowledgement of a dirty working tree", async () => {
     const root = repository();
     Bun.write(join(root, "README.md"), "changed\n");

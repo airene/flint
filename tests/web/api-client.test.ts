@@ -111,6 +111,37 @@ describe("typed API client", () => {
 });
 
 describe("API endpoints", () => {
+  test("accepts registry-shaped CLI status responses", async () => {
+    const availability = {
+      installed: true,
+      executablePath: "/opt/agent",
+      version: "1.0.0",
+      authentication: "authenticated" as const,
+      model: "test-model",
+      modelSource: "cli_default" as const,
+      reasoningEffort: null,
+      message: null,
+    };
+    const client = createApiClient({
+      fetcher: async () => Response.json({
+        providers: [
+          { id: "codex", label: "Codex CLI", executableSetting: "codexExecutable", roles: ["developer", "reviewer"], availability },
+          { id: "claude", label: "Claude Code", executableSetting: "claudeExecutable", roles: ["developer", "reviewer"], availability },
+        ],
+        git: availability,
+        roles: { developerProvider: "claude", reviewerProvider: "codex" },
+      }),
+    });
+
+    const response = await createApiEndpoints(client).getSettings();
+
+    expect(response.providers.map(({ id, label }) => ({ id, label }))).toEqual([
+      { id: "codex", label: "Codex CLI" },
+      { id: "claude", label: "Claude Code" },
+    ]);
+    expect(response.roles).toEqual({ developerProvider: "claude", reviewerProvider: "codex" });
+  });
+
   test("covers every HTTP route with encoded resource identifiers", async () => {
     const calls: Array<{ path: string; options?: ApiRequestOptions }> = [];
     const client: ApiClient = {
@@ -127,7 +158,14 @@ describe("API endpoints", () => {
 
     await api.health();
     await api.getCliStatus();
-    await api.recheckClis({ codexExecutable: "/opt/codex", claudeExecutable: null });
+    await api.recheckClis({
+      codexExecutable: "/opt/codex",
+      claudeExecutable: null,
+      developerProvider: "claude",
+      reviewerProvider: "codex",
+    });
+    await api.getSettings();
+    await api.updateSettings({ developerProvider: "claude", reviewerProvider: "codex" });
     await api.listProjects();
     await api.createProject({ rootPath: "/work/project" });
     await api.getProject(projectId);
@@ -165,6 +203,8 @@ describe("API endpoints", () => {
       "/api/health",
       "/api/system/clis",
       "/api/system/clis/recheck",
+      "/api/system/settings",
+      "/api/system/settings",
       "/api/projects",
       "/api/projects",
       "/api/projects/project%20%2F%20one",
@@ -192,9 +232,18 @@ describe("API endpoints", () => {
     ]);
     expect(calls[2]?.options).toMatchObject({
       method: "POST",
-      body: { codexExecutable: "/opt/codex", claudeExecutable: null },
+      body: {
+        codexExecutable: "/opt/codex",
+        claudeExecutable: null,
+        developerProvider: "claude",
+        reviewerProvider: "codex",
+      },
     });
-    expect(calls[7]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
-    expect(calls[22]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
+    expect(calls[4]?.options).toMatchObject({
+      method: "POST",
+      body: { developerProvider: "claude", reviewerProvider: "codex" },
+    });
+    expect(calls[9]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
+    expect(calls[24]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
   });
 });

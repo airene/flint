@@ -368,6 +368,6 @@ describe("FeedbackService", () => {
       sourceReviewRunId: "review-run-1",
       selectedFindingIds: [],
       finalText: "Continue",
-    })).rejects.toThrow("exact Codex session");
+    })).rejects.toThrow("exact developer session");
   });
 });

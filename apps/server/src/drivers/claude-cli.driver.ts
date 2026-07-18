@@ -20,8 +20,8 @@ export class ClaudeCliDriver extends StreamingCliDriver implements AgentDriver {
     return this.run(request, emit);
   }
 
-  protected arguments(sessionId?: string): string[] {
-    return buildClaudeArgs(this.executablePath, sessionId);
+  protected arguments(request: AgentStartRequest): string[] {
+    return buildClaudeArgs(this.executablePath, request.runType, request.sessionId);
   }
 
   protected parse(line: string, request: AgentStartRequest) {

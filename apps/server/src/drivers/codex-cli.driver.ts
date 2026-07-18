@@ -8,8 +8,11 @@ import type { StreamingDriverOptions } from "./streaming-cli.driver";
 export class CodexCliDriver extends StreamingCliDriver implements AgentDriver {
   readonly provider = "codex" as const;
 
-  constructor(options: StreamingDriverOptions) {
+  private readonly reviewSchemaPath?: string;
+
+  constructor(options: StreamingDriverOptions & { reviewSchemaPath?: string }) {
     super(options);
+    this.reviewSchemaPath = options.reviewSchemaPath;
   }
 
   checkAvailability(): Promise<AgentAvailability> {
@@ -20,12 +23,18 @@ export class CodexCliDriver extends StreamingCliDriver implements AgentDriver {
     return this.run(request, emit);
   }
 
-  protected arguments(sessionId?: string): string[] {
-    return buildCodexArgs(this.executablePath, sessionId);
+  protected arguments(request: AgentStartRequest): string[] {
+    return buildCodexArgs(this.executablePath, request.runType, request.sessionId, this.reviewSchemaPath);
   }
 
   protected parse(line: string, request: AgentStartRequest) {
-    return parseCodexEventLine(line, request);
+    const parsed = parseCodexEventLine(line, request);
+    if (request.runType !== "reviewer" || !parsed.finalMessage) return parsed;
+    try {
+      return { ...parsed, structuredOutput: JSON.parse(parsed.finalMessage) };
+    } catch {
+      return parsed;
+    }
   }
 
   protected providerSource(): "codex" {

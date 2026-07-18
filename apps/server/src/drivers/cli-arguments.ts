@@ -1,3 +1,5 @@
+import type { AgentRunType } from "@local-pair-review/shared";
+
 export const reviewJsonSchema = {
   type: "object",
   properties: {
@@ -49,13 +51,39 @@ const DENIED_REVIEW_TOOLS = [
   "Bash(git push *)",
 ] as const;
 
-export function buildCodexArgs(executable: string, sessionId?: string): string[] {
-  return sessionId
-    ? [executable, "exec", "resume", sessionId, "--json", "-c", 'sandbox_mode="workspace-write"', "-"]
-    : [executable, "exec", "--json", "--sandbox", "workspace-write", "-"];
+function isReviewer(runType: AgentRunType): boolean {
+  return runType === "reviewer";
 }
 
-export function buildClaudeArgs(executable: string, sessionId?: string): string[] {
+export function buildCodexArgs(
+  executable: string,
+  runType: AgentRunType,
+  sessionId?: string,
+  reviewSchemaPath?: string,
+): string[] {
+  const sandbox = isReviewer(runType) ? "read-only" : "workspace-write";
+  const schemaArguments = isReviewer(runType) && reviewSchemaPath
+    ? ["--output-schema", reviewSchemaPath]
+    : [];
+  return sessionId
+    ? [executable, "exec", "resume", sessionId, "--json", "-c", `sandbox_mode="${sandbox}"`, ...schemaArguments, "-"]
+    : [executable, "exec", "--json", "--sandbox", sandbox, ...schemaArguments, "-"];
+}
+
+export function buildClaudeArgs(executable: string, runType: AgentRunType, sessionId?: string): string[] {
+  if (!isReviewer(runType)) {
+    const developerArgs = [
+      executable,
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "acceptEdits",
+    ];
+    if (sessionId) developerArgs.push("--resume", sessionId);
+    return developerArgs;
+  }
   const args = [
     executable,
     "-p",

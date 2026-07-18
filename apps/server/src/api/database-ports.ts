@@ -6,7 +6,6 @@ import type {
   AgentRunType,
   FeedbackDelivery,
   FindingSelectionMode,
-  Provider,
   ReviewFinding,
   Task,
   TaskStatus,
@@ -108,11 +107,11 @@ export class DatabasePorts implements
       .where(and(eq(agentRuns.id, runId), eq(agentRuns.status, "queued"))).run();
   }
 
-  async recordSession(runId: string, taskId: string, provider: Provider, sessionId: string): Promise<void> {
+  async recordSession(runId: string, taskId: string, runType: AgentRunType, sessionId: string): Promise<void> {
     this.database.db.transaction((transaction) => {
       transaction.update(agentRuns).set({ externalSessionId: sessionId }).where(eq(agentRuns.id, runId)).run();
       transaction.update(tasks).set({
-        ...(provider === "codex" ? { developerSessionId: sessionId } : { reviewerSessionId: sessionId }),
+        ...(runType === "reviewer" ? { reviewerSessionId: sessionId } : { developerSessionId: sessionId }),
         updatedAt: this.now(),
       }).where(eq(tasks.id, taskId)).run();
     }, { behavior: "immediate" });

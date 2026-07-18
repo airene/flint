@@ -89,6 +89,8 @@ function task(): Task {
     workingDirectory: "/tmp/project",
     baseCommit: "abc123",
     latestSnapshotHash: null,
+    developerProvider: "codex",
+    reviewerProvider: "claude",
     status: "draft",
     developerSessionId: null,
     reviewerSessionId: null,
@@ -117,10 +119,10 @@ class MemoryRunPersistence implements AgentRunPersistencePort {
     this.order.push("run:running");
   }
 
-  async recordSession(runId: string, taskId: string, provider: "codex" | "claude", sessionId: string): Promise<void> {
+  async recordSession(runId: string, taskId: string, runType: AgentRun["runType"], sessionId: string): Promise<void> {
     const run = this.runs.get(runId)!;
     this.runs.set(runId, { ...run, externalSessionId: sessionId });
-    this.order.push(`session:${provider}:${taskId}:${sessionId}`);
+    this.order.push(`session:${runType}:${taskId}:${sessionId}`);
   }
 
   async finish(input: FinishRunInput): Promise<AgentRun> {
@@ -209,7 +211,7 @@ describe("AgentRunService", () => {
 
     expect(started.run).toMatchObject({ id: "run-created-1", status: "queued", provider: "codex", reviewParseStatus: null });
     expect(completed).toMatchObject({ status: "completed", externalSessionId: "codex-session-exact", finalMessage: "Done" });
-    expect(order.indexOf("session:codex:task-1:codex-session-exact"))
+    expect(order.indexOf("session:developer_initial:task-1:codex-session-exact"))
       .toBeLessThan(order.indexOf("event:persist:session_started"));
     expect(persistence.finishes[0]?.patch).toMatchObject({ status: "completed", exitCode: 0 });
     expect(order).toContain("task:succeeded:developer_initial");
@@ -290,25 +292,46 @@ describe("AgentRunService", () => {
     expect(terminal.errorMessage).not.toContain("bearer-secret");
   });
 
-  test("creates reviewer runs with pending parse status and Claude provider", async () => {
+  test("selects the task's reviewer provider and persists its session by run type", async () => {
     const order: string[] = [];
-    const { agentRuns, taskState } = service(order, new AgentProcessError("failed", "unused"), {
-      sessionId: "claude-session-exact",
+    const { agentRuns, taskState } = service(order, {
+      sessionId: "codex-reviewer-session",
       finalMessage: "Review complete",
       structuredOutput: { summary: "Pass", verdict: "pass", findings: [] },
-    });
+    }, new AgentProcessError("failed", "unused"));
 
     const started = await agentRuns.start({
-      task: { ...task(), status: "ready_for_review" },
+      task: { ...task(), status: "ready_for_review", reviewerProvider: "codex" },
       runType: "reviewer",
       prompt: "Review",
       snapshotHash: "snapshot-review-1",
     });
     const completed = await started.completion;
 
-    expect(started.run).toMatchObject({ provider: "claude", reviewParseStatus: "pending" });
+    expect(started.run).toMatchObject({ provider: "codex", reviewParseStatus: "pending" });
     expect(completed.structuredOutput).toEqual({ summary: "Pass", verdict: "pass", findings: [] });
     expect(order).toContain("task:succeeded:reviewer");
+    expect(order).toContain("session:reviewer:task-1:codex-reviewer-session");
     expect(taskState.queuedSnapshots).toEqual(["snapshot-review-1"]);
+  });
+
+  test("selects the task's developer provider and persists its session by run type", async () => {
+    const order: string[] = [];
+    const { agentRuns } = service(order, new AgentProcessError("failed", "unused"), {
+      sessionId: "claude-developer-session",
+      finalMessage: "Done",
+      structuredOutput: null,
+    });
+
+    const started = await agentRuns.start({
+      task: { ...task(), developerProvider: "claude" },
+      runType: "developer_initial",
+      prompt: "Build",
+    });
+    const completed = await started.completion;
+
+    expect(started.run.provider).toBe("claude");
+    expect(completed.externalSessionId).toBe("claude-developer-session");
+    expect(order).toContain("session:developer_initial:task-1:claude-developer-session");
   });
 });

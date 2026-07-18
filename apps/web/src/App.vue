@@ -8,7 +8,7 @@ const route = useRoute();
 const projects = useProjectsStore();
 const system = useSystemStore();
 const currentProjectId = computed(() => String(route.params.projectId ?? ""));
-const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.codexReady || !system.claudeReady || !system.gitReady)));
+const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.allProvidersReady || !system.gitReady)));
 
 onMounted(() => {
   void projects.loadProjects().catch(() => undefined);

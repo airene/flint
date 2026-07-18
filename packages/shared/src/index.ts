@@ -3,6 +3,9 @@ import { z } from "zod";
 export const providerSchema = z.enum(["codex", "claude"]);
 export type Provider = z.infer<typeof providerSchema>;
 
+export const agentRoleSchema = z.enum(["developer", "reviewer"]);
+export type AgentRole = z.infer<typeof agentRoleSchema>;
+
 export const taskStatusSchema = z.enum([
   "draft",
   "developing",
@@ -41,8 +44,8 @@ export const projectSchema = z.object({
   id: z.string(),
   name: z.string(),
   rootPath: z.string(),
-  defaultDeveloper: z.literal("codex"),
-  defaultReviewer: z.literal("claude"),
+  defaultDeveloper: providerSchema,
+  defaultReviewer: providerSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
   lastOpenedAt: z.string().nullable(),
@@ -58,6 +61,8 @@ export const taskSchema = z.object({
   baseCommit: z.string(),
   latestSnapshotHash: z.string().nullable(),
   status: taskStatusSchema,
+  developerProvider: providerSchema,
+  reviewerProvider: providerSchema,
   developerSessionId: z.string().nullable(),
   reviewerSessionId: z.string().nullable(),
   createdAt: z.string(),
@@ -377,6 +382,41 @@ export const agentAvailabilitySchema = z.object({
 export type CliModelSource = NonNullable<z.infer<typeof agentAvailabilitySchema>["modelSource"]>;
 export type AgentAvailability = z.infer<typeof agentAvailabilitySchema>;
 
+export const cliExecutableSettingSchema = z.enum(["codexExecutable", "claudeExecutable"]);
+export type CliExecutableSetting = z.infer<typeof cliExecutableSettingSchema>;
+
+export const providerDescriptorSchema = z.object({
+  id: providerSchema,
+  label: z.string().min(1),
+  executableSetting: cliExecutableSettingSchema,
+  roles: z.array(agentRoleSchema).min(1),
+  availability: agentAvailabilitySchema,
+}).strict();
+export type ProviderDescriptor = z.infer<typeof providerDescriptorSchema>;
+
+export const agentRoleSettingsSchema = z.object({
+  developerProvider: providerSchema,
+  reviewerProvider: providerSchema,
+}).strict();
+export type AgentRoleSettings = z.infer<typeof agentRoleSettingsSchema>;
+
+const cliExecutableOverrideSchema = z.string().min(1).nullable().optional();
+export const settingsUpdateRequestSchema = z.object({
+  codexExecutable: cliExecutableOverrideSchema,
+  claudeExecutable: cliExecutableOverrideSchema,
+  gitExecutable: cliExecutableOverrideSchema,
+  developerProvider: providerSchema.optional(),
+  reviewerProvider: providerSchema.optional(),
+}).strict();
+export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>;
+
+export const settingsResponseSchema = z.object({
+  providers: z.array(providerDescriptorSchema),
+  git: agentAvailabilitySchema,
+  roles: agentRoleSettingsSchema,
+}).strict();
+export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
+
 export const cliStatusRequestSchema = z.object({}).strict();
 export type CliStatusRequest = z.infer<typeof cliStatusRequestSchema>;
 export const cliStatusResponseSchema = z.object({
@@ -385,12 +425,7 @@ export const cliStatusResponseSchema = z.object({
   git: agentAvailabilitySchema,
 }).strict();
 export type CliStatusResponse = z.infer<typeof cliStatusResponseSchema>;
-const cliExecutableOverrideSchema = z.string().min(1).nullable().optional();
-export const cliRecheckRequestSchema = z.object({
-  codexExecutable: cliExecutableOverrideSchema,
-  claudeExecutable: cliExecutableOverrideSchema,
-  gitExecutable: cliExecutableOverrideSchema,
-}).strict();
+export const cliRecheckRequestSchema = settingsUpdateRequestSchema;
 export type CliRecheckRequest = z.infer<typeof cliRecheckRequestSchema>;
 export const cliRecheckResponseSchema = cliStatusResponseSchema;
 export type CliRecheckResponse = z.infer<typeof cliRecheckResponseSchema>;
@@ -416,6 +451,7 @@ export interface AgentStartRequest {
   projectId: string;
   workingDirectory: string;
   prompt: string;
+  runType: AgentRunType;
   sessionId?: string;
   signal?: AbortSignal;
 }

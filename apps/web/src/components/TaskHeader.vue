@@ -2,19 +2,29 @@
 import { computed, ref, watch } from "vue";
 import type { AgentRun, Task } from "@local-pair-review/shared";
 
-const props = defineProps<{ task: Task; runs: AgentRun[]; busy?: boolean; codexReady?: boolean; claudeReady?: boolean; diffFileCount?: number }>();
+const props = defineProps<{
+  task: Task;
+  runs: AgentRun[];
+  busy?: boolean;
+  developerReady?: boolean;
+  reviewerReady?: boolean;
+  developerLabel: string;
+  reviewerLabel: string;
+  diffFileCount?: number;
+}>();
 const emit = defineEmits<{ develop: [prompt?: string]; review: []; cancel: [runId: string]; complete: []; "open-diff": [] }>();
 const continuationPrompt = ref("");
 const continuationPending = ref(false);
 const activeRun = computed(() => props.runs.find((run) => run.status === "queued" || run.status === "running") ?? null);
+const activeRunLabel = computed(() => activeRun.value?.runType === "reviewer" ? props.reviewerLabel : props.developerLabel);
 const statusClass = computed(() => props.task.status === "ready_for_review" || props.task.status === "completed" ? "ready"
   : props.task.status === "developing" || props.task.status === "fixing" ? "running"
     : props.task.status === "reviewing" ? "reviewing"
       : props.task.status === "waiting_for_human" ? "waiting" : "");
 
-function continueCodex(): void {
+function continueDeveloper(): void {
   const prompt = continuationPrompt.value.trim();
-  if (!prompt || props.task.status !== "ready_for_review" || props.busy || !props.task.developerSessionId || !props.codexReady) return;
+  if (!prompt || props.task.status !== "ready_for_review" || props.busy || !props.task.developerSessionId || !props.developerReady) return;
   continuationPending.value = true;
   emit("develop", prompt);
 }
@@ -43,14 +53,14 @@ watch(() => props.busy, (busy, wasBusy) => {
     </div>
     <div class="task-action-stack">
       <div v-if="task.status === 'ready_for_review'" class="continuation-composer">
-        <input v-model="continuationPrompt" class="input" aria-label="Codex continuation message" placeholder="Tell Codex what to do next…" @keyup.enter.prevent="continueCodex">
-        <button class="button" :disabled="busy || !task.developerSessionId || !codexReady || !continuationPrompt.trim()" @click="continueCodex">Continue Codex</button>
+        <input v-model="continuationPrompt" class="input" :aria-label="`${developerLabel} continuation message`" :placeholder="`Tell ${developerLabel} what to do next…`" @keyup.enter.prevent="continueDeveloper">
+        <button class="button" :disabled="busy || !task.developerSessionId || !developerReady || !continuationPrompt.trim()" @click="continueDeveloper">Continue {{ developerLabel }}</button>
       </div>
       <div class="button-row task-actions">
-      <button v-if="task.status === 'draft'" class="button primary" :disabled="busy || !codexReady" @click="emit('develop')">Start Codex development</button>
-      <button v-if="task.status === 'ready_for_review' || task.status === 'waiting_for_human'" class="button primary" :disabled="busy || !claudeReady" @click="emit('review')">Start Claude review</button>
+      <button v-if="task.status === 'draft'" class="button primary" :disabled="busy || !developerReady" @click="emit('develop')">Start {{ developerLabel }} development</button>
+      <button v-if="task.status === 'ready_for_review' || task.status === 'waiting_for_human'" class="button primary" :disabled="busy || !reviewerReady" @click="emit('review')">Start {{ reviewerLabel }} review</button>
       <button v-if="task.status === 'waiting_for_human'" class="button" :disabled="busy" @click="emit('complete')">Mark complete</button>
-      <button v-if="activeRun" class="button danger" :disabled="busy" @click="emit('cancel', activeRun.id)">Cancel {{ activeRun.provider }}</button>
+      <button v-if="activeRun" class="button danger" :disabled="busy" @click="emit('cancel', activeRun.id)">Cancel {{ activeRunLabel }}</button>
       </div>
     </div>
   </header>

@@ -111,7 +111,7 @@ export class FeedbackService {
 
   async send(input: SendFeedbackInput): Promise<StartedFeedback> {
     if (!input.task.developerSessionId) {
-      throw new Error("Feedback requires the exact Codex session ID persisted on the task.");
+      throw new Error("Feedback requires the exact developer session ID persisted on the task.");
     }
 
     const candidate: FeedbackDelivery = {

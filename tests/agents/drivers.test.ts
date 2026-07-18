@@ -30,6 +30,7 @@ function request(workingDirectory: string, overrides: Partial<AgentStartRequest>
     projectId: "project-fake-1",
     workingDirectory,
     prompt: "Perform the fake task without contacting a model.",
+    runType: "developer_initial",
     ...overrides,
   };
 }
@@ -262,6 +263,22 @@ describe("CLI availability", () => {
 });
 
 describe("Codex driver", () => {
+  test("parses a Codex review's final JSON agent message as structured output", async () => {
+    const directory = await workspace();
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal"),
+      reviewSchemaPath: "/tmp/fake-review-schema.json",
+    });
+
+    const result = await driver.start(request(directory, { runType: "reviewer" }), async () => {});
+
+    expect(result).toMatchObject({
+      finalMessage: JSON.stringify({ summary: "Codex review", verdict: "pass", findings: [] }),
+      structuredOutput: { summary: "Codex review", verdict: "pass", findings: [] },
+    });
+  });
+
   test("the Fake Codex normal scenario rejects resume without workspace-write config", async () => {
     const process = Bun.spawn([
       codexFixture,
@@ -291,6 +308,21 @@ describe("Codex driver", () => {
     await driver.start(request(directory), async () => {});
 
     expect(await readFile(join(directory, "src", "input.ts"), "utf8")).toContain("E2E Fake Codex");
+  });
+
+  test("the E2E Fake Codex reviewer leaves the working tree unchanged", async () => {
+    const directory = await workspace();
+    await mkdir(join(directory, "src"));
+    await Bun.write(join(directory, "src/input.ts"), "export const input = 'before';\n");
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("e2e"),
+      reviewSchemaPath: "/tmp/fake-review-schema.json",
+    });
+
+    await driver.start(request(directory, { runType: "reviewer" }), async () => {});
+
+    expect(await readFile(join(directory, "src/input.ts"), "utf8")).toBe("export const input = 'before';\n");
   });
 
   test("the E2E Fake Codex scenario rejects feedback that is not an exact-session resume", async () => {
@@ -501,7 +533,7 @@ describe("Claude driver", () => {
       environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: log }),
     });
 
-    const result = await driver.start(request(directory), async (event) => { events.push(event); });
+    const result = await driver.start(request(directory, { runType: "reviewer" }), async (event) => { events.push(event); });
     const invocation = JSON.parse(await readFile(log, "utf8"));
 
     expect(result.sessionId).toBe("claude-session-fake-456");
@@ -518,6 +550,22 @@ describe("Claude driver", () => {
     expect(invocation.args).toContain("--disallowedTools");
     expect(invocation.cwd).toBe(await realpath(directory));
     expect(invocation.prompt).toBe("Perform the fake task without contacting a model.");
+  });
+
+  test("uses acceptEdits without reviewer schema or tool restrictions for development", async () => {
+    const directory = await workspace();
+    const log = join(directory, "invocation.json");
+    const driver = new ClaudeCliDriver({
+      executablePath: claudeFixture,
+      environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: log }),
+    });
+
+    await driver.start(request(directory, { runType: "developer_initial" }), async () => {});
+    const invocation = JSON.parse(await readFile(log, "utf8"));
+
+    expect(invocation.args).toEqual([
+      "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+    ]);
   });
 
   test("returns schema-invalid structured output for service-level validation", async () => {

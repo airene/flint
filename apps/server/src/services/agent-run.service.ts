@@ -29,8 +29,8 @@ export interface FinishRunInput {
 
 export interface AgentRunPersistencePort {
   markRunning(runId: string, processId: number): Promise<void>;
-  /** Must atomically update AgentRun.externalSessionId and the provider session on Task. */
-  recordSession(runId: string, taskId: string, provider: Provider, sessionId: string): Promise<void>;
+  /** Must atomically update AgentRun.externalSessionId and the role-owned Task session. */
+  recordSession(runId: string, taskId: string, runType: AgentRunType, sessionId: string): Promise<void>;
 }
 
 export interface TaskRunStatePort {
@@ -70,8 +70,8 @@ interface AgentRunServiceOptions {
   now?: () => string;
 }
 
-function providerFor(runType: AgentRunType): Provider {
-  return runType === "reviewer" ? "claude" : "codex";
+function providerFor(task: Task, runType: AgentRunType): Provider {
+  return runType === "reviewer" ? task.reviewerProvider : task.developerProvider;
 }
 
 function sessionFromEvent(event: AgentEvent): string | undefined {
@@ -105,7 +105,7 @@ export class AgentRunService {
   }
 
   async start(input: StartAgentRunInput): Promise<StartedAgentRun> {
-    const provider = providerFor(input.runType);
+    const provider = providerFor(input.task, input.runType);
     const run: AgentRun = {
       id: this.createId(),
       taskId: input.task.id,
@@ -152,6 +152,7 @@ export class AgentRunService {
         projectId: run.projectId,
         workingDirectory: input.task.workingDirectory,
         prompt: input.prompt,
+        runType: run.runType,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       }, async (event) => {
@@ -162,14 +163,14 @@ export class AgentRunService {
         const sessionId = sessionFromEvent(event);
         if (sessionId && sessionId !== capturedSession) {
           capturedSession = sessionId;
-          await this.persistence.recordSession(run.id, run.taskId, run.provider, sessionId);
+          await this.persistence.recordSession(run.id, run.taskId, run.runType, sessionId);
         }
         await this.events.publish(event);
       });
 
       if (result.sessionId && result.sessionId !== capturedSession) {
         capturedSession = result.sessionId;
-        await this.persistence.recordSession(run.id, run.taskId, run.provider, result.sessionId);
+        await this.persistence.recordSession(run.id, run.taskId, run.runType, result.sessionId);
       }
       const terminal = await this.taskState.succeed({
         runId: run.id,

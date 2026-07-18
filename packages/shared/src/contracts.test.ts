@@ -138,6 +138,64 @@ test("CLI status and recheck responses use strict availability records", () => {
   expectStrict("cliRecheckResponseSchema", response);
 });
 
+test("role-aware settings contracts accept dynamic provider descriptors and reject unknown fields", () => {
+  const availability = {
+    installed: true,
+    executablePath: "/usr/local/bin/codex",
+    version: "1.0.0",
+    authentication: "authenticated",
+    model: "gpt-5.6-sol",
+    modelSource: "user_config",
+    reasoningEffort: "high",
+    message: null,
+  };
+  const descriptor = {
+    id: "codex",
+    label: "Codex",
+    executableSetting: "codexExecutable",
+    roles: ["developer", "reviewer"],
+    availability,
+  };
+
+  expectStrict("providerDescriptorSchema", descriptor);
+  expectStrict("agentRoleSettingsSchema", { developerProvider: "claude", reviewerProvider: "codex" });
+  expectStrict("settingsResponseSchema", {
+    providers: [{ ...descriptor }, {
+      ...descriptor,
+      id: "claude",
+      label: "Claude Code",
+      executableSetting: "claudeExecutable",
+    }],
+    git: availability,
+    roles: { developerProvider: "claude", reviewerProvider: "codex" },
+  });
+  expectStrict("settingsUpdateRequestSchema", {
+    codexExecutable: null,
+    developerProvider: "claude",
+    reviewerProvider: "codex",
+  });
+});
+
+test("tasks expose immutable developer and reviewer provider snapshots", () => {
+  expectStrict("taskSchema", {
+    id: "task_1",
+    projectId: "project_1",
+    title: "Role snapshot",
+    originalPrompt: "Implement it",
+    workingDirectory: "/tmp/project",
+    baseCommit: "abc123",
+    latestSnapshotHash: null,
+    status: "draft",
+    developerProvider: "claude",
+    reviewerProvider: "codex",
+    developerSessionId: null,
+    reviewerSessionId: null,
+    createdAt: "2026-07-18T00:00:00.000Z",
+    updatedAt: "2026-07-18T00:00:00.000Z",
+    completedAt: null,
+  });
+});
+
 test("resource response DTO schemas are exported for the planned routes", () => {
   const schemaNames = [
     "projectResponseSchema",

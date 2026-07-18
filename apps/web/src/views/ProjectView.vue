@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ErrorBanner from "../components/ErrorBanner.vue";
 import { useProjectsStore } from "../stores/projects";
+import { useSystemStore } from "../stores/system";
 
 const route = useRoute();
 const router = useRouter();
 const store = useProjectsStore();
+const system = useSystemStore();
 const title = ref("");
 const prompt = ref("");
+const developerLabel = computed(() => system.providerLabel(system.cliStatus?.roles.developerProvider));
+const reviewerLabel = computed(() => system.providerLabel(system.cliStatus?.roles.reviewerProvider));
 
 async function load(): Promise<void> {
   try { await store.selectProject(String(route.params.projectId)); } catch { /* rendered */ }
@@ -54,7 +58,7 @@ function cancelDirtyConfirmation(): void {
       <header class="panel-header"><h2 class="panel-title">New task</h2><span class="badge">base = current HEAD</span></header>
       <div class="panel-body task-form">
         <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
-        <div class="field"><label for="task-prompt">Codex prompt</label><textarea id="task-prompt" v-model="prompt" class="textarea" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
+        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><textarea id="task-prompt" v-model="prompt" class="textarea" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
         <div class="create-row"><p class="help">If the working tree is dirty, Flint asks for explicit confirmation before creating the task.</p><button class="button primary" :disabled="Boolean(store.pendingDirtyTask) || !title.trim() || !prompt.trim()" @click="createTask(false)">Create task</button></div>
       </div>
     </section>
@@ -71,7 +75,7 @@ function cancelDirtyConfirmation(): void {
           <span :class="['task-state', task.status]" /><div><strong>{{ task.title }}</strong><small>{{ task.originalPrompt }}</small></div><span :class="['badge', task.status === 'ready_for_review' || task.status === 'completed' ? 'ready' : task.status === 'waiting_for_human' ? 'waiting' : task.status === 'developing' || task.status === 'fixing' ? 'running' : '']">{{ task.status.replaceAll('_',' ') }}</span><span class="card-arrow">→</span>
         </RouterLink>
       </div>
-      <div v-else class="panel empty-state"><strong>No tasks yet</strong><span>Create a focused task to start the Codex → Claude review loop.</span></div>
+      <div v-else class="panel empty-state"><strong>No tasks yet</strong><span>Create a focused task to start the {{ developerLabel }} → {{ reviewerLabel }} review loop.</span></div>
     </section>
   </div>
 </template>

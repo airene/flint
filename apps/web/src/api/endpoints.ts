@@ -22,6 +22,7 @@ import {
   runListResponseSchema,
   runResponseSchema,
   selectFindingsResponseSchema,
+  settingsResponseSchema,
   taskListResponseSchema,
   taskResponseSchema,
   type CancelRunResponse,
@@ -55,6 +56,7 @@ import {
   type RunResponse,
   type SelectFindingsRequest,
   type SelectFindingsResponse,
+  type SettingsResponse,
   type TaskListResponse,
   type TaskResponse,
   type UpdateFindingRequest,
@@ -71,6 +73,8 @@ export interface ApiEndpoints {
   health(): Promise<HealthResponse>;
   getCliStatus(): Promise<CliStatusResponse>;
   recheckClis(input?: CliRecheckRequest): Promise<CliRecheckResponse>;
+  getSettings(): Promise<SettingsResponse>;
+  updateSettings(input?: CliRecheckRequest): Promise<SettingsResponse>;
   listProjects(): Promise<ProjectListResponse>;
   createProject(input: CreateProjectRequest): Promise<CreateProjectResponse>;
   getProject(projectId: string): Promise<ProjectResponse>;
@@ -102,6 +106,11 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
     health: () => client.request("/api/health", healthResponseSchema),
     getCliStatus: () => client.request("/api/system/clis", cliStatusResponseSchema),
     recheckClis: (input = {}) => client.request("/api/system/clis/recheck", cliRecheckResponseSchema, {
+      method: "POST",
+      body: input,
+    }),
+    getSettings: () => client.request("/api/system/settings", settingsResponseSchema),
+    updateSettings: (input = {}) => client.request("/api/system/settings", settingsResponseSchema, {
       method: "POST",
       body: input,
     }),

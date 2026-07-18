@@ -34,8 +34,8 @@ describe("CLI child environment", () => {
 });
 
 describe("CLI argument arrays", () => {
-  test("builds Codex initial and exact-session resume invocations", () => {
-    expect(buildCodexArgs("/opt/codex")).toEqual([
+  test("builds Codex developer initial and exact-session resume invocations", () => {
+    expect(buildCodexArgs("/opt/codex", "developer_initial")).toEqual([
       "/opt/codex",
       "exec",
       "--json",
@@ -44,7 +44,7 @@ describe("CLI argument arrays", () => {
       "-",
     ]);
 
-    expect(buildCodexArgs("/opt/codex", "thread-exact-123")).toEqual([
+    expect(buildCodexArgs("/opt/codex", "developer_feedback", "thread-exact-123")).toEqual([
       "/opt/codex",
       "exec",
       "resume",
@@ -56,8 +56,35 @@ describe("CLI argument arrays", () => {
     ]);
   });
 
-  test("builds Claude stream-json invocation with read-only permissions and optional resume", () => {
-    const args = buildClaudeArgs("/opt/claude", "review-session-456");
+  test("builds Codex reviewer invocation with read-only schema output", () => {
+    expect(buildCodexArgs("/opt/codex", "reviewer", undefined, "/tmp/review-schema.json")).toEqual([
+      "/opt/codex",
+      "exec",
+      "--json",
+      "--sandbox",
+      "read-only",
+      "--output-schema",
+      "/tmp/review-schema.json",
+      "-",
+    ]);
+  });
+
+  test("builds Claude developer invocation with user permissions and exact-session resume", () => {
+    expect(buildClaudeArgs("/opt/claude", "developer_feedback", "developer-session-456")).toEqual([
+      "/opt/claude",
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "acceptEdits",
+      "--resume",
+      "developer-session-456",
+    ]);
+  });
+
+  test("builds Claude reviewer invocation with read-only permissions and optional resume", () => {
+    const args = buildClaudeArgs("/opt/claude", "reviewer", "review-session-456");
 
     expect(args.slice(0, 8)).toEqual([
       "/opt/claude",

@@ -17,8 +17,10 @@ import {
   type AgentAvailability,
   type AgentEvent,
   type AgentRun,
+  type Provider,
   type CliStatusResponse,
   type CliRecheckRequest,
+  type SettingsResponse,
   type Project,
   type ReviewFinding,
   type Task,
@@ -28,6 +30,8 @@ import { createDatabase, type AppDatabase } from "../db/database";
 import { ClaudeCliDriver } from "../drivers/claude-cli.driver";
 import { checkGitAvailability } from "../drivers/cli-availability";
 import { CodexCliDriver } from "../drivers/codex-cli.driver";
+import { createTemporaryCodexReviewSchema } from "../drivers/codex-review-schema";
+import { createProviderRegistry } from "../drivers/provider-registry";
 import { AgentRunService } from "../services/agent-run.service";
 import { AppSettingsService } from "../services/app-settings.service";
 import { EventService } from "../services/event.service";
@@ -91,20 +95,23 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   let gitExecutable = cliExecutables.gitExecutable;
   const git = new GitService(gitExecutable);
   const projects = new ProjectService(database, gitExecutable);
-  const tasks = new TaskService(database, git);
+  const tasks = new TaskService(database, git, settings);
   const ports = new DatabasePorts(database, git);
   const hub = new EventHub();
   const events = new EventService(ports, hub);
+  const codexReviewSchema = await createTemporaryCodexReviewSchema();
   const codex = new CodexCliDriver({
     executablePath: cliExecutables.codexExecutable,
     environment,
     availabilityWorkingDirectory: process.cwd(),
+    reviewSchemaPath: codexReviewSchema.path,
   });
   const claude = new ClaudeCliDriver({
     executablePath: cliExecutables.claudeExecutable,
     environment,
     availabilityWorkingDirectory: process.cwd(),
   });
+  const providerRegistry = createProviderRegistry({ codex, claude });
   const agentRuns = new AgentRunService({
     drivers: { codex, claude },
     persistence: ports,
@@ -145,7 +152,42 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     return cliStatus;
   }
 
-  async function requireCli(provider: "codex" | "claude" | "git"): Promise<AgentAvailability> {
+  async function settingsResponse(recheck = false): Promise<SettingsResponse> {
+    const status = await clis(recheck);
+    return {
+      providers: providerRegistry.descriptors({ codex: status.codex, claude: status.claude }),
+      git: status.git,
+      roles: settings.loadAgentRoles(),
+    };
+  }
+
+  function updateSettings(input: CliRecheckRequest): void {
+    for (const [role, provider] of [
+      ["developer", input.developerProvider],
+      ["reviewer", input.reviewerProvider],
+    ] as const) {
+      if (!provider) continue;
+      if (!providerRegistry.get(provider).roles.includes(role)) {
+        throw new SyntaxError(`${provider} does not support the ${role} role.`);
+      }
+    }
+
+    const executableChanged = input.codexExecutable !== undefined
+      || input.claudeExecutable !== undefined
+      || input.gitExecutable !== undefined;
+    const updated = settings.updateSettings(input);
+    if (executableChanged) {
+      cliExecutables = updated.cliExecutables;
+      gitExecutable = cliExecutables.gitExecutable;
+      codex.setExecutablePath(cliExecutables.codexExecutable);
+      claude.setExecutablePath(cliExecutables.claudeExecutable);
+      git.setExecutablePath(gitExecutable);
+      projects.setGitExecutablePath(gitExecutable);
+      cliStatus = null;
+    }
+  }
+
+  async function requireCli(provider: Provider | "git"): Promise<AgentAvailability> {
     const availability = (await clis())[provider];
     if (!availability.installed || availability.authentication === "unauthenticated") {
       throw new CliUnavailableError(provider, availability.message ?? `${provider} is unavailable or not authenticated.`);
@@ -204,6 +246,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     for (const run of recovered) await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
   } catch (error) {
     database.close();
+    await codexReviewSchema.dispose();
     throw error;
   }
 
@@ -215,17 +258,17 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (method === "GET" && path === "/api/health") return json({ status: "ok" });
       if (method === "GET" && path === "/api/system/clis") return json(await clis());
       if (method === "POST" && path === "/api/system/clis/recheck") {
+        ensureAccepting();
         const input: CliRecheckRequest = await body(request, cliRecheckRequestSchema);
-        if (Object.keys(input).length > 0) {
-          cliExecutables = settings.updateCliExecutables(input);
-          gitExecutable = cliExecutables.gitExecutable;
-          codex.setExecutablePath(cliExecutables.codexExecutable);
-          claude.setExecutablePath(cliExecutables.claudeExecutable);
-          git.setExecutablePath(gitExecutable);
-          projects.setGitExecutablePath(gitExecutable);
-          cliStatus = null;
-        }
+        updateSettings(input);
         return json(await clis(true));
+      }
+      if (method === "GET" && path === "/api/system/settings") return json(await settingsResponse());
+      if (method === "POST" && path === "/api/system/settings") {
+        ensureAccepting();
+        const input: CliRecheckRequest = await body(request, cliRecheckRequestSchema);
+        updateSettings(input);
+        return json(await settingsResponse(true));
       }
 
       if (method === "GET" && path === "/api/projects") return json(await projects.list());
@@ -288,11 +331,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/develop$/);
       if (parameters && method === "POST") {
         ensureAccepting();
-        await requireCli("codex");
         const input = await body(request, developTaskRequestSchema);
         const task = await requireTask(parameters[0]!);
+        await requireCli(task.developerProvider);
         const initial = task.status === "draft";
-        if (!initial && !task.developerSessionId) throw new RunConflictError("Continuing development requires an exact Codex session ID.");
+        if (!initial && !task.developerSessionId) throw new RunConflictError("Continuing development requires an exact developer session ID.");
         const started = await agentRuns.start({
           task,
           runType: initial ? "developer_initial" : "developer_feedback",
@@ -306,9 +349,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/review$/);
       if (parameters && method === "POST") {
         ensureAccepting();
-        await requireCli("claude");
         await body(request, reviewTaskRequestSchema);
         const task = await requireTask(parameters[0]!);
+        await requireCli(task.reviewerProvider);
         const started = await reviews.start(task);
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
@@ -317,9 +360,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/feedback$/);
       if (parameters && method === "POST") {
         ensureAccepting();
-        await requireCli("codex");
         const input = await body(request, feedbackTaskRequestSchema);
         const task = await requireTask(parameters[0]!);
+        await requireCli(task.developerProvider);
         const { sourceRun } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
         const sourceSnapshotHash = await ports.reviewSnapshotHash(sourceRun.id);
         if (!sourceSnapshotHash) {
@@ -417,6 +460,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     await clis(true);
   } catch (error) {
     database.close();
+    await codexReviewSchema.dispose();
     throw error;
   }
 
@@ -460,7 +504,10 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
           try { await events.publish(eventFor(run, "run_interrupted", new Date().toISOString())); } catch { /* closing continues */ }
         }
       } finally {
-        try { hub.closeAll(); } finally { database.close(); }
+        try { hub.closeAll(); } finally {
+          database.close();
+          await codexReviewSchema.dispose();
+        }
       }
     },
   };

@@ -55,7 +55,7 @@ export abstract class StreamingCliDriver {
     this.executablePath = executablePath;
   }
 
-  protected abstract arguments(sessionId?: string): string[];
+  protected abstract arguments(request: AgentStartRequest): string[];
   protected abstract parse(line: string, request: AgentStartRequest): ParsedAgentLine;
 
   async run(
@@ -65,7 +65,7 @@ export abstract class StreamingCliDriver {
     if (request.signal?.aborted) {
       throw new AgentProcessError("cancelled", "Agent run was cancelled before process start.");
     }
-    const args = this.arguments(request.sessionId);
+    const args = this.arguments(request);
     let process: Bun.PipedSubprocess;
     try {
       process = Bun.spawn(args, {

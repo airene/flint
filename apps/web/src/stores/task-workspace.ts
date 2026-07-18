@@ -13,6 +13,7 @@ import type {
 import { ApiClientError } from "../api/client";
 import { apiEndpoints } from "../api/endpoints";
 import { TaskEventController } from "../realtime/task-events";
+import { shouldApplyRunUpdate, WorkspaceRefreshGuard } from "./workspace-refresh-guard";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected local server error.";
@@ -50,6 +51,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   let controller: TaskEventController | null = null;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let generation = 0;
+  const refreshGuard = new WorkspaceRefreshGuard();
 
   const activeRun = computed(() => runs.value.find((run) => run.status === "queued" || run.status === "running") ?? null);
   const latestReviewRun = computed(() => runs.value.filter((run) => run.runType === "reviewer").at(-1) ?? null);
@@ -69,14 +71,22 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     return context.generation === generation && task.value?.id === context.taskId;
   }
 
-  function mergeRun(run: AgentRun): void {
+  function mergeRun(run: AgentRun): boolean {
     const index = runs.value.findIndex((candidate) => candidate.id === run.id);
+    if (!shouldApplyRunUpdate(index === -1 ? undefined : runs.value[index], run)) return false;
     if (index === -1) runs.value.push(run); else runs.value[index] = run;
+    refreshGuard.mutate();
+    return true;
   }
 
   function scheduleRefresh(): void {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => { void refresh(); }, 80);
+  }
+
+  function canApplyRefresh(token: ReturnType<WorkspaceRefreshGuard["begin"]>, refreshGeneration: number, taskId: string): boolean {
+    return refreshGeneration === generation && task.value?.id === taskId
+      && refreshGuard.shouldApply(token, scheduleRefresh);
   }
 
   function connect(taskId: string, connectionGeneration: number): void {
@@ -151,13 +161,14 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
 
   async function refresh(): Promise<void> {
     if (!task.value) return;
+    const refreshToken = refreshGuard.begin();
     const refreshGeneration = generation;
     const taskId = task.value.id;
     try {
       const [loadedTask, loadedRuns, loadedFindings, gitStatus] = await Promise.all([
         apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId), apiEndpoints.getGitStatus(taskId),
       ]);
-      if (refreshGeneration !== generation || task.value?.id !== taskId) return;
+      if (!canApplyRefresh(refreshToken, refreshGeneration, taskId)) return;
       task.value = loadedTask;
       runs.value = loadedRuns;
       findings.value = loadedFindings;
@@ -167,9 +178,9 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       if (selectedPath.value && !files.value.some((file) => file.path === selectedPath.value)) selectedPath.value = files.value[0]?.path ?? null;
       const path = selectedPath.value;
       const diff = path ? await apiEndpoints.getGitFileDiff(taskId, path) : null;
-      if (refreshGeneration === generation && task.value?.id === taskId) selectedDiff.value = diff;
+      if (canApplyRefresh(refreshToken, refreshGeneration, taskId)) selectedDiff.value = diff;
     } catch (problem) {
-      if (refreshGeneration === generation && task.value?.id === taskId) error.value = message(problem);
+      if (canApplyRefresh(refreshToken, refreshGeneration, taskId)) error.value = message(problem);
     }
   }
 
@@ -191,14 +202,14 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const context = captureAction();
     if (!context) return;
     const response = await action(context, () => apiEndpoints.developTask(context.taskId, prompt ? { prompt } : {}));
-    if (response && isCurrent(context)) { task.value = response.task; mergeRun(response.run); }
+    if (response && isCurrent(context) && mergeRun(response.run)) task.value = response.task;
   }
 
   async function review(): Promise<void> {
     const context = captureAction();
     if (!context) return;
     const response = await action(context, () => apiEndpoints.reviewTask(context.taskId));
-    if (response && isCurrent(context)) { task.value = response.task; mergeRun(response.run); }
+    if (response && isCurrent(context) && mergeRun(response.run)) task.value = response.task;
   }
 
   async function cancel(runId: string): Promise<void> {
@@ -212,7 +223,10 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const context = captureAction();
     if (!context) return;
     const completed = await action(context, () => apiEndpoints.completeTask(context.taskId));
-    if (completed && isCurrent(context)) task.value = completed;
+    if (completed && isCurrent(context)) {
+      task.value = completed;
+      refreshGuard.mutate();
+    }
   }
 
   async function updateFinding(id: string, changes: UpdateFindingRequest, regeneratePreview = false): Promise<void> {
@@ -222,7 +236,10 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const updated = await action(context, () => apiEndpoints.updateFinding(id, changes));
     if (updated && isCurrent(context)) {
       const index = findings.value.findIndex((finding) => finding.id === id);
-      if (index !== -1) findings.value[index] = updated;
+      if (index !== -1) {
+        findings.value[index] = updated;
+        refreshGuard.mutate();
+      }
       if (regeneratePreview && feedbackText.value === feedbackBeforeUpdate) {
         const reviewRun = feedbackReviewRun.value;
         if (!reviewRun) return;
@@ -240,7 +257,10 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const context = captureAction();
     if (!context) return;
     const selected = await action(context, () => apiEndpoints.selectFindings(context.taskId, { mode }));
-    if (selected && isCurrent(context)) findings.value = selected;
+    if (selected && isCurrent(context)) {
+      findings.value = selected;
+      refreshGuard.mutate();
+    }
   }
 
   async function previewFeedback(): Promise<void> {
@@ -272,7 +292,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       });
       if (!isCurrent(context)) return;
       staleFeedback.value = false;
-      task.value = response.task; mergeRun(response.run);
+      if (mergeRun(response.run)) task.value = response.task;
     } catch (problem) {
       if (!isCurrent(context)) return;
       if (problem instanceof ApiClientError && problem.status === 409

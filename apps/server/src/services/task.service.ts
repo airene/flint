@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import type { Task, TaskStatus } from "@local-pair-review/shared";
+import type { AgentRoleSettings, Task, TaskStatus } from "@local-pair-review/shared";
 import type { AppDatabase } from "../db/database";
 import { projects, tasks } from "../db/schema";
 import { GitService } from "./git.service";
@@ -42,10 +42,23 @@ export interface CreateTaskInput {
   confirmDirtyWorkingTree?: boolean;
 }
 
+export interface AgentRoleSettingsReader {
+  loadAgentRoles(): AgentRoleSettings;
+}
+
+const legacyAgentRoleSettings: AgentRoleSettings = {
+  developerProvider: "codex",
+  reviewerProvider: "claude",
+};
+
 function now(): string { return new Date().toISOString(); }
 
 export class TaskService {
-  constructor(private readonly database: AppDatabase, private readonly git = new GitService()) {}
+  constructor(
+    private readonly database: AppDatabase,
+    private readonly git = new GitService(),
+    private readonly roleSettings: AgentRoleSettingsReader = { loadAgentRoles: () => legacyAgentRoleSettings },
+  ) {}
 
   async create(projectId: string, input: CreateTaskInput): Promise<Task> {
     const project = await this.database.db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -59,9 +72,11 @@ export class TaskService {
     const status = await this.git.status(project.rootPath);
     if (!status.clean && !input.confirmDirtyWorkingTree) throw new DirtyWorkingTreeError(status.files.map((file) => file.path));
     const timestamp = now();
+    const roles = this.roleSettings.loadAgentRoles();
     const task: Task = {
       id: randomUUID(), projectId, title: input.title, originalPrompt: input.originalPrompt,
       workingDirectory: project.rootPath, baseCommit, latestSnapshotHash: null, status: "draft",
+      developerProvider: roles.developerProvider, reviewerProvider: roles.reviewerProvider,
       developerSessionId: null, reviewerSessionId: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null,
     };
     await this.database.db.insert(tasks).values(task).run();

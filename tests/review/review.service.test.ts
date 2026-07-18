@@ -19,6 +19,8 @@ function task(): Task {
     baseCommit: "base-abc123",
     latestSnapshotHash: null,
     status: "ready_for_review",
+    developerProvider: "codex",
+    reviewerProvider: "claude",
     developerSessionId: "codex-session-1",
     reviewerSessionId: null,
     createdAt: "2026-07-18T00:00:00.000Z",

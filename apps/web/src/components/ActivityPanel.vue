@@ -141,7 +141,7 @@ const visible = computed(() => props.events
         </div>
       </div>
     </div>
-    <div v-else class="empty-state"><strong>No activity yet</strong><span>Persisted agent events will appear here.</span></div>
+    <div v-else class="empty-state"><strong>No activity for this run yet</strong><span>Persisted agent events will appear here.</span></div>
   </section>
 </template>
 
