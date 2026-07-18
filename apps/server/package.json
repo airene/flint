@@ -1,0 +1,13 @@
+{
+  "name": "@local-pair-review/server",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "dev": "bun --watch ./src/index.ts"
+  },
+  "dependencies": {
+    "@local-pair-review/shared": "workspace:*",
+    "drizzle-orm": "^0.44.7"
+  }
+}

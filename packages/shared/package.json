@@ -1,0 +1,14 @@
+{
+  "name": "@local-pair-review/shared",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
+  }
+}
