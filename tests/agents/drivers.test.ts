@@ -123,6 +123,27 @@ describe("CLI availability", () => {
 });
 
 describe("Codex driver", () => {
+  test("the Fake Codex normal scenario rejects resume without workspace-write config", async () => {
+    const process = Bun.spawn([
+      codexFixture,
+      "exec",
+      "resume",
+      "thread-exact-resume",
+      "--json",
+      "-",
+    ], {
+      env: environment("normal"),
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+
+    expect(await process.exited).toBe(25);
+    expect(await new Response(process.stderr).text()).toContain(
+      'resume requires -c sandbox_mode="workspace-write"',
+    );
+  });
+
   test("the E2E Fake Codex scenario edits only its supplied temporary repository", async () => {
     const directory = await workspace();
     await mkdir(join(directory, "src"));
@@ -168,7 +189,15 @@ describe("Codex driver", () => {
       "message",
       "turn_completed",
     ]);
-    expect(invocation.args).toEqual(["exec", "resume", "thread-exact-resume", "--json", "-"]);
+    expect(invocation.args).toEqual([
+      "exec",
+      "resume",
+      "thread-exact-resume",
+      "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "-",
+    ]);
     expect(invocation.cwd).toBe(await realpath(directory));
     expect(invocation.prompt).toBe("Perform the fake task without contacting a model.");
   });

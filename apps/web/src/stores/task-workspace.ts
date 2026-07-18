@@ -23,6 +23,15 @@ function webSocketUrl(): string {
   return `${protocol}//${globalThis.location?.host ?? "127.0.0.1:3000"}/ws`;
 }
 
+export function latestFeedbackReviewRun(runs: AgentRun[], findings: ReviewFinding[]): AgentRun | null {
+  return runs.filter((run) => (
+    run.runType === "reviewer"
+    && run.status === "completed"
+    && run.reviewParseStatus === "succeeded"
+    && (findings.length === 0 || findings.every((finding) => finding.runId === run.id))
+  )).at(-1) ?? null;
+}
+
 export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const task = ref<Task | null>(null);
   const runs = ref<AgentRun[]>([]);
@@ -44,6 +53,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
 
   const activeRun = computed(() => runs.value.find((run) => run.status === "queued" || run.status === "running") ?? null);
   const latestReviewRun = computed(() => runs.value.filter((run) => run.runType === "reviewer").at(-1) ?? null);
+  const feedbackReviewRun = computed(() => latestFeedbackReviewRun(runs.value, findings.value));
   const selectedFindings = computed(() => findings.value.filter((finding) => finding.selected && !finding.dismissed));
 
   interface ActionContext {
@@ -214,8 +224,13 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       const index = findings.value.findIndex((finding) => finding.id === id);
       if (index !== -1) findings.value[index] = updated;
       if (regeneratePreview && feedbackText.value === feedbackBeforeUpdate) {
+        const reviewRun = feedbackReviewRun.value;
+        if (!reviewRun) return;
         const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
-        const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, { selectedFindingIds }));
+        const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, {
+          sourceReviewRunId: reviewRun.id,
+          selectedFindingIds,
+        }));
         if (preview && isCurrent(context) && feedbackText.value === feedbackBeforeUpdate) feedbackText.value = preview.finalText;
       }
     }
@@ -230,15 +245,19 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
 
   async function previewFeedback(): Promise<void> {
     const context = captureAction();
-    if (!context) return;
+    const reviewRun = feedbackReviewRun.value;
+    if (!context || !reviewRun) return;
     const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
-    const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, { selectedFindingIds }));
+    const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, {
+      sourceReviewRunId: reviewRun.id,
+      selectedFindingIds,
+    }));
     if (preview && isCurrent(context)) feedbackText.value = preview.finalText;
   }
 
   async function sendFeedback(confirmStaleSnapshot = false): Promise<void> {
     const context = captureAction();
-    const reviewRun = latestReviewRun.value;
+    const reviewRun = feedbackReviewRun.value;
     if (!context || !reviewRun) return;
     const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
     const finalText = feedbackText.value;
@@ -291,7 +310,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
 
   return {
     task, runs, findings, files, selectedPath, selectedDiff, events, feedbackText, loading, busy, connected, error, staleFeedback, reviewSnapshotStale,
-    activeRun, latestReviewRun, selectedFindings,
+    activeRun, latestReviewRun, feedbackReviewRun, selectedFindings,
     load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, sendFeedback, selectFile, dispose,
   };
 });

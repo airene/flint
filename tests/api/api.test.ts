@@ -60,6 +60,20 @@ async function waitForTask(baseUrl: string, taskId: string, status: Task["status
   throw new Error(`Task ${taskId} did not reach ${status}`);
 }
 
+async function waitForReviewParse(
+  baseUrl: string,
+  runId: string,
+  status: NonNullable<AgentRun["reviewParseStatus"]>,
+): Promise<AgentRun> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await request<AgentRun>(baseUrl, `/api/runs/${runId}`);
+    if (result.body.reviewParseStatus === status) return result.body;
+    await Bun.sleep(10);
+  }
+  throw new Error(`Review run ${runId} did not reach parse status ${status}`);
+}
+
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -139,6 +153,7 @@ describe("local server API assembly", () => {
     });
     expect(reviewed.status).toBe(202);
     await waitForTask(baseUrl, createdTask.body.id, "waiting_for_human");
+    await waitForReviewParse(baseUrl, reviewed.body.run.id, "succeeded");
     const findings = await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings`);
     expect(findings.body).toHaveLength(1);
     expect(findings.body[0]?.selected).toBe(true);
@@ -148,32 +163,83 @@ describe("local server API assembly", () => {
     expect(noted.body.userNote).toBe("Keep the public error shape.");
 
     const preview = await request<{ finalText: string }>(baseUrl, `/api/tasks/${createdTask.body.id}/feedback/preview`, {
-      method: "POST", body: JSON.stringify({ selectedFindingIds: [findings.body[0]!.id] }),
+      method: "POST", body: JSON.stringify({
+        sourceReviewRunId: reviewed.body.run.id,
+        selectedFindingIds: [findings.body[0]!.id],
+      }),
     });
     expect(preview.body.finalText).toContain("Validate input");
+
+    await Bun.write(join(rootPath, "POST_REVIEW.txt"), "changed after successful review\n");
+    environment.FAKE_CLI_SCENARIO = "schema-failure";
+    const failedReview = await request<{ run: AgentRun }>(baseUrl, `/api/tasks/${createdTask.body.id}/review`, {
+      method: "POST", body: "{}",
+    });
+    await waitForTask(baseUrl, createdTask.body.id, "waiting_for_human");
+    await waitForReviewParse(baseUrl, failedReview.body.run.id, "failed");
+    const retained = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings`)).body;
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).toMatchObject({
+      id: findings.body[0]!.id,
+      runId: reviewed.body.run.id,
+      userNote: "Keep the public error shape.",
+    });
+
+    const failedSourcePreview = await request<{ code: string }>(baseUrl, `/api/tasks/${createdTask.body.id}/feedback/preview`, {
+      method: "POST", body: JSON.stringify({
+        sourceReviewRunId: failedReview.body.run.id,
+        selectedFindingIds: [retained[0]!.id],
+      }),
+    });
+    expect(failedSourcePreview).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+    const retainedPreview = await request<{ finalText: string }>(baseUrl, `/api/tasks/${createdTask.body.id}/feedback/preview`, {
+      method: "POST", body: JSON.stringify({
+        sourceReviewRunId: reviewed.body.run.id,
+        selectedFindingIds: [retained[0]!.id],
+      }),
+    });
+    expect(retainedPreview.status).toBe(200);
+    expect(retainedPreview.body.finalText).toContain("Keep the public error shape.");
+
+    environment.FAKE_CLI_SCENARIO = "normal";
+    const staleFeedback = await request<{ code: string; details?: { reason?: string } }>(
+      baseUrl,
+      `/api/tasks/${createdTask.body.id}/feedback`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sourceReviewRunId: reviewed.body.run.id,
+          selectedFindingIds: [retained[0]!.id],
+          finalText: retainedPreview.body.finalText,
+        }),
+      },
+    );
+    expect(staleFeedback).toMatchObject({
+      status: 409,
+      body: { code: "CONFLICT", details: { reason: "STALE_SNAPSHOT" } },
+    });
     const feedback = await request<{ run: AgentRun; delivery: { id: string } }>(baseUrl, `/api/tasks/${createdTask.body.id}/feedback`, {
       method: "POST",
       body: JSON.stringify({
         sourceReviewRunId: reviewed.body.run.id,
-        selectedFindingIds: [findings.body[0]!.id],
-        finalText: preview.body.finalText,
+        selectedFindingIds: [retained[0]!.id],
+        finalText: retainedPreview.body.finalText,
+        confirmStaleSnapshot: true,
       }),
     });
     expect(feedback.status).toBe(202);
     await waitForTask(baseUrl, createdTask.body.id, "ready_for_review");
 
-    environment.FAKE_CLI_SCENARIO = "schema-failure";
     await request(baseUrl, `/api/tasks/${createdTask.body.id}/review`, { method: "POST", body: "{}" });
     await waitForTask(baseUrl, createdTask.body.id, "waiting_for_human");
-    expect((await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings`)).body).toEqual([]);
     const completed = await request<Task>(baseUrl, `/api/tasks/${createdTask.body.id}/complete`, {
       method: "POST", body: "{}",
     });
     expect(completed.body.status).toBe("completed");
 
     const runs = await request<AgentRun[]>(baseUrl, `/api/tasks/${createdTask.body.id}/runs`);
-    expect(runs.body.map((run) => run.runType)).toEqual(["developer_initial", "reviewer", "developer_feedback", "reviewer"]);
-    expect(runs.body.every((run) => run.status === "completed")).toBe(true);
+    expect(runs.body.map((run) => run.runType)).toEqual(["developer_initial", "reviewer", "reviewer", "developer_feedback", "reviewer"]);
+    expect(runs.body.map((run) => run.status)).toEqual(["completed", "completed", "completed", "completed", "completed"]);
 
     const events: AgentEvent[] = [];
     const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -245,8 +311,11 @@ describe("local server API assembly", () => {
     });
     await request(baseUrl, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
     await waitForTask(baseUrl, task.body.id, "ready_for_review");
-    await request(baseUrl, `/api/tasks/${task.body.id}/review`, { method: "POST", body: "{}" });
+    const reviewed = await request<{ run: AgentRun }>(baseUrl, `/api/tasks/${task.body.id}/review`, {
+      method: "POST", body: "{}",
+    });
     await waitForTask(baseUrl, task.body.id, "waiting_for_human");
+    await waitForReviewParse(baseUrl, reviewed.body.run.id, "succeeded");
     const [finding] = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${task.body.id}/findings`)).body;
     await request(baseUrl, `/api/tasks/${task.body.id}/complete`, { method: "POST", body: "{}" });
 
@@ -263,6 +332,12 @@ describe("local server API assembly", () => {
       selected: true,
       userNote: null,
     });
+
+    const patched = await request<{ code: string }>(baseUrl, `/api/tasks/${task.body.id}`, {
+      method: "PATCH", body: JSON.stringify({ originalPrompt: "mutated" }),
+    });
+    expect(patched).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+    expect((await request<Task>(baseUrl, `/api/tasks/${task.body.id}`)).body.originalPrompt).toBe("history");
   });
 
   test("recovers persisted active runs as interrupted and restores a usable task state", async () => {

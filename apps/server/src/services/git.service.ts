@@ -6,11 +6,28 @@ import type { GitDiffResponse, GitFileDiffResponse, GitFileStatus, GitFilesRespo
 import { validateRepositoryRelativePath } from "../utils/path";
 
 const decoder = new TextDecoder();
+const UNTRACKED_CONCURRENCY_LIMIT = 4;
 
-function command(executable: string, rootPath: string, args: string[], allowNonZero = false): string {
-  const result = Bun.spawnSync([executable, ...args], { cwd: rootPath, stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0 && !allowNonZero) throw new Error(`Git ${args[0]} failed: ${decoder.decode(result.stderr).trim()}`);
-  return decoder.decode(result.stdout);
+async function command(
+  executable: string,
+  rootPath: string,
+  args: string[],
+  allowNonZero = false,
+  stdin?: Uint8Array,
+): Promise<string> {
+  const subprocess = Bun.spawn([executable, ...args], {
+    cwd: rootPath,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: stdin ? new Blob([Buffer.from(stdin)]) : "ignore",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    Bun.readableStreamToText(subprocess.stdout),
+    Bun.readableStreamToText(subprocess.stderr),
+    subprocess.exited,
+  ]);
+  if (exitCode !== 0 && !allowNonZero) throw new Error(`Git ${args[0]} failed: ${stderr.trim()}`);
+  return stdout;
 }
 
 function statusKind(index: string, worktree: string): GitFileStatus["status"] {
@@ -28,6 +45,24 @@ function hasNul(bytes: Uint8Array): boolean {
 interface UntrackedContent {
   binary: boolean;
   snapshotBytes: Uint8Array;
+  patchBytes: Uint8Array | null;
+  mode: "100644" | "100755" | "120000" | null;
+}
+
+interface UntrackedRead {
+  content?: UntrackedContent;
+  error?: unknown;
+}
+
+interface RepositoryScan {
+  status: GitStatusResponse;
+  untracked: ReadonlyMap<string, UntrackedRead>;
+}
+
+export interface GitCapture {
+  status: GitStatusResponse;
+  diff: GitDiffResponse;
+  snapshotHash: string;
 }
 
 export interface SnapshotHashInput {
@@ -52,19 +87,73 @@ async function readUntrackedContent(rootPath: string, path: string): Promise<Unt
   const metadata = await lstat(absolutePath);
   if (metadata.isSymbolicLink()) {
     const target = await readlink(absolutePath);
-    return { binary: false, snapshotBytes: new TextEncoder().encode(`symlink:${Buffer.byteLength(target)}:${target}`) };
+    const patchBytes = new TextEncoder().encode(target);
+    return {
+      binary: false,
+      snapshotBytes: new TextEncoder().encode(`symlink:${Buffer.byteLength(target)}:${target}`),
+      patchBytes,
+      mode: "120000",
+    };
   }
   if (!metadata.isFile()) {
-    return { binary: true, snapshotBytes: new TextEncoder().encode(`special:${metadata.mode}`) };
+    return {
+      binary: true,
+      snapshotBytes: new TextEncoder().encode(`special:${metadata.mode}`),
+      patchBytes: null,
+      mode: null,
+    };
   }
 
   const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const bytes = await handle.readFile();
-    return { binary: hasNul(bytes), snapshotBytes: Buffer.concat([Buffer.from("file:"), bytes]) };
+    return {
+      binary: hasNul(bytes),
+      snapshotBytes: Buffer.concat([Buffer.from("file:"), bytes]),
+      patchBytes: bytes,
+      mode: (metadata.mode & 0o111) === 0 ? "100644" : "100755",
+    };
   } finally {
     await handle.close();
   }
+}
+
+async function mapWithConcurrency<T, Result>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<Result>,
+): Promise<Result[]> {
+  const results = new Array<Result>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(values[index]!, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function diffPath(prefix: "a" | "b", path: string): string {
+  const value = `${prefix}/${path}`;
+  return /[\t\n\r"\\]/.test(value) ? JSON.stringify(value) : value;
+}
+
+function capturedUntrackedPatch(path: string, content: UntrackedContent, patch: string, objectFormat: "sha1" | "sha256"): string {
+  if (!content.patchBytes || !content.mode) return "";
+  const oldPath = diffPath("a", path);
+  const newPath = diffPath("b", path);
+  const newPathTerminator = newPath.startsWith('"') || !path.includes(" ") ? "" : "\t";
+  const objectHash = createHash(objectFormat)
+    .update(`blob ${content.patchBytes.byteLength}\0`)
+    .update(content.patchBytes)
+    .digest("hex")
+    .slice(0, 7);
+  return patch
+    .replace("diff --git a/- b/-", `diff --git ${oldPath} ${newPath}`)
+    .replace("new file mode 100644\n", `new file mode ${content.mode}\nindex 0000000..${objectHash}\n`)
+    .replace("+++ b/-\n", `+++ ${newPath}${newPathTerminator}\n`);
 }
 
 async function readWorkingTreeText(rootPath: string, path: string): Promise<string | null> {
@@ -82,6 +171,29 @@ async function readWorkingTreeText(rootPath: string, path: string): Promise<stri
   }
 }
 
+function binaryPathsFromNumstat(output: string): Set<string> {
+  const binaryPaths = new Set<string>();
+  const entries = output.split("\0");
+  entries.pop();
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index] ?? "";
+    const firstTab = entry.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : entry.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const binary = entry.slice(0, firstTab) === "-" && entry.slice(firstTab + 1, secondTab) === "-";
+    const path = entry.slice(secondTab + 1);
+    if (path) {
+      if (binary) binaryPaths.add(path);
+      continue;
+    }
+
+    const renamedPath = entries[index + 2];
+    index += 2;
+    if (binary && renamedPath) binaryPaths.add(renamedPath);
+  }
+  return binaryPaths;
+}
+
 export class GitService {
   constructor(private executable = "git") {}
 
@@ -90,13 +202,21 @@ export class GitService {
   }
 
   async head(rootPath: string): Promise<string> {
-    return command(this.executable, rootPath, ["rev-parse", "HEAD"]).trim();
+    return (await command(this.executable, rootPath, ["rev-parse", "HEAD"])).trim();
   }
 
   async status(rootPath: string): Promise<GitStatusResponse> {
-    const entries = command(this.executable, rootPath, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]).split("\0");
+    return (await this.scan(rootPath)).status;
+  }
+
+  private async scan(rootPath: string): Promise<RepositoryScan> {
+    const [statusOutput, untrackedOutput] = await Promise.all([
+      command(this.executable, rootPath, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]),
+      command(this.executable, rootPath, ["ls-files", "--others", "--exclude-standard", "-z"]),
+    ]);
+    const entries = statusOutput.split("\0");
     entries.pop();
-    const files: GitFileStatus[] = [];
+    const trackedFiles: Array<{ file: Omit<GitFileStatus, "binary">; index: string; worktree: string }> = [];
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
       if (!entry || entry.length < 4) continue;
@@ -106,36 +226,47 @@ export class GitService {
       const renamed = x === "R" || y === "R" || x === "C" || y === "C";
       const previousPath = renamed ? entries[++index] ?? null : null;
       const untracked = x === "?" || y === "?";
-      let binary = false;
-      if (!untracked && statusKind(x, y) !== "deleted") {
-        const numstat = command(this.executable, rootPath, ["diff", "--numstat", "HEAD", "--", path], true);
-        binary = numstat.startsWith("-\t-");
-      } else if (untracked) {
-        try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
+      trackedFiles.push({
+        file: { path, previousPath, status: statusKind(x, y), staged: x !== " " && x !== "?", tracked: !untracked },
+        index: x,
+        worktree: y,
+      });
+    }
+    const hasTrackedContent = trackedFiles.some(({ index, worktree }) => statusKind(index, worktree) !== "deleted");
+    const binaryPaths = hasTrackedContent
+      ? binaryPathsFromNumstat(await command(this.executable, rootPath, ["diff", "--numstat", "-z", "HEAD", "--"], true))
+      : new Set<string>();
+    const files: GitFileStatus[] = trackedFiles.map(({ file }) => ({
+      ...file,
+      binary: file.status !== "deleted" && binaryPaths.has(file.path),
+    }));
+
+    const untrackedPaths = untrackedOutput.split("\0").filter(Boolean);
+    const untrackedReads = await mapWithConcurrency(untrackedPaths, UNTRACKED_CONCURRENCY_LIMIT, async (path): Promise<[string, UntrackedRead]> => {
+      try {
+        return [path, { content: await readUntrackedContent(rootPath, path) }];
+      } catch (error) {
+        return [path, { error }];
       }
-      files.push({ path, previousPath, status: statusKind(x, y), staged: x !== " " && x !== "?", tracked: !untracked, binary });
-    }
-    const untrackedPaths = command(this.executable, rootPath, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
+    });
+    const untracked = new Map(untrackedReads);
     for (const path of untrackedPaths) {
-      let binary = false;
-      try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
-      files.push({ path, previousPath: null, status: "untracked", staged: false, tracked: false, binary });
+      const read = untracked.get(path);
+      files.push({
+        path,
+        previousPath: null,
+        status: "untracked",
+        staged: false,
+        tracked: false,
+        binary: read?.content?.binary ?? true,
+      });
     }
-    return { clean: files.length === 0, files: files.sort((a, b) => a.path.localeCompare(b.path)) };
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return { status: { clean: files.length === 0, files }, untracked };
   }
 
   async diff(rootPath: string, baseCommit: string): Promise<GitDiffResponse> {
-    const status = await this.status(rootPath);
-    const untracked = status.files.filter((file) => !file.tracked && !file.binary);
-    const untrackedPatch = untracked.map((file) => command(this.executable, rootPath, ["diff", "--no-index", "--", "/dev/null", file.path], true)).join("");
-    return {
-      baseCommit,
-      trackedPatch: command(this.executable, rootPath, ["diff", baseCommit, "--"]),
-      stagedPatch: command(this.executable, rootPath, ["diff", "--cached", baseCommit, "--"]),
-      untrackedPatch,
-      stat: command(this.executable, rootPath, ["diff", "--stat", baseCommit, "--"]),
-      files: status.files,
-    };
+    return (await this.scanDiff(rootPath, baseCommit)).diff;
   }
 
   async files(rootPath: string): Promise<GitFilesResponse> {
@@ -147,24 +278,69 @@ export class GitService {
     const file = (await this.status(rootPath)).files.find((candidate) => candidate.path === path);
     if (!file) throw new Error("File is not changed in this task");
     if (file.binary) return { file, patch: "", originalText: null, modifiedText: null };
-    const patch = !file.tracked
+    const patchPromise = !file.tracked
       ? command(this.executable, rootPath, ["diff", "--no-index", "--", "/dev/null", path], true)
       : command(this.executable, rootPath, ["diff", baseCommit, "--", path]);
     const originalPath = file.previousPath ?? path;
-    const originalText = file.status === "added" || file.status === "untracked"
-      ? ""
+    const originalTextPromise = file.status === "added" || file.status === "untracked"
+      ? Promise.resolve("")
       : command(this.executable, rootPath, ["show", `${baseCommit}:${originalPath}`], true);
-    const modifiedText = file.status === "deleted" ? "" : await readWorkingTreeText(rootPath, path);
+    const modifiedTextPromise = file.status === "deleted" ? Promise.resolve("") : readWorkingTreeText(rootPath, path);
+    const [patch, originalText, modifiedText] = await Promise.all([patchPromise, originalTextPromise, modifiedTextPromise]);
     return { file, patch, originalText, modifiedText };
   }
 
   async snapshotHash(rootPath: string, baseCommit: string): Promise<string> {
-    const diff = await this.diff(rootPath, baseCommit);
-    const untracked = await Promise.all(diff.files.filter((file) => !file.tracked).map(async (file) => {
-      const content = await readUntrackedContent(rootPath, file.path);
-      return { path: file.path, snapshotBytes: content.snapshotBytes };
-    }));
-    return snapshotHashFromInputs({ baseCommit, trackedPatch: diff.trackedPatch, stagedPatch: diff.stagedPatch, untracked });
+    return (await this.capture(rootPath, baseCommit)).snapshotHash;
+  }
+
+  async capture(rootPath: string, baseCommit?: string): Promise<GitCapture> {
+    const resolvedBaseCommit = baseCommit ?? await this.head(rootPath);
+    const { scan, diff } = await this.scanDiff(rootPath, resolvedBaseCommit);
+    const untracked = diff.files.filter((file) => !file.tracked).map((file) => {
+      const read = scan.untracked.get(file.path);
+      if (!read?.content) throw read?.error ?? new Error(`Unable to read untracked file: ${file.path}`);
+      return { path: file.path, snapshotBytes: read.content.snapshotBytes };
+    });
+    return {
+      status: scan.status,
+      diff,
+      snapshotHash: snapshotHashFromInputs({
+        baseCommit: resolvedBaseCommit,
+        trackedPatch: diff.trackedPatch,
+        stagedPatch: diff.stagedPatch,
+        untracked,
+      }),
+    };
+  }
+
+  private async scanDiff(rootPath: string, baseCommit: string): Promise<{ scan: RepositoryScan; diff: GitDiffResponse }> {
+    const [scan, trackedPatch, stagedPatch, stat, configuredObjectFormat] = await Promise.all([
+      this.scan(rootPath),
+      command(this.executable, rootPath, ["diff", baseCommit, "--"]),
+      command(this.executable, rootPath, ["diff", "--cached", baseCommit, "--"]),
+      command(this.executable, rootPath, ["diff", "--stat", baseCommit, "--"]),
+      command(this.executable, rootPath, ["config", "--get", "extensions.objectFormat"], true),
+    ]);
+    const objectFormat = configuredObjectFormat.trim() === "sha256" ? "sha256" : "sha1";
+    const untrackedFiles = scan.status.files.filter((file) => !file.tracked && !file.binary);
+    const untrackedPatches = await mapWithConcurrency(untrackedFiles, UNTRACKED_CONCURRENCY_LIMIT, async (file) => {
+      const read = scan.untracked.get(file.path);
+      if (!read?.content?.patchBytes) return "";
+      const patch = await command(
+        this.executable,
+        rootPath,
+        ["diff", "--no-index", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--", "/dev/null", "-"],
+        true,
+        read.content.patchBytes,
+      );
+      return capturedUntrackedPatch(file.path, read.content, patch, objectFormat);
+    });
+    const untrackedPatch = untrackedPatches.join("");
+    return {
+      scan,
+      diff: { baseCommit, trackedPatch, stagedPatch, untrackedPatch, stat, files: scan.status.files },
+    };
   }
 }
 

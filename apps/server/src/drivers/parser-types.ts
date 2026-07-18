@@ -1,4 +1,5 @@
 import type { AgentEvent } from "@local-pair-review/shared";
+import { createAgentEvent } from "../utils/agent-event";
 
 export interface ParserContext {
   projectId: string;
@@ -23,18 +24,9 @@ export function rawEvent(
   error?: unknown,
 ): ParsedAgentLine {
   return {
-    event: {
-      sequence: 0,
-      timestamp: new Date().toISOString(),
-      projectId: context.projectId,
-      taskId: context.taskId,
-      runId: context.runId,
-      source,
-      type: "raw",
-      payload: error === undefined
-        ? { raw, parsed }
-        : { raw, parseError: error instanceof Error ? error.message : String(error) },
-    },
+    event: createAgentEvent(context, source, "raw", error === undefined
+      ? { raw, parsed }
+      : { raw, parseError: error instanceof Error ? error.message : String(error) }),
   };
 }
 
@@ -45,14 +37,5 @@ export function parsedEvent(
   type: AgentEvent["type"],
   parsed: unknown,
 ): AgentEvent {
-  return {
-    sequence: 0,
-    timestamp: new Date().toISOString(),
-    projectId: context.projectId,
-    taskId: context.taskId,
-    runId: context.runId,
-    source,
-    type,
-    payload: { raw, parsed },
-  };
+  return createAgentEvent(context, source, type, { raw, parsed });
 }

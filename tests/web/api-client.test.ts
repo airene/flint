@@ -156,7 +156,10 @@ describe("API endpoints", () => {
     await api.listFindings(taskId);
     await api.updateFinding(findingId, { selected: true });
     await api.selectFindings(taskId, { mode: "P0_P1" });
-    await api.previewFeedback(taskId, { selectedFindingIds: ["finding-1"] });
+    await api.previewFeedback(taskId, {
+      sourceReviewRunId: "review-1",
+      selectedFindingIds: ["finding-1"],
+    });
 
     expect(calls.map(({ path }) => path)).toEqual([
       "/api/health",

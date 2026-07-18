@@ -56,6 +56,12 @@ export const agentRuns = sqliteTable("agent_runs", {
     .where(sql`${table.runType} in ('developer_initial', 'developer_feedback') and ${table.status} in ('queued', 'running')`),
 ]);
 
+export const reviewRunSnapshots = sqliteTable("review_run_snapshots", {
+  runId: text("run_id").primaryKey().references(() => agentRuns.id, { onDelete: "cascade" }),
+  snapshotHash: text("snapshot_hash").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const agentEvents = sqliteTable("agent_events", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),

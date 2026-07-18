@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentStartRequest, AgentStartResult } from "@local-pair-review/shared";
 import { createCliEnvironment } from "../utils/process-environment";
+import { createAgentEvent } from "../utils/agent-event";
 import { AgentProcessError, ProcessSupervisor } from "../utils/process-supervisor";
 import type { ParsedAgentLine } from "./parser-types";
 
@@ -96,16 +97,7 @@ export abstract class StreamingCliDriver {
       if (request.signal?.aborted) {
         throw new AgentProcessError("cancelled", "Agent run was cancelled before process setup.");
       }
-      await emit({
-        sequence: 0,
-        timestamp: new Date().toISOString(),
-        projectId: request.projectId,
-        taskId: request.taskId,
-        runId: request.runId,
-        source: this.providerSource(),
-        type: "run_started",
-        payload: { processId: process.pid },
-      });
+      await emit(createAgentEvent(request, this.providerSource(), "run_started", { processId: process.pid }));
       process.stdin.write(request.prompt);
       process.stdin.end();
 
@@ -121,16 +113,7 @@ export abstract class StreamingCliDriver {
       const stderrLines: string[] = [];
       const stderr = readLines(process.stderr, async (line) => {
         stderrLines.push(line);
-        await emit({
-          sequence: 0,
-          timestamp: new Date().toISOString(),
-          projectId: request.projectId,
-          taskId: request.taskId,
-          runId: request.runId,
-          source: this.providerSource(),
-          type: "stderr",
-          payload: { raw: line },
-        });
+        await emit(createAgentEvent(request, this.providerSource(), "stderr", { raw: line }));
       });
 
       const [exitCode] = await Promise.all([exited, stdout, stderr]);

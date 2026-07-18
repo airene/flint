@@ -51,7 +51,7 @@ const DENIED_REVIEW_TOOLS = [
 
 export function buildCodexArgs(executable: string, sessionId?: string): string[] {
   return sessionId
-    ? [executable, "exec", "resume", sessionId, "--json", "-"]
+    ? [executable, "exec", "resume", sessionId, "--json", "-c", 'sandbox_mode="workspace-write"', "-"]
     : [executable, "exec", "--json", "--sandbox", "workspace-write", "-"];
 }
 

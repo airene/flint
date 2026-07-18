@@ -39,6 +39,10 @@ const initialSchema = `
     WHERE status IN ('queued', 'running');
   CREATE UNIQUE INDEX IF NOT EXISTS active_write_run_per_project_unique ON agent_runs(project_id)
     WHERE run_type IN ('developer_initial', 'developer_feedback') AND status IN ('queued', 'running');
+  CREATE TABLE IF NOT EXISTS review_run_snapshots (
+    run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    snapshot_hash TEXT NOT NULL, created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS agent_events (
     id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL,

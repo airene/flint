@@ -86,7 +86,10 @@ test("agent action and run DTOs are strict", () => {
 test("finding selection and feedback preview DTOs are strict", () => {
   expectStrict("updateFindingRequestSchema", { selected: true, userNote: null });
   expectStrict("selectFindingsRequestSchema", { mode: "P0_P1" });
-  expectStrict("feedbackPreviewRequestSchema", { selectedFindingIds: ["finding_1"] });
+  expectStrict("feedbackPreviewRequestSchema", {
+    sourceReviewRunId: "run_review",
+    selectedFindingIds: ["finding_1"],
+  });
   expectStrict("feedbackPreviewResponseSchema", { finalText: "Preview" });
 });
 

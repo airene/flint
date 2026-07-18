@@ -39,6 +39,7 @@ import { TaskService } from "../services/task.service";
 import { DatabasePorts } from "./database-ports";
 import { CliUnavailableError, errorResponse, NotFoundError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
+import { createRunEvent } from "../utils/agent-event";
 
 export interface ApplicationOptions {
   databasePath?: string;
@@ -75,16 +76,7 @@ function json(value: unknown, status = 200): Response {
 }
 
 function eventFor(run: AgentRun, type: AgentEvent["type"], timestamp: string): AgentEvent {
-  return {
-    sequence: 0,
-    timestamp,
-    projectId: run.projectId,
-    taskId: run.taskId,
-    runId: run.id,
-    source: "system",
-    type,
-    payload: { recovered: true },
-  };
+  return createRunEvent(run, "system", type, { recovered: true }, timestamp);
 }
 
 export async function createApplication(options: ApplicationOptions = {}): Promise<LocalPairReviewApplication> {
@@ -121,12 +113,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   });
   const reviewContext: ReviewContextPort = {
     async capture(task) {
-      const [status, diff, snapshotHash] = await Promise.all([
-        git.status(task.workingDirectory),
-        git.diff(task.workingDirectory, task.baseCommit),
-        git.snapshotHash(task.workingDirectory, task.baseCommit),
-      ]);
-      return { snapshotHash, gitStatus: JSON.stringify(status.files), diffStat: diff.stat };
+      const capture = await git.capture(task.workingDirectory, task.baseCommit);
+      return {
+        snapshotHash: capture.snapshotHash,
+        gitStatus: JSON.stringify(capture.status.files),
+        diffStat: capture.diff.stat,
+      };
     },
   };
   const reviews = new ReviewService({ agentRuns, context: reviewContext, persistence: ports, events });
@@ -177,6 +169,30 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const run = await ports.getRun(runId);
     if (!run) throw new NotFoundError("Run");
     return run;
+  }
+
+  async function feedbackFindings(
+    task: Task,
+    sourceReviewRunId: string,
+    selectedFindingIds: string[],
+  ): Promise<{ sourceRun: AgentRun; findings: ReviewFinding[] }> {
+    const sourceRun = await requireRun(sourceReviewRunId);
+    if (
+      sourceRun.taskId !== task.id
+      || sourceRun.runType !== "reviewer"
+      || sourceRun.status !== "completed"
+      || sourceRun.reviewParseStatus !== "succeeded"
+    ) {
+      throw new RunConflictError("Feedback must reference a successfully parsed reviewer run from this task.");
+    }
+    const findings = await ports.listFindings(task.id);
+    const selected = new Set(selectedFindingIds);
+    if (selected.size !== selectedFindingIds.length || selectedFindingIds.some((id) => (
+      !findings.some((finding) => finding.id === id && finding.runId === sourceRun.id && !finding.dismissed)
+    ))) {
+      throw new RunConflictError("Feedback contains an invalid, dismissed, or unrelated finding.");
+    }
+    return { sourceRun, findings };
   }
 
   function ensureAccepting(): void {
@@ -232,6 +248,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (method === "DELETE") {
           ensureAccepting();
           const input = await body(request, deleteProjectRequestSchema);
+          await requireProject(projectId!);
           await projects.remove(projectId!, input.confirm);
           return json({ deleted: true });
         }
@@ -264,6 +281,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "POST") {
         ensureAccepting();
         await body(request, completeTaskRequestSchema);
+        await requireTask(parameters[0]!);
         return json(await tasks.complete(parameters[0]!));
       }
 
@@ -302,21 +320,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         await requireCli("codex");
         const input = await body(request, feedbackTaskRequestSchema);
         const task = await requireTask(parameters[0]!);
-        const sourceRun = await requireRun(input.sourceReviewRunId);
-        if (sourceRun.taskId !== task.id || sourceRun.runType !== "reviewer") {
-          throw new RunConflictError("Feedback must reference a reviewer run from this task.");
+        const { sourceRun } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
+        const sourceSnapshotHash = await ports.reviewSnapshotHash(sourceRun.id);
+        if (!sourceSnapshotHash) {
+          throw new RunConflictError("The source review snapshot is unavailable.");
         }
-        const availableFindings = await ports.listFindings(task.id);
-        const selectedIds = new Set(input.selectedFindingIds);
-        if (selectedIds.size !== input.selectedFindingIds.length || input.selectedFindingIds.some((id) => (
-          !availableFindings.some((finding) => finding.id === id && finding.runId === sourceRun.id && !finding.dismissed)
-        ))) {
-          throw new RunConflictError("Feedback contains an invalid, dismissed, or unrelated finding.");
-        }
-        if (task.latestSnapshotHash) {
-          const current = await git.snapshotHash(task.workingDirectory, task.baseCommit);
-          if (current !== task.latestSnapshotHash && !input.confirmStaleSnapshot) throw new StaleSnapshotError();
-        }
+        const current = await git.snapshotHash(task.workingDirectory, task.baseCommit);
+        if (current !== sourceSnapshotHash && !input.confirmStaleSnapshot) throw new StaleSnapshotError();
         const started = await feedback.send({
           task,
           sourceReviewRunId: input.sourceReviewRunId,
@@ -349,11 +359,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "GET") {
         const task = await requireTask(parameters[0]!);
         if (parameters[1] === "status") {
-          const [status, snapshotHash] = await Promise.all([
-            git.status(task.workingDirectory),
-            git.snapshotHash(task.workingDirectory, task.baseCommit),
-          ]);
-          return json({ ...status, snapshotHash });
+          const capture = await git.capture(task.workingDirectory, task.baseCommit);
+          return json({ ...capture.status, snapshotHash: capture.snapshotHash });
         }
         if (parameters[1] === "diff") return json(await git.diff(task.workingDirectory, task.baseCommit));
         return json(await git.files(task.workingDirectory));
@@ -394,11 +401,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "POST") {
         const task = await requireTask(parameters[0]!);
         const input = await body(request, feedbackPreviewRequestSchema);
+        const { findings: available } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
         const selected = new Set(input.selectedFindingIds);
-        const available = await ports.listFindings(task.id);
-        if (selected.size !== input.selectedFindingIds.length || input.selectedFindingIds.some((id) => !available.some((finding) => finding.id === id && !finding.dismissed))) {
-          throw new RunConflictError("Feedback preview contains an invalid or dismissed finding.");
-        }
         const findings = available.map((finding) => ({ ...finding, selected: selected.has(finding.id) }));
         return json({ finalText: composeFeedback(task, findings) });
       }

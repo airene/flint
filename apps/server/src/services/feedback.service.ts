@@ -21,6 +21,13 @@ export class DuplicateFeedbackError extends Error {
   }
 }
 
+export class StaleFeedbackLeaseError extends Error {
+  constructor() {
+    super("stale feedback lease");
+    this.name = "StaleFeedbackLeaseError";
+  }
+}
+
 export interface SendFeedbackInput {
   task: Task;
   sourceReviewRunId: string;

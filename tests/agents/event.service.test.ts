@@ -102,4 +102,33 @@ describe("EventService", () => {
     expect(stored).toContain("client_secret");
     expect(stored).toContain("[REDACTED]");
   });
+
+  test("preserves usage counters and author fields while redacting credential keys", async () => {
+    let persisted: PersistAgentEventInput | undefined;
+    const service = new EventService({
+      async append(input) {
+        persisted = input;
+        return { ...input.event, sequence: 1 };
+      },
+    }, { broadcast() {} });
+    const raw = JSON.stringify({
+      usage: { input_tokens: 12, output_tokens: 34, cached_input_tokens: 5 },
+      author: "Jane Doe",
+      github_token: "ghp-real-secret",
+      note: "GITHUB_TOKEN=env-secret",
+    });
+
+    await service.publish(event({ raw, parsed: JSON.parse(raw) }));
+
+    const parsed = (persisted?.event.payload as {
+      parsed: { usage: Record<string, unknown>; author: string; github_token: string; note: string };
+    }).parsed;
+    expect(parsed.usage).toEqual({ input_tokens: 12, output_tokens: 34, cached_input_tokens: 5 });
+    expect(parsed.author).toBe("Jane Doe");
+    expect(parsed.github_token).toBe("[REDACTED]");
+    expect(parsed.note).toBe("GITHUB_TOKEN=[REDACTED]");
+    expect(persisted?.rawJson).toContain("input_tokens");
+    expect(persisted?.rawJson).not.toContain("ghp-real-secret");
+    expect(persisted?.rawJson).not.toContain("env-secret");
+  });
 });

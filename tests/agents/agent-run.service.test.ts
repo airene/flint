@@ -125,13 +125,16 @@ class MemoryRunPersistence implements AgentRunPersistencePort {
 }
 
 class RecordingTaskState implements TaskRunStatePort {
+  readonly queuedSnapshots: Array<string | undefined> = [];
+
   constructor(
     private readonly order: string[],
     private readonly persistence: MemoryRunPersistence,
     private readonly failSucceed = false,
   ) {}
 
-  async queue(run: AgentRun): Promise<AgentRun> {
+  async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
+    this.queuedSnapshots.push(options.snapshotHash);
     this.order.push(`task:queued:${run.runType}`);
     return this.persistence.create(run);
   }
@@ -155,6 +158,7 @@ function service(
   behavior: { failEventType?: AgentEvent["type"]; failSucceed?: boolean } = {},
 ) {
   const persistence = new MemoryRunPersistence(order);
+  const taskState = new RecordingTaskState(order, persistence, behavior.failSucceed);
   let sequence = 0;
   const events = new EventService({
     async append(input) {
@@ -173,11 +177,12 @@ function service(
         claude: new ScenarioDriver("claude", claudeResult, order),
       },
       persistence,
-      taskState: new RecordingTaskState(order, persistence, behavior.failSucceed),
+      taskState,
       events,
       createId: () => "run-created-1",
       now: () => "2026-07-18T00:00:01.000Z",
     }),
+    taskState,
   };
 }
 
@@ -252,6 +257,8 @@ describe("AgentRunService", () => {
 
     expect(terminal).toMatchObject({ status: "cancelled", exitCode: 143, errorMessage: "cancelled by user" });
     expect(order).toContain("task:cancelled:developer_initial:none");
+    expect(order.indexOf("task:cancelled:developer_initial:none"))
+      .toBeLessThan(order.indexOf("event:persist:run_cancelled"));
   });
 
   test("redacts token-bearing stderr before persisting a failed run", async () => {
@@ -276,17 +283,23 @@ describe("AgentRunService", () => {
 
   test("creates reviewer runs with pending parse status and Claude provider", async () => {
     const order: string[] = [];
-    const { agentRuns } = service(order, new AgentProcessError("failed", "unused"), {
+    const { agentRuns, taskState } = service(order, new AgentProcessError("failed", "unused"), {
       sessionId: "claude-session-exact",
       finalMessage: "Review complete",
       structuredOutput: { summary: "Pass", verdict: "pass", findings: [] },
     });
 
-    const started = await agentRuns.start({ task: { ...task(), status: "ready_for_review" }, runType: "reviewer", prompt: "Review" });
+    const started = await agentRuns.start({
+      task: { ...task(), status: "ready_for_review" },
+      runType: "reviewer",
+      prompt: "Review",
+      snapshotHash: "snapshot-review-1",
+    });
     const completed = await started.completion;
 
     expect(started.run).toMatchObject({ provider: "claude", reviewParseStatus: "pending" });
     expect(completed.structuredOutput).toEqual({ summary: "Pass", verdict: "pass", findings: [] });
     expect(order).toContain("task:succeeded:reviewer");
+    expect(taskState.queuedSnapshots).toEqual(["snapshot-review-1"]);
   });
 });

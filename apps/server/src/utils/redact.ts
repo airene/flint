@@ -1,5 +1,7 @@
-const SENSITIVE_KEY = /(?:api[_-]?key|auth(?:orization)?|auth[_-]?token|access[_-]?token|cookie|password|secret|token)/i;
-const KEY_VALUE = /((?:"?[A-Za-z0-9_-]*(?:api[_-]?key|auth(?:orization)?|cookie|password|secret|token)[A-Za-z0-9_-]*"?)\s*[=:]\s*["']?)[^\s,"']+/gi;
+// `token`/`auth` require a non-letter follower so usage counters (input_tokens,
+// cached_input_tokens) and author fields survive while access_token/auth_token stay redacted.
+const SENSITIVE_KEY = /(?:api[_-]?key|auth(?:orization)?(?![a-z])|cookie|password|secret|token(?![a-z]))/i;
+const KEY_VALUE = /((?:"?[A-Za-z0-9_-]*(?:api[_-]?key|auth(?:orization)?(?![a-z])|cookie|password|secret|token(?![a-z]))[A-Za-z0-9_-]*"?)\s*[=:]\s*["']?)[^\s,"']+/gi;
 const BEARER = /(Bearer\s+)[A-Za-z0-9._~+/-]+/gi;
 const COMMON_TOKEN = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
 

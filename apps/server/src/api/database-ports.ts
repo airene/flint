@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type {
   AgentEvent,
   AgentRun,
@@ -17,37 +17,23 @@ import {
   agentRuns,
   feedbackDeliveries,
   reviewFindings,
+  reviewRunSnapshots,
   tasks,
 } from "../db/schema";
 import type { AgentRunPersistencePort, FinishRunInput, TaskRunStatePort } from "../services/agent-run.service";
 import type { EventPersistencePort, PersistAgentEventInput } from "../services/event.service";
-import type { FeedbackDeliveryPersistencePort, ReserveFeedbackResult } from "../services/feedback.service";
+import { StaleFeedbackLeaseError, type FeedbackDeliveryPersistencePort, type ReserveFeedbackResult } from "../services/feedback.service";
 import type { ReviewPersistencePort } from "../services/review.service";
 import { GitService } from "../services/git.service";
-import { CompletedTaskReadOnlyError, InvalidTaskTransitionError, ProjectWriteRunConflictError } from "../services/task.service";
+import { CompletedTaskReadOnlyError, ProjectWriteRunConflictError } from "../services/task.service";
+import { NotFoundError } from "./errors";
+import {
+  taskStatusForRunFailure,
+  taskStatusForRunStart,
+  taskStatusForRunSuccess,
+} from "../services/task-run-state";
 
 const activeStatuses = ["queued", "running"] as const;
-
-function taskStartStatus(task: Task, runType: AgentRunType): TaskStatus {
-  if (runType === "developer_initial") {
-    if (task.status !== "draft") throw new InvalidTaskTransitionError(task.status, "developing");
-    return "developing";
-  }
-  if (runType === "developer_feedback") {
-    if (task.status !== "waiting_for_human" && task.status !== "ready_for_review") {
-      throw new InvalidTaskTransitionError(task.status, "fixing");
-    }
-    return "fixing";
-  }
-  if (task.status !== "ready_for_review" && task.status !== "waiting_for_human") {
-    throw new InvalidTaskTransitionError(task.status, "reviewing");
-  }
-  return "reviewing";
-}
-
-function successStatus(runType: AgentRunType): TaskStatus {
-  return runType === "reviewer" ? "waiting_for_human" : "ready_for_review";
-}
 
 function rowEvent(row: typeof agentEvents.$inferSelect): AgentEvent {
   const normalized = row.normalizedJson ? JSON.parse(row.normalizedJson) as AgentEvent : null;
@@ -77,20 +63,35 @@ export class DatabasePorts implements
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
-  async queue(run: AgentRun): Promise<AgentRun> {
+  async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
     try {
       return this.database.db.transaction((transaction) => {
         const task = transaction.select().from(tasks).where(eq(tasks.id, run.taskId)).get() as Task | undefined;
-        if (!task) throw new Error("Task not found");
-        const target = taskStartStatus(task, run.runType);
-        const activeWrite = transaction.select({ id: agentRuns.id }).from(agentRuns).where(and(
+        if (!task) throw new NotFoundError("Task");
+        if (run.runType === "reviewer" && !options.snapshotHash) {
+          throw new Error("Reviewer runs require a captured snapshot");
+        }
+        const target = taskStatusForRunStart(task.status, run.runType);
+        const writerRun = run.runType === "developer_initial" || run.runType === "developer_feedback";
+        const activeConflict = transaction.select({ id: agentRuns.id }).from(agentRuns).where(and(
           eq(agentRuns.projectId, run.projectId),
-          inArray(agentRuns.runType, ["developer_initial", "developer_feedback"]),
+          ...(writerRun ? [] : [inArray(agentRuns.runType, ["developer_initial", "developer_feedback"])]),
           inArray(agentRuns.status, [...activeStatuses]),
         )).get();
-        if (activeWrite) throw new ProjectWriteRunConflictError(run.projectId);
+        if (activeConflict) throw new ProjectWriteRunConflictError(run.projectId);
         transaction.insert(agentRuns).values(run).run();
-        transaction.update(tasks).set({ status: target, updatedAt: this.now() }).where(eq(tasks.id, task.id)).run();
+        if (run.runType === "reviewer" && options.snapshotHash) {
+          transaction.insert(reviewRunSnapshots).values({
+            runId: run.id,
+            snapshotHash: options.snapshotHash,
+            createdAt: this.now(),
+          }).run();
+        }
+        transaction.update(tasks).set({
+          status: target,
+          ...(options.snapshotHash ? { latestSnapshotHash: options.snapshotHash } : {}),
+          updatedAt: this.now(),
+        }).where(eq(tasks.id, task.id)).run();
         return run;
       }, { behavior: "immediate" });
     } catch (error) {
@@ -118,19 +119,24 @@ export class DatabasePorts implements
   }
 
   async succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun> {
-    return this.finish(input, successStatus(input.runType));
+    return this.finish(input, taskStatusForRunSuccess(input.runType));
   }
 
   async fail(input: FinishRunInput & { taskId: string; runType: AgentRunType; sessionId: string | null }): Promise<AgentRun> {
     const task = await this.getTask(input.taskId);
-    if (!task) throw new Error("Task not found");
-    let target: TaskStatus;
-    if (input.runType === "developer_initial") {
-      const changed = !(await this.git.status(task.workingDirectory)).clean;
-      target = input.sessionId || task.developerSessionId || changed ? "ready_for_review" : "draft";
-    } else {
-      target = "ready_for_review";
+    if (!task) throw new NotFoundError("Task");
+    let workingTreeChanged = true;
+    if (input.runType === "developer_initial" && !(input.sessionId || task.developerSessionId)) {
+      try {
+        workingTreeChanged = !(await this.git.status(task.workingDirectory)).clean;
+      } catch {
+        // Conservatively preserve a recoverable state when Git cannot be inspected.
+      }
     }
+    const target = taskStatusForRunFailure(input.runType, {
+      hasDeveloperSession: Boolean(input.sessionId || task.developerSessionId),
+      workingTreeChanged,
+    });
     return this.finish(input, target);
   }
 
@@ -139,7 +145,7 @@ export class DatabasePorts implements
       transaction.update(agentRuns).set({ ...input.patch, processId: null }).where(eq(agentRuns.id, input.runId)).run();
       transaction.update(tasks).set({ status: taskStatus, updatedAt: this.now() }).where(eq(tasks.id, input.taskId)).run();
       const run = transaction.select().from(agentRuns).where(eq(agentRuns.id, input.runId)).get();
-      if (!run) throw new Error("Run not found");
+      if (!run) throw new NotFoundError("Run");
       return run as AgentRun;
     }, { behavior: "immediate" });
   }
@@ -172,9 +178,24 @@ export class DatabasePorts implements
     return rows.map(rowEvent);
   }
 
-  async recordSnapshot(taskId: string, snapshotHash: string): Promise<void> {
-    await this.database.db.update(tasks).set({ latestSnapshotHash: snapshotHash, updatedAt: this.now() })
-      .where(eq(tasks.id, taskId)).run();
+  async reviewSnapshotHash(runId: string): Promise<string | null> {
+    const row = await this.database.db.select({ snapshotHash: reviewRunSnapshots.snapshotHash })
+      .from(reviewRunSnapshots).where(eq(reviewRunSnapshots.runId, runId)).get();
+    if (row) return row.snapshotHash;
+
+    const legacyRow = await this.database.db.select().from(agentEvents).where(and(
+      eq(agentEvents.runId, runId),
+      eq(agentEvents.eventType, "review_parsed"),
+    )).orderBy(desc(agentEvents.sequence)).get();
+    if (!legacyRow) return null;
+    try {
+      const event = rowEvent(legacyRow);
+      if (!event.payload || typeof event.payload !== "object") return null;
+      const snapshotHash = (event.payload as Record<string, unknown>).startSnapshotHash;
+      return typeof snapshotHash === "string" && snapshotHash.length > 0 ? snapshotHash : null;
+    } catch {
+      return null;
+    }
   }
 
   async replaceFindings(taskId: string, runId: string, findings: ReviewFinding[]): Promise<void> {
@@ -186,10 +207,7 @@ export class DatabasePorts implements
   }
 
   async setParseStatus(run: AgentRun, status: "succeeded" | "failed"): Promise<AgentRun> {
-    this.database.db.transaction((transaction) => {
-      transaction.update(agentRuns).set({ reviewParseStatus: status }).where(eq(agentRuns.id, run.id)).run();
-      if (status === "failed") transaction.delete(reviewFindings).where(eq(reviewFindings.taskId, run.taskId)).run();
-    }, { behavior: "immediate" });
+    await this.database.db.update(agentRuns).set({ reviewParseStatus: status }).where(eq(agentRuns.id, run.id)).run();
     return { ...run, reviewParseStatus: status };
   }
 
@@ -231,12 +249,12 @@ export class DatabasePorts implements
   }
 
   private assertLease(deliveryId: string, leaseToken: string): void {
-    if (this.feedbackLeases.get(deliveryId) !== leaseToken) throw new Error("stale feedback lease");
+    if (this.feedbackLeases.get(deliveryId) !== leaseToken) throw new StaleFeedbackLeaseError();
   }
 
   private async getDelivery(deliveryId: string): Promise<FeedbackDelivery> {
     const delivery = await this.database.db.select().from(feedbackDeliveries).where(eq(feedbackDeliveries.id, deliveryId)).get();
-    if (!delivery) throw new Error("Feedback delivery not found");
+    if (!delivery) throw new NotFoundError("Feedback delivery");
     return delivery as FeedbackDelivery;
   }
 
@@ -250,7 +268,10 @@ export class DatabasePorts implements
 
   async listRuns(taskId: string): Promise<AgentRun[]> {
     return await this.database.db.select().from(agentRuns).where(eq(agentRuns.taskId, taskId))
-      .orderBy(asc(agentRuns.startedAt), asc(agentRuns.finishedAt)).all() as AgentRun[];
+      .orderBy(
+        asc(sql`case when ${agentRuns.status} in ('queued', 'running') then 1 else 0 end`),
+        asc(sql`coalesce(${agentRuns.finishedAt}, ${agentRuns.startedAt})`),
+      ).all() as AgentRun[];
   }
 
   async hasActiveProjectRun(projectId: string): Promise<boolean> {
@@ -301,18 +322,16 @@ export class DatabasePorts implements
     for (const run of candidates) {
       const task = await this.getTask(run.taskId);
       if (!task) continue;
-      let target: TaskStatus = "ready_for_review";
-      if (run.runType === "developer_initial") {
-        if (run.externalSessionId || task.developerSessionId) {
-          target = "ready_for_review";
-        } else {
-          try {
-            target = (await this.git.status(task.workingDirectory)).clean ? "draft" : "ready_for_review";
-          } catch {
-            target = "ready_for_review";
-          }
+      const hasDeveloperSession = Boolean(run.externalSessionId || task.developerSessionId);
+      let workingTreeChanged = true;
+      if (run.runType === "developer_initial" && !hasDeveloperSession) {
+        try {
+          workingTreeChanged = !(await this.git.status(task.workingDirectory)).clean;
+        } catch {
+          // Conservatively preserve a recoverable state when Git cannot be inspected.
         }
       }
+      const target = taskStatusForRunFailure(run.runType, { hasDeveloperSession, workingTreeChanged });
       const finishedAt = this.now();
       const interrupted = this.database.db.transaction((transaction) => {
         transaction.update(agentRuns).set({ status: "interrupted", processId: null, finishedAt })

@@ -142,12 +142,13 @@ describe("ReviewService", () => {
     const outcome = await started.completion;
 
     expect(starter.input).toMatchObject({ runType: "reviewer", sessionId: undefined });
+    expect(starter.input).toMatchObject({ snapshotHash: "snapshot-start" });
     expect(starter.input?.prompt).toContain("Add validation to user input.");
     expect(outcome.result?.summary).toBe("Three findings");
     expect(outcome.findings.map((finding) => finding.selected)).toEqual([true, true, false]);
     expect(outcome.findings.every((finding) => !finding.dismissed && finding.userNote === null)).toBe(true);
     expect(outcome.stale).toBe(false);
-    expect(persistence.snapshots).toEqual(["snapshot-start"]);
+    expect(persistence.snapshots).toEqual([]);
     expect(persistence.parseStatuses).toEqual(["succeeded"]);
     expect(emitted.at(-1)?.type).toBe("review_parsed");
   });

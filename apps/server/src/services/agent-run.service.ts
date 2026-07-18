@@ -11,6 +11,7 @@ import type {
 } from "@local-pair-review/shared";
 import { AgentProcessError } from "../utils/process-supervisor";
 import { redactSensitive } from "../utils/redact";
+import { createRunEvent } from "../utils/agent-event";
 import type { EventService } from "./event.service";
 
 export interface FinishRunInput {
@@ -34,7 +35,7 @@ export interface AgentRunPersistencePort {
 
 export interface TaskRunStatePort {
   /** Must atomically insert the queued Run, check locks, and transition Task. */
-  queue(run: AgentRun): Promise<AgentRun>;
+  queue(run: AgentRun, options?: { snapshotHash?: string }): Promise<AgentRun>;
   /** Must atomically finish the Run and transition Task to its success state. */
   succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun>;
   /** Must atomically finish the Run and apply the spec's Task fallback. */
@@ -50,6 +51,8 @@ export interface StartAgentRunInput {
   runType: AgentRunType;
   prompt: string;
   sessionId?: string;
+  /** Review-only snapshot persisted atomically with the queued Run. */
+  snapshotHash?: string;
   signal?: AbortSignal;
 }
 
@@ -122,7 +125,7 @@ export class AgentRunService {
       finishedAt: null,
     };
 
-    const persisted = await this.taskState.queue(run);
+    const persisted = await this.taskState.queue(run, input.snapshotHash ? { snapshotHash: input.snapshotHash } : {});
     const driver = this.drivers[provider];
     this.activeDrivers.set(run.id, driver);
     const completion = this.execute(persisted, input, driver);
@@ -184,15 +187,6 @@ export class AgentRunService {
       const interrupted = this.interrupting.has(run.id);
       const cancelled = error instanceof AgentProcessError && error.kind === "cancelled";
       const status = interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
-      try {
-        await this.events.publish(this.lifecycleEvent(
-          run,
-          interrupted ? "run_interrupted" : cancelled ? "run_cancelled" : "run_failed",
-          { message: error instanceof Error ? error.message : String(error) },
-        ));
-      } catch {
-        // The original persistence/driver error remains authoritative.
-      }
       const terminal = await this.taskState.fail({
         runId: run.id,
         taskId: run.taskId,
@@ -208,6 +202,15 @@ export class AgentRunService {
           finishedAt: this.now(),
         },
       });
+      try {
+        await this.events.publish(this.lifecycleEvent(
+          run,
+          interrupted ? "run_interrupted" : cancelled ? "run_cancelled" : "run_failed",
+          { message: error instanceof Error ? error.message : String(error) },
+        ));
+      } catch {
+        // The terminal Run/Task transaction is authoritative.
+      }
       return terminal;
     } finally {
       this.activeDrivers.delete(run.id);
@@ -228,15 +231,6 @@ export class AgentRunService {
   }
 
   private lifecycleEvent(run: AgentRun, type: AgentEvent["type"], payload: unknown): AgentEvent {
-    return {
-      sequence: 0,
-      timestamp: this.now(),
-      projectId: run.projectId,
-      taskId: run.taskId,
-      runId: run.id,
-      source: "system",
-      type,
-      payload,
-    };
+    return createRunEvent(run, "system", type, payload, this.now());
   }
 }

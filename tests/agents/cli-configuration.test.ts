@@ -50,6 +50,8 @@ describe("CLI argument arrays", () => {
       "resume",
       "thread-exact-123",
       "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
       "-",
     ]);
   });

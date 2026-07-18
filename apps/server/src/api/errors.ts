@@ -11,7 +11,7 @@ import {
   ProjectWriteRunConflictError,
   TaskTransitionConflictError,
 } from "../services/task.service";
-import { DuplicateFeedbackError } from "../services/feedback.service";
+import { DuplicateFeedbackError, StaleFeedbackLeaseError } from "../services/feedback.service";
 import { GitRootValidationError } from "../utils/path";
 
 export class NotFoundError extends Error {
@@ -49,12 +49,18 @@ export class ServiceShuttingDownError extends Error {
   }
 }
 
+function isSqliteConstraintError(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) || error.message.includes("constraint failed");
+}
+
 export function errorResponse(error: unknown): Response {
   if (error instanceof ZodError || error instanceof SyntaxError || error instanceof GitRootValidationError) {
     return Response.json({ code: "VALIDATION_ERROR", message: "Invalid request.", details: error instanceof ZodError ? error.issues : undefined }, { status: 400 });
   }
-  if (error instanceof NotFoundError || (error instanceof Error && /not found/i.test(error.message))) {
-    return Response.json({ code: "NOT_FOUND", message: error instanceof Error ? error.message : "Resource not found." }, { status: 404 });
+  if (error instanceof NotFoundError) {
+    return Response.json({ code: "NOT_FOUND", message: error.message }, { status: 404 });
   }
   if (
     error instanceof DuplicateProjectError
@@ -69,7 +75,8 @@ export function errorResponse(error: unknown): Response {
     || error instanceof StaleSnapshotError
     || error instanceof ServiceShuttingDownError
     || error instanceof RunConflictError
-    || (error instanceof Error && /constraint failed|active .*run|stale feedback lease/i.test(error.message))
+    || error instanceof StaleFeedbackLeaseError
+    || isSqliteConstraintError(error)
   ) {
     const details = error instanceof ConfirmationRequiredError ? error.data
       : error instanceof DirtyWorkingTreeError ? { files: error.files }

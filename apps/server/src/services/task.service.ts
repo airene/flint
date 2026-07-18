@@ -1,21 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
-import type { AgentRunType, Task, TaskStatus } from "@local-pair-review/shared";
+import { and, eq } from "drizzle-orm";
+import type { Task, TaskStatus } from "@local-pair-review/shared";
 import type { AppDatabase } from "../db/database";
-import { agentRuns, projects, tasks } from "../db/schema";
+import { projects, tasks } from "../db/schema";
 import { GitService } from "./git.service";
+import { assertTaskTransition } from "./task-run-state";
+
+export { InvalidTaskTransitionError } from "./task-run-state";
 
 export class DirtyWorkingTreeError extends Error {
   constructor(readonly files: string[]) {
     super("The working tree has uncommitted changes; explicit confirmation is required");
     this.name = "DirtyWorkingTreeError";
-  }
-}
-
-export class InvalidTaskTransitionError extends Error {
-  constructor(from: TaskStatus, to: TaskStatus) {
-    super(`Cannot transition task from ${from} to ${to}`);
-    this.name = "InvalidTaskTransitionError";
   }
 }
 
@@ -28,7 +24,7 @@ export class TaskTransitionConflictError extends Error {
 
 export class ProjectWriteRunConflictError extends Error {
   constructor(readonly projectId: string) {
-    super("This project already has an active developer run");
+    super("This project has an active run that conflicts with development or review");
     this.name = "ProjectWriteRunConflictError";
   }
 }
@@ -45,22 +41,6 @@ export interface CreateTaskInput {
   originalPrompt: string;
   confirmDirtyWorkingTree?: boolean;
 }
-
-export interface FallbackContext {
-  hasSessionId?: boolean;
-  workingTreeChanged?: boolean;
-  reviewParseFailed?: boolean;
-}
-
-const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
-  draft: ["developing"],
-  developing: ["ready_for_review"],
-  ready_for_review: ["reviewing", "fixing"],
-  reviewing: ["waiting_for_human"],
-  waiting_for_human: ["fixing", "reviewing", "completed"],
-  fixing: ["ready_for_review"],
-  completed: [],
-};
 
 function now(): string { return new Date().toISOString(); }
 
@@ -97,14 +77,18 @@ export class TaskService {
   }
 
   async update(taskId: string, changes: Pick<Partial<Task>, "title" | "originalPrompt">): Promise<Task | null> {
-    if (Object.keys(changes).length > 0) await this.database.db.update(tasks).set({ ...changes, updatedAt: now() }).where(eq(tasks.id, taskId)).run();
+    const task = await this.get(taskId);
+    if (!task) return null;
+    if (task.status === "completed") throw new CompletedTaskReadOnlyError(taskId);
+    if (Object.keys(changes).length === 0) return task;
+    await this.database.db.update(tasks).set({ ...changes, updatedAt: now() }).where(eq(tasks.id, taskId)).run();
     return this.get(taskId);
   }
 
   async transition(taskId: string, target: TaskStatus): Promise<Task> {
     const task = await this.get(taskId);
     if (!task) throw new Error("Task not found");
-    if (!transitions[task.status].includes(target)) throw new InvalidTaskTransitionError(task.status, target);
+    assertTaskTransition(task.status, target);
     const completedAt = target === "completed" ? now() : null;
     const updated = await this.database.db.update(tasks).set({ status: target, updatedAt: now(), completedAt }).where(and(
       eq(tasks.id, taskId),
@@ -118,33 +102,4 @@ export class TaskService {
     return this.transition(taskId, "completed");
   }
 
-  async fallbackAfterRun(taskId: string, runType: AgentRunType, context: FallbackContext = {}): Promise<Task> {
-    const task = await this.get(taskId);
-    if (!task) throw new Error("Task not found");
-    let status: TaskStatus;
-    if (runType === "developer_initial") {
-      const changed = context.workingTreeChanged ?? !(await this.git.status(task.workingDirectory)).clean;
-      status = context.hasSessionId || Boolean(task.developerSessionId) || changed ? "ready_for_review" : "draft";
-    } else if (runType === "reviewer" && context.reviewParseFailed) {
-      status = "waiting_for_human";
-    } else if (runType === "developer_feedback" || runType === "reviewer") {
-      status = "ready_for_review";
-    } else {
-      status = task.status;
-    }
-    await this.database.db.update(tasks).set({ status, updatedAt: now() }).where(eq(tasks.id, taskId)).run();
-    return (await this.get(taskId))!;
-  }
-
-  async hasActiveProjectWriteRun(projectId: string): Promise<boolean> {
-    return Boolean(await this.database.db.select({ id: agentRuns.id }).from(agentRuns).where(and(
-      eq(agentRuns.projectId, projectId),
-      inArray(agentRuns.runType, ["developer_initial", "developer_feedback"]),
-      inArray(agentRuns.status, ["queued", "running"]),
-    )).get());
-  }
-
-  async assertNoActiveProjectWriteRun(projectId: string): Promise<void> {
-    if (await this.hasActiveProjectWriteRun(projectId)) throw new ProjectWriteRunConflictError(projectId);
-  }
 }

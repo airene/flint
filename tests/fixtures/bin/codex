@@ -61,8 +61,20 @@ const emitNormal = () => {
   emit({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 3, output_tokens: 5 } });
 };
 
+function hasWorkspaceWriteResumeConfig(): boolean {
+  const configIndex = args.indexOf("-c");
+  return configIndex !== -1 && args[configIndex + 1] === 'sandbox_mode="workspace-write"';
+}
+
+if (args[1] === "resume" && !hasWorkspaceWriteResumeConfig()) {
+  console.error("Fake Codex resume requires -c sandbox_mode=\"workspace-write\"");
+  process.exit(25);
+}
+
 switch (scenario) {
   case "normal":
+    emitNormal();
+    break;
   case "resume":
     emitNormal();
     break;
@@ -73,8 +85,12 @@ switch (scenario) {
       process.exit(23);
     }
     if (/selected validation finding/i.test(prompt)
-      && (args[1] !== "resume" || args[2] !== "codex-session-fake-123")) {
-      console.error("Fake Codex E2E feedback must use the exact persisted session ID");
+      && (
+        args[1] !== "resume"
+        || args[2] !== "codex-session-fake-123"
+        || !hasWorkspaceWriteResumeConfig()
+      )) {
+      console.error("Fake Codex E2E feedback must use the exact persisted session ID and workspace-write config");
       process.exit(24);
     }
     await Bun.write("src/input.ts", "export const input = 'E2E Fake Codex edit';\n");

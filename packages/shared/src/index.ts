@@ -304,6 +304,7 @@ export const selectFindingsResponseSchema = findingsResponseSchema;
 export type SelectFindingsResponse = z.infer<typeof selectFindingsResponseSchema>;
 
 export const feedbackPreviewRequestSchema = z.object({
+  sourceReviewRunId: z.string().min(1),
   selectedFindingIds: z.array(z.string().min(1)),
 }).strict();
 export type FeedbackPreviewRequest = z.infer<typeof feedbackPreviewRequestSchema>;

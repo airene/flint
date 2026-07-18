@@ -8,6 +8,7 @@ import {
 } from "@local-pair-review/shared";
 import type { StartAgentRunInput, StartedAgentRun } from "./agent-run.service";
 import type { EventService } from "./event.service";
+import { createRunEvent } from "../utils/agent-event";
 
 export interface ReviewSnapshot {
   snapshotHash: string;
@@ -20,7 +21,6 @@ export interface ReviewContextPort {
 }
 
 export interface ReviewPersistencePort {
-  recordSnapshot(taskId: string, snapshotHash: string): Promise<void>;
   replaceFindings(taskId: string, runId: string, findings: ReviewFinding[]): Promise<void>;
   setParseStatus(run: AgentRun, status: "succeeded" | "failed"): Promise<AgentRun>;
 }
@@ -101,12 +101,12 @@ export class ReviewService {
 
   async start(task: Task): Promise<StartedReview> {
     const startSnapshot = await this.options.context.capture(task);
-    await this.options.persistence.recordSnapshot(task.id, startSnapshot.snapshotHash);
     const started = await this.options.agentRuns.start({
       task,
       runType: "reviewer",
       prompt: buildReviewPrompt({ task, gitStatus: startSnapshot.gitStatus, diffStat: startSnapshot.diffStat }),
       sessionId: undefined,
+      snapshotHash: startSnapshot.snapshotHash,
     });
     return {
       run: started.run,
@@ -184,15 +184,6 @@ export class ReviewService {
   }
 
   private reviewEvent(run: AgentRun, type: AgentEvent["type"], payload: unknown): AgentEvent {
-    return {
-      sequence: 0,
-      timestamp: this.now(),
-      projectId: run.projectId,
-      taskId: run.taskId,
-      runId: run.id,
-      source: "system",
-      type,
-      payload,
-    };
+    return createRunEvent(run, "system", type, payload, this.now());
   }
 }
