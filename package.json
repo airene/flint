@@ -16,8 +16,8 @@
     "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p apps/server && tsc --noEmit -p apps/web"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
-    "@types/bun": "^1.3.3",
-    "typescript": "^5.9.3"
+    "@playwright/test": "^1.61.1",
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
   }
 }
