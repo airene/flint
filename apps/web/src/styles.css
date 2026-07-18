@@ -104,6 +104,12 @@ a { color: inherit; text-decoration: none; }
 .repo-link.active .repo-glyph { color: var(--accent); background: rgba(255, 138, 76, .15); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-empty { color: var(--faint); font-size: 12px; padding: 8px 10px; }
+.section-count { color: var(--faint); font-size: 10px; font-weight: 700; }
+.task-link { gap: 9px; }
+.task-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--faint); }
+.task-dot.developing, .task-dot.fixing, .task-dot.reviewing { background: var(--blue); }
+.task-dot.waiting_for_human { background: var(--yellow); }
+.task-dot.ready_for_review { background: var(--green); }
 .sidebar-footer { margin-top: auto; display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 10px; padding: 12px 9px 0; border-top: 1px solid var(--border-soft); }
 .local-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(78, 212, 155, .45); }
 .theme-toggle { margin-left: auto; width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; background: var(--button-bg); color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; transition: .15s ease; }

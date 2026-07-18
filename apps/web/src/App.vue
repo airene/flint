@@ -1,20 +1,36 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import { useProjectsStore } from "./stores/projects";
 import { useSystemStore } from "./stores/system";
+import { useTaskWorkspaceStore } from "./stores/task-workspace";
 import { useThemeStore } from "./stores/theme";
 
 const route = useRoute();
 const projects = useProjectsStore();
 const system = useSystemStore();
+const workspace = useTaskWorkspaceStore();
 const theme = useThemeStore();
 const currentProjectId = computed(() => String(route.params.projectId ?? ""));
+const currentTaskId = computed(() => String(route.params.taskId ?? ""));
 const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.allProvidersReady || !system.gitReady)));
 
 onMounted(() => {
-  void projects.loadProjects().catch(() => undefined);
+  void projects.loadProjects()
+    .then(() => projects.loadUnfinishedTasks())
+    .catch(() => undefined);
   void system.loadCliStatus().catch(() => undefined);
+});
+
+// Keep the unfinished-task shortcuts fresh as the user navigates (task statuses change mid-session).
+watch(() => route.fullPath, () => {
+  void projects.loadUnfinishedTasks().catch(() => undefined);
+});
+
+// Mirror the currently-open task's live status (arrives via WebSocket) into the sidebar list,
+// so a task that starts/continues development shows up without waiting for a navigation refetch.
+watch(() => workspace.task, (task) => {
+  if (task) projects.syncTask(task);
 });
 </script>
 
@@ -48,6 +64,23 @@ onMounted(() => {
         >
           <span class="repo-glyph">{{ project.name.slice(0, 1).toUpperCase() }}</span>
           <span class="truncate">{{ project.name }}</span>
+        </RouterLink>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label"><span>Unfinished tasks</span><span class="section-count">{{ projects.unfinishedTasks.length }}</span></div>
+        <div v-if="projects.unfinishedLoading && !projects.unfinishedTasks.length" class="sidebar-empty">Loading…</div>
+        <div v-else-if="!projects.unfinishedTasks.length" class="sidebar-empty">All caught up</div>
+        <RouterLink
+          v-for="task in projects.unfinishedTasks"
+          :key="task.id"
+          :to="`/tasks/${task.id}`"
+          class="repo-link task-link"
+          :class="{ active: currentTaskId === task.id }"
+          :title="task.title"
+        >
+          <span :class="['task-dot', task.status]" />
+          <span class="truncate">{{ task.title }}</span>
         </RouterLink>
       </div>
 

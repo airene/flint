@@ -44,6 +44,8 @@ export const useProjectsStore = defineStore("projects", {
     projects: [] as Project[],
     currentProject: null as Project | null,
     tasks: [] as Task[],
+    unfinishedTasks: [] as Task[],
+    unfinishedLoading: false,
     loading: false,
     error: null as ApiClientError | null,
     pendingDirtyTask: null as PendingDirtyTask | null,
@@ -140,6 +142,29 @@ export const useProjectsStore = defineStore("projects", {
       } catch (error) {
         this.error = clientError(error);
         throw this.error;
+      }
+    },
+    syncTask(task: Task): void {
+      // Reflect the currently-open task's live status into the sidebar list immediately,
+      // instead of waiting for the next navigation-triggered refetch.
+      const others = this.unfinishedTasks.filter((candidate) => candidate.id !== task.id);
+      this.unfinishedTasks = (task.status === "completed" ? others : [...others, task])
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    },
+    async loadUnfinishedTasks(): Promise<Task[]> {
+      this.unfinishedLoading = true;
+      try {
+        const projects = this.projects.length ? this.projects : await this.loadProjects();
+        const perProject = await Promise.all(
+          projects.map((project) => apiEndpoints.listTasks(project.id).catch(() => [] as Task[])),
+        );
+        this.unfinishedTasks = perProject
+          .flat()
+          .filter((task) => task.status !== "completed")
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return this.unfinishedTasks;
+      } finally {
+        this.unfinishedLoading = false;
       }
     },
     async loadTasks(projectId?: string): Promise<Task[]> {
