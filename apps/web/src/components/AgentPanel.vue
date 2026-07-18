@@ -66,15 +66,15 @@ function eventText(event: AgentEvent): string {
 .agent-orb.claude { background: var(--accent); box-shadow: 0 0 10px rgba(255,138,76,.35); }
 .agent-summary { display: grid; gap: 13px; }
 .run-meta { display: flex; gap: 7px; color: var(--faint); font-size: 10px; overflow: hidden; }
-.terminal-meta{display:flex;gap:7px;color:#8d97a6;font-size:9px}
+.terminal-meta{display:flex;gap:7px;color:var(--muted);font-size:9px}
 .agent-panel { overflow: hidden; }
 .agent-summary { min-width: 0; }
-.prompt-block, .message-block { min-width: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: #10141a; }
+.prompt-block, .message-block { min-width: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--block-bg); }
 .mini-label { display: block; color: var(--faint); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
-p { margin: 0; color: #c7cfdb; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
-.error-text { border-color: rgba(255,107,117,.25); }.error-text p { color: #ffabb1; }
+p { margin: 0; color: var(--text-body); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.error-text { border-color: rgba(255,107,117,.25); }.error-text p { color: var(--red-ink); }
 .event-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 .event-lines { max-height: 220px; margin-top: 8px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
-.event-line { display: grid; grid-template-columns: 30px 90px minmax(0,1fr); gap: 8px; padding: 6px 8px; border-bottom: 1px solid #20252e; color: var(--faint); font-size: 9px; }
-.event-line:last-child { border: 0; }.event-line code { color: #aeb7c5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.event-line.stderr code { color: #f39aa1; }
+.event-line { display: grid; grid-template-columns: 30px 90px minmax(0,1fr); gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); color: var(--faint); font-size: 9px; }
+.event-line:last-child { border: 0; }.event-line code { color: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.event-line.stderr code { color: var(--red-ink); }
 </style>

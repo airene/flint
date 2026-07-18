@@ -33,5 +33,5 @@ const selected = computed(() => props.findings.filter((finding) => finding.selec
 </template>
 
 <style scoped>
-.feedback-body{display:grid;gap:11px}.feedback-text{min-height:210px;font-family:"SFMono-Regular",Consolas,monospace;font-size:10px}.feedback-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}.stale-notice{padding:9px 10px;border:1px solid rgba(243,201,105,.3);border-radius:6px;color:#e9cf8b;background:rgba(243,201,105,.07);font-size:10px}.stale-notice strong{margin-right:4px}
+.feedback-body{display:grid;gap:11px}.feedback-text{min-height:210px;font-family:"SFMono-Regular",Consolas,monospace;font-size:10px}.feedback-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}.stale-notice{padding:9px 10px;border:1px solid rgba(243,201,105,.3);border-radius:6px;color:var(--yellow-ink);background:rgba(243,201,105,.07);font-size:10px}.stale-notice strong{margin-right:4px}
 </style>

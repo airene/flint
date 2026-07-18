@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
 import type { GitFileDiffResponse, GitFileStatus, ReviewFinding } from "@local-pair-review/shared";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import "monaco-editor/min/vs/editor/editor.main.css";
+import { useThemeStore } from "../stores/theme";
+
+const { theme } = storeToRefs(useThemeStore());
+const monacoTheme = (): string => (theme.value === "light" ? "vs" : "vs-dark");
 
 (globalThis as typeof globalThis & { MonacoEnvironment?: { getWorker(): Worker } }).MonacoEnvironment ??= {
   getWorker: () => new EditorWorker(),
@@ -22,6 +27,9 @@ let editor: monaco.editor.IStandaloneDiffEditor | null = null;
 let originalModel: monaco.editor.ITextModel | null = null;
 let modifiedModel: monaco.editor.ITextModel | null = null;
 let decorations: monaco.editor.IEditorDecorationsCollection | null = null;
+// Path awaiting a "jump to first difference" once Monaco finishes computing the diff.
+let pendingRevealPath: string | null = null;
+let lastDiffPath: string | null = null;
 
 function language(path: string | null): string {
   const extension = path?.split(".").pop()?.toLowerCase();
@@ -41,6 +49,12 @@ function renderDiff(): void {
   originalModel = monaco.editor.createModel(props.diff.originalText ?? "", language(props.selectedPath));
   modifiedModel = monaco.editor.createModel(props.diff.modifiedText ?? "", language(props.selectedPath));
   editor.setModel({ original: originalModel, modified: modifiedModel });
+  // Only jump to the first change when the selected file actually changes, so refreshing
+  // findings or diff content for the same file preserves the current scroll position.
+  if (props.selectedPath !== lastDiffPath) {
+    lastDiffPath = props.selectedPath;
+    pendingRevealPath = props.selectedPath;
+  }
   const currentFindings = props.findings.filter((finding) => finding.file === props.selectedPath && finding.startLine);
   decorations = editor.getModifiedEditor().createDecorationsCollection(currentFindings.map((finding) => ({
     range: new monaco.Range(finding.startLine!, 1, finding.endLine ?? finding.startLine!, 1),
@@ -48,19 +62,36 @@ function renderDiff(): void {
   })));
 }
 
+function revealFirstDiff(): void {
+  if (!editor || pendingRevealPath === null || pendingRevealPath !== props.selectedPath) return;
+  const changes = editor.getLineChanges();
+  const first = changes?.[0];
+  if (!first) return; // diff not computed yet, or no line changes; wait for the next update
+  pendingRevealPath = null;
+  if (first.modifiedEndLineNumber > 0) {
+    editor.getModifiedEditor().revealLineNearTop(first.modifiedStartLineNumber);
+  } else {
+    editor.getOriginalEditor().revealLineNearTop(Math.max(1, first.originalStartLineNumber));
+  }
+}
+
 async function mountEditor(): Promise<void> {
   await nextTick();
   if (!editorHost.value || editor) return;
   editor = monaco.editor.createDiffEditor(editorHost.value, {
-    theme: "vs-dark", automaticLayout: true, readOnly: true, renderSideBySide: true,
+    theme: monacoTheme(), automaticLayout: true, readOnly: true, renderSideBySide: true,
     minimap: { enabled: false }, fontSize: 11, lineHeight: 19, scrollBeyondLastLine: false,
     originalEditable: false, renderOverviewRuler: false, padding: { top: 10 },
   });
+  // Monaco computes the diff asynchronously; reveal the first change once it is ready.
+  editor.onDidUpdateDiff(revealFirstDiff);
   renderDiff();
 }
 
 onMounted(mountEditor);
 watch(() => [props.diff, props.findings], renderDiff, { deep: true });
+// Monaco is a global editor namespace; setTheme swaps every editor's theme live.
+watch(theme, () => monaco.editor.setTheme(monacoTheme()));
 onBeforeUnmount(() => {
   decorations?.clear();
   editor?.setModel(null);
@@ -95,5 +126,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.diff-panel{overflow:hidden;display:flex;flex-direction:column;height:100%;min-height:520px}.diff-layout{flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.file-list{border-right:1px solid var(--border);background:#10141a}.file-row{width:100%;min-height:34px;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:7px;padding:0 9px;border:0;border-bottom:1px solid #1e232c;color:#9fa9b8;background:transparent;text-align:left;cursor:pointer;font-size:10px}.file-row:hover,.file-row.active{color:var(--text);background:#1a2029}.file-row.active{box-shadow:inset 2px 0 var(--accent)}.file-status{font-size:9px;font-weight:800;color:var(--yellow)}.file-status.added,.file-status.untracked{color:var(--green)}.file-status.deleted{color:var(--red)}.binary-tag{color:var(--faint);font-size:7px}.editor-wrap{position:relative;min-width:0;background:#0e1116}.monaco-host{position:absolute;inset:0}.monaco-host.hidden{visibility:hidden}.editor-empty{position:absolute;inset:0;display:grid;place-content:center;z-index:2}.editor-empty span{display:block;margin-top:5px}.diff-panel :deep(.finding-line){background:rgba(243,201,105,.1)}.diff-panel :deep(.finding-p0){background:rgba(255,107,117,.15)}.diff-panel :deep(.finding-p2){background:rgba(112,167,255,.08)}
+.diff-panel{overflow:hidden;display:flex;flex-direction:column;height:100%;min-height:520px}.diff-layout{flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.file-list{border-right:1px solid var(--border);background:var(--block-bg)}.file-row{width:100%;min-height:34px;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:7px;padding:0 9px;border:0;border-bottom:1px solid var(--border-soft);color:var(--muted);background:transparent;text-align:left;cursor:pointer;font-size:10px}.file-row:hover,.file-row.active{color:var(--text);background:var(--surface-active)}.file-row.active{box-shadow:inset 2px 0 var(--accent)}.file-status{font-size:9px;font-weight:800;color:var(--yellow)}.file-status.added,.file-status.untracked{color:var(--green)}.file-status.deleted{color:var(--red)}.binary-tag{color:var(--faint);font-size:7px}.editor-wrap{position:relative;min-width:0;background:var(--code-bg)}.monaco-host{position:absolute;inset:0}.monaco-host.hidden{visibility:hidden}.editor-empty{position:absolute;inset:0;display:grid;place-content:center;z-index:2}.editor-empty span{display:block;margin-top:5px}.diff-panel :deep(.finding-line){background:rgba(243,201,105,.1)}.diff-panel :deep(.finding-p0){background:rgba(255,107,117,.15)}.diff-panel :deep(.finding-p2){background:rgba(112,167,255,.08)}
 </style>

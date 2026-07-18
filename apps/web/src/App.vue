@@ -3,10 +3,12 @@ import { computed, onMounted } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import { useProjectsStore } from "./stores/projects";
 import { useSystemStore } from "./stores/system";
+import { useThemeStore } from "./stores/theme";
 
 const route = useRoute();
 const projects = useProjectsStore();
 const system = useSystemStore();
+const theme = useThemeStore();
 const currentProjectId = computed(() => String(route.params.projectId ?? ""));
 const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.allProvidersReady || !system.gitReady)));
 
@@ -52,6 +54,15 @@ onMounted(() => {
       <div class="sidebar-footer">
         <span class="local-pulse" />
         <span>127.0.0.1 · local only</span>
+        <button
+          type="button"
+          class="theme-toggle"
+          :title="theme.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+          :aria-label="theme.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+          @click="theme.toggle()"
+        >
+          {{ theme.theme === "dark" ? "☾" : "☀" }}
+        </button>
       </div>
     </aside>
 

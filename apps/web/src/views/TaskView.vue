@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import type { ReviewFinding, UpdateFindingRequest } from "@local-pair-review/shared";
 import ActivityPanel from "../components/ActivityPanel.vue";
 import AgentPanel from "../components/AgentPanel.vue";
@@ -15,6 +15,7 @@ import { useSystemStore } from "../stores/system";
 import { useTaskWorkspaceStore } from "../stores/task-workspace";
 
 const route = useRoute();
+const router = useRouter();
 const workspace = useTaskWorkspaceStore();
 const system = useSystemStore();
 const developerLabel = computed(() => system.providerLabel(workspace.task?.developerProvider));
@@ -80,9 +81,24 @@ watch(() => route.params.taskId, () => {
 });
 
 function load(): void { void workspace.load(String(route.params.taskId)); }
-onMounted(() => {
-  load();
-  if (!system.cliStatus) void system.loadCliStatus().catch(() => undefined);
+
+// Freshly created tasks arrive with ?start=1 so development kicks off immediately,
+// without the user having to open the detail page and press Start.
+async function maybeAutoStart(): Promise<void> {
+  if (route.query.start !== "1") return;
+  const query = { ...route.query };
+  delete query.start;
+  void router.replace({ query }); // consume the flag so refresh/back never re-triggers
+  if (workspace.task?.id !== String(route.params.taskId) || workspace.task.status !== "draft") return;
+  if (workspace.busy || !developerReady.value) return; // respect the same gating as the Start button
+  await workspace.develop();
+}
+
+onMounted(async () => {
+  const cliStatusReady = system.cliStatus ? Promise.resolve() : system.loadCliStatus().catch(() => undefined);
+  await workspace.load(String(route.params.taskId));
+  await cliStatusReady;
+  await maybeAutoStart();
 });
 watch(() => route.params.taskId, load);
 onBeforeUnmount(() => {
@@ -172,15 +188,15 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 </template>
 
 <style scoped>
-.task-page{max-width:1580px}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:#adb6c4;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
-.runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:#e9cf8b;font-size:11px}.runtime-warning span{color:#c7b47e;font-size:9px;line-height:1.5}
+.task-page{max-width:none}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:var(--text-body);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
+.runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:var(--yellow-ink);font-size:11px}.runtime-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
 @media(max-width:900px){.run-workspace{grid-template-columns:1fr}.context-strip{grid-template-columns:repeat(2,1fr);gap:10px}.context-strip>div{border:0;padding:0}}
 
 .diff-drawer-root{position:fixed;inset:0;z-index:60;visibility:hidden;pointer-events:none;transition:visibility 0s .26s}
 .diff-drawer-root.open{visibility:visible;pointer-events:auto;transition:visibility 0s 0s}
-.diff-drawer-backdrop{position:absolute;inset:0;background:rgba(6,8,11,.62);backdrop-filter:blur(1.5px);opacity:0;transition:opacity .22s ease}
+.diff-drawer-backdrop{position:absolute;inset:0;background:var(--overlay);backdrop-filter:blur(1.5px);opacity:0;transition:opacity .22s ease}
 .diff-drawer-root.open .diff-drawer-backdrop{opacity:1}
-.diff-drawer-panel{position:absolute;top:0;right:0;height:100vh;width:50vw;min-width:520px;display:flex;flex-direction:column;border-left:1px solid var(--border-bright);background:var(--bg);box-shadow:-24px 0 60px rgba(0,0,0,.4);transform:translateX(100%);transition:transform .26s cubic-bezier(.32,.72,0,1)}
+.diff-drawer-panel{position:absolute;top:0;right:0;height:100vh;width:65vw;min-width:520px;display:flex;flex-direction:column;border-left:1px solid var(--border-bright);background:var(--bg);box-shadow:var(--shadow-drawer);transform:translateX(100%);transition:transform .26s cubic-bezier(.32,.72,0,1)}
 .diff-drawer-root.open .diff-drawer-panel{transform:translateX(0)}
 .diff-drawer-topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border)}
 .diff-drawer-title{color:var(--text);font-size:12px;font-weight:750;letter-spacing:.01em}
