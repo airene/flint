@@ -4,7 +4,7 @@
 - 评审基线:`main` @ `251b3eb`(chore project refactor),工作区 clean
 - 评审方式:全量通读 `apps/server`、`apps/web`、`packages/shared`、`tests`、`scripts` 与工程配置(约 7,700 行源码 + 4,700 行测试),并实际运行验证命令、比对真实 CLI 行为
 - 验证环境:Bun 1.3.14 / TypeScript 7.0.2(tsgo)/ codex-cli 0.144.5 / Claude Code(均已本机安装并登录)/ macOS
-- 更新(2026-07-19):原 2.1 / 2.2 / 2.3 与 3.4 中已修复的内容已从本文移除,其余章节编号保持原状(故存在空缺);修复后四门(typecheck / test / build / e2e)全绿,TypeScript 锁定 5.9.3
+- 更新(2026-07-19):原 2.1 / 2.2 / 2.3、3.1 与 3.4 中已修复的内容已从本文移除,其余章节编号保持原状(故存在空缺);TypeScript 锁定 5.9.3
 
 ---
 
@@ -20,25 +20,20 @@
 
 | 命令 | 结果(2026-07-19 修复后) | 说明 |
 | --- | --- | --- |
-| `bun test` | ✅ 147 pass / 0 fail | 单元与集成测试质量高 |
+| `bun test` | ✅ 148 pass / 0 fail | 单元与集成测试质量高 |
 | `bun run typecheck` | ✅ | shared 补 bun types;TypeScript 锁定 5.9.3;`scripts/**` 已纳入检查 |
 | `bun run build` | ✅ | shared 显式 `rootDir`;TS 5.9.3 下 vue-tsc 恢复兼容 |
-| `bun run test:e2e` | ✅ 8 passed | 用例已对齐 Create & start 自动启动语义 |
+| `bun run test:e2e` | ✅ 9 passed | 覆盖 Create & start 与逐 Review draft 隔离/恢复语义 |
 | `smoke:codex` / `smoke:claude` | 未执行(需授权) | 脚本传参已修复,待人工授权后运行 |
 
 真实 CLI 参数核对(本机实测,均与代码假设一致,**这部分没有问题**):
 
 - `claude --json-schema <schema>`、`claude auth status`(JSON 输出、exit 0)、`--permission-mode plan`、`--allowedTools <tools...>` 变参 —— 全部真实存在;
-- `Bash(git status *)` 空格+星号语法与 `:*` 等价,是官方文档承认的前缀匹配写法(允许列表写法正确);
 - `codex exec --json / --sandbox / --output-schema`、`codex exec resume`、`codex login status`、`-c sandbox_mode="..."` TOML 覆盖 —— 全部真实存在。
 
 ---
 
 ## 3. P2:值得尽快安排
-
-### 3.1 `replaceFindings` 全量清空历史 findings,人工备注会永久丢失
-
-`apps/server/src/api/database-ports.ts:200-206` 在每次新 review 解析成功时 `DELETE FROM review_findings WHERE task_id = ?`,把**之前所有 review run 的 findings 连同用户的 selected/dismissed/userNote 一起删掉**。schema 本身是按 `runId` 组织的,完全支持保留;前端 `review-display.ts` 也已经为老 run 做了从 `structuredOutput` 兜底还原的逻辑(但备注还原不了)。建议改为只追加、按 runId 查询,顺带解锁"对比两轮 review"的产品能力(见 5.A)。
 
 ### 3.2 `/git/status` 每次都做全量 capture,大仓库会痛
 
@@ -115,7 +110,7 @@
 3. **任务编辑**:`updateTask` API 已存在,补 UI 即可(至少允许改 title)。
 4. **Token 用量统计**:codex `turn.completed` 事件里已有 usage(ActivityPanel 已经在展示单条),聚合到 run/task 维度显示成本感知。
 5. **最近打开排序**:接线 `lastOpenedAt`(进入 ProjectView 时 PATCH 一下),Projects 列表按最近使用排。
-6. **多轮 review 对比**:在 3.1 改为按 run 保留 findings 之后,Run History 选中不同 reviewer run 即可对比两轮结果,并显示"上轮 N 条已修复"。
+6. **多轮 review 对比**:findings、人工备注和 feedback draft 现已按 Review Run 永久保留；下一步可在 Run History 对比两轮结果,并显示"上轮 N 条已修复"。
 
 ### 5.B 产品向(中期)
 
@@ -151,7 +146,7 @@
 
 1. 加最小 CI(typecheck + test + build,e2e 可选)防止质量门再次腐烂;
 2. 人工授权后真正跑一次 `smoke:codex` / `smoke:claude`(脚本已修复),完成 DoD 的最后一项;
-3. 按 3.x 顺序消化(建议先 3.1 findings 保留与 3.3 WAL,改动小收益大);
+3. 按剩余 3.x 顺序消化(建议先 3.3 WAL,改动小收益大);
 4. 功能层面从 5.A 挑:桌面通知(5.B.1)+ reviewer 追问(5.A.2)+ 用量统计(5.A.4)是我认为性价比最高的三个。
 
 ---

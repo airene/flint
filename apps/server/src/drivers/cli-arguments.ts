@@ -31,24 +31,12 @@ const ALLOWED_REVIEW_TOOLS = [
   "Read",
   "Glob",
   "Grep",
-  "Bash(git status *)",
-  "Bash(git diff *)",
-  "Bash(git log *)",
-  "Bash(git show *)",
-  "Bash(git ls-files *)",
 ] as const;
 
 const DENIED_REVIEW_TOOLS = [
   "Edit",
   "Write",
   "NotebookEdit",
-  "Bash(rm *)",
-  "Bash(mv *)",
-  "Bash(git reset *)",
-  "Bash(git checkout *)",
-  "Bash(git clean *)",
-  "Bash(git commit *)",
-  "Bash(git push *)",
 ] as const;
 
 function isReviewer(runType: AgentRunType): boolean {
@@ -90,10 +78,13 @@ export function buildClaudeArgs(executable: string, runType: AgentRunType, sessi
     "--output-format",
     "stream-json",
     "--verbose",
+    "--safe-mode",
     "--permission-mode",
     "plan",
     "--json-schema",
     JSON.stringify(reviewJsonSchema),
+    "--tools",
+    ...ALLOWED_REVIEW_TOOLS,
     "--allowedTools",
     ...ALLOWED_REVIEW_TOOLS,
     "--disallowedTools",

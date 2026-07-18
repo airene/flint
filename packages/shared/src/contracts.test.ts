@@ -85,12 +85,21 @@ test("agent action and run DTOs are strict", () => {
 
 test("finding selection and feedback preview DTOs are strict", () => {
   expectStrict("updateFindingRequestSchema", { selected: true, userNote: null });
-  expectStrict("selectFindingsRequestSchema", { mode: "P0_P1" });
+  expectStrict("selectFindingsRequestSchema", { sourceReviewRunId: "run_review", mode: "P0_P1" });
   expectStrict("feedbackPreviewRequestSchema", {
     sourceReviewRunId: "run_review",
     selectedFindingIds: ["finding_1"],
   });
   expectStrict("feedbackPreviewResponseSchema", { finalText: "Preview" });
+  expectStrict("saveFeedbackDraftRequestSchema", { finalText: "Edited preview" });
+  expectStrict("feedbackDraftSchema", {
+    taskId: "task_1",
+    sourceReviewRunId: "run_review",
+    finalText: "Edited preview",
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T00:00:01.000Z",
+  });
+  expectStrict("feedbackDraftResponseSchema", { draft: null });
 });
 
 test("Git response DTOs distinguish status, aggregate diff, files, and file diff", () => {

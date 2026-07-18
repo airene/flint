@@ -56,4 +56,14 @@ describe("latestFeedbackReviewRun", () => {
 
     expect(latestFeedbackReviewRun([earlier, latest], [])?.id).toBe(latest.id);
   });
+
+  test("uses the latest successful review while retaining findings from every review", () => {
+    const earlier = reviewRun("review-earlier", "succeeded");
+    const latest = reviewRun("review-latest", "succeeded");
+
+    expect(latestFeedbackReviewRun(
+      [earlier, latest],
+      [finding(earlier.id), { ...finding(latest.id), id: "finding-latest" }],
+    )?.id).toBe(latest.id);
+  });
 });

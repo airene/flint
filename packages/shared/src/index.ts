@@ -126,6 +126,15 @@ export const feedbackDeliverySchema = z.object({
 }).strict();
 export type FeedbackDelivery = z.infer<typeof feedbackDeliverySchema>;
 
+export const feedbackDraftSchema = z.object({
+  taskId: z.string(),
+  sourceReviewRunId: z.string(),
+  finalText: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).strict();
+export type FeedbackDraft = z.infer<typeof feedbackDraftSchema>;
+
 export const reviewResultSchema = z.object({
   summary: z.string(),
   verdict: z.enum(["pass", "changes_suggested"]),
@@ -303,7 +312,10 @@ export type FindingsResponse = z.infer<typeof findingsResponseSchema>;
 
 export const findingSelectionModeSchema = z.enum(["P0", "P0_P1", "all", "none"]);
 export type FindingSelectionMode = z.infer<typeof findingSelectionModeSchema>;
-export const selectFindingsRequestSchema = z.object({ mode: findingSelectionModeSchema }).strict();
+export const selectFindingsRequestSchema = z.object({
+  sourceReviewRunId: z.string().min(1),
+  mode: findingSelectionModeSchema,
+}).strict();
 export type SelectFindingsRequest = z.infer<typeof selectFindingsRequestSchema>;
 export const selectFindingsResponseSchema = findingsResponseSchema;
 export type SelectFindingsResponse = z.infer<typeof selectFindingsResponseSchema>;
@@ -315,6 +327,12 @@ export const feedbackPreviewRequestSchema = z.object({
 export type FeedbackPreviewRequest = z.infer<typeof feedbackPreviewRequestSchema>;
 export const feedbackPreviewResponseSchema = z.object({ finalText: z.string() }).strict();
 export type FeedbackPreviewResponse = z.infer<typeof feedbackPreviewResponseSchema>;
+export const feedbackDraftResponseSchema = z.object({ draft: feedbackDraftSchema.nullable() }).strict();
+export type FeedbackDraftResponse = z.infer<typeof feedbackDraftResponseSchema>;
+export const saveFeedbackDraftRequestSchema = z.object({ finalText: z.string() }).strict();
+export type SaveFeedbackDraftRequest = z.infer<typeof saveFeedbackDraftRequestSchema>;
+export const saveFeedbackDraftResponseSchema = feedbackDraftSchema;
+export type SaveFeedbackDraftResponse = z.infer<typeof saveFeedbackDraftResponseSchema>;
 
 export const gitFileStatusSchema = z.object({
   path: z.string().min(1),

@@ -548,6 +548,11 @@ describe("Claude driver", () => {
     expect(invocation.args).toContain("--permission-mode");
     expect(invocation.args).toContain("--allowedTools");
     expect(invocation.args).toContain("--disallowedTools");
+    expect(invocation.args).toContain("--safe-mode");
+    const toolsIndex = invocation.args.indexOf("--tools");
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(invocation.args.slice(toolsIndex + 1, toolsIndex + 4)).toEqual(["Read", "Glob", "Grep"]);
+    expect(invocation.args.some((argument: string) => argument.includes("Bash"))).toBe(false);
     expect(invocation.cwd).toBe(await realpath(directory));
     expect(invocation.prompt).toBe("Perform the fake task without contacting a model.");
   });

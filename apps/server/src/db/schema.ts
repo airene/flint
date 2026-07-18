@@ -107,6 +107,14 @@ export const feedbackDeliveries = sqliteTable("feedback_deliveries", {
   createdAt: text("created_at").notNull(),
 }, (table) => [index("feedback_deliveries_task_id_index").on(table.taskId)]);
 
+export const feedbackDrafts = sqliteTable("feedback_drafts", {
+  sourceReviewRunId: text("source_review_run_id").primaryKey().references(() => agentRuns.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  finalText: text("final_text").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("feedback_drafts_task_id_index").on(table.taskId)]);
+
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

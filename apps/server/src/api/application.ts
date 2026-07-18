@@ -8,6 +8,7 @@ import {
   deleteProjectRequestSchema,
   developTaskRequestSchema,
   feedbackPreviewRequestSchema,
+  saveFeedbackDraftRequestSchema,
   feedbackTaskRequestSchema,
   reviewTaskRequestSchema,
   selectFindingsRequestSchema,
@@ -125,6 +126,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         snapshotHash: capture.snapshotHash,
         gitStatus: JSON.stringify(capture.status.files),
         diffStat: capture.diff.stat,
+        trackedPatch: capture.diff.trackedPatch,
+        untrackedPatch: capture.diff.untrackedPatch,
       };
     },
   };
@@ -213,11 +216,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     return run;
   }
 
-  async function feedbackFindings(
-    task: Task,
-    sourceReviewRunId: string,
-    selectedFindingIds: string[],
-  ): Promise<{ sourceRun: AgentRun; findings: ReviewFinding[] }> {
+  async function requireSuccessfulReviewRun(task: Task, sourceReviewRunId: string): Promise<AgentRun> {
     const sourceRun = await requireRun(sourceReviewRunId);
     if (
       sourceRun.taskId !== task.id
@@ -227,7 +226,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     ) {
       throw new RunConflictError("Feedback must reference a successfully parsed reviewer run from this task.");
     }
-    const findings = await ports.listFindings(task.id);
+    return sourceRun;
+  }
+
+  async function feedbackFindings(
+    task: Task,
+    sourceReviewRunId: string,
+    selectedFindingIds: string[],
+  ): Promise<{ sourceRun: AgentRun; findings: ReviewFinding[] }> {
+    const sourceRun = await requireSuccessfulReviewRun(task, sourceReviewRunId);
+    const findings = (await ports.listFindings(task.id)).filter((finding) => finding.runId === sourceRun.id);
     const selected = new Set(selectedFindingIds);
     if (selected.size !== selectedFindingIds.length || selectedFindingIds.some((id) => (
       !findings.some((finding) => finding.id === id && finding.runId === sourceRun.id && !finding.dismissed)
@@ -364,6 +372,14 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         const task = await requireTask(parameters[0]!);
         await requireCli(task.developerProvider);
         const { sourceRun } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
+        const draftNow = new Date().toISOString();
+        await ports.saveFeedbackDraft({
+          taskId: task.id,
+          sourceReviewRunId: sourceRun.id,
+          finalText: input.finalText,
+          createdAt: draftNow,
+          updatedAt: draftNow,
+        });
         const sourceSnapshotHash = await ports.reviewSnapshotHash(sourceRun.id);
         if (!sourceSnapshotHash) {
           throw new RunConflictError("The source review snapshot is unavailable.");
@@ -435,19 +451,49 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/findings\/select$/);
       if (parameters && method === "POST") {
         ensureAccepting();
-        await requireTask(parameters[0]!);
+        const task = await requireTask(parameters[0]!);
         const input = await body(request, selectFindingsRequestSchema);
-        return json(await ports.selectFindings(parameters[0]!, input.mode));
+        const sourceRun = await requireSuccessfulReviewRun(task, input.sourceReviewRunId);
+        return json(await ports.selectFindings(task.id, sourceRun.id, input.mode));
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/reviews\/([^/]+)\/feedback-draft$/);
+      if (parameters && (method === "GET" || method === "PUT")) {
+        const task = await requireTask(parameters[0]!);
+        const sourceRun = await requireSuccessfulReviewRun(task, parameters[1]!);
+        if (method === "GET") {
+          return json({ draft: await ports.getFeedbackDraft(task.id, sourceRun.id) });
+        }
+        ensureAccepting();
+        const input = await body(request, saveFeedbackDraftRequestSchema);
+        const now = new Date().toISOString();
+        return json(await ports.saveFeedbackDraft({
+          taskId: task.id,
+          sourceReviewRunId: sourceRun.id,
+          finalText: input.finalText,
+          createdAt: now,
+          updatedAt: now,
+        }));
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/feedback\/preview$/);
       if (parameters && method === "POST") {
+        ensureAccepting();
         const task = await requireTask(parameters[0]!);
         const input = await body(request, feedbackPreviewRequestSchema);
-        const { findings: available } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
+        const { sourceRun, findings: available } = await feedbackFindings(task, input.sourceReviewRunId, input.selectedFindingIds);
         const selected = new Set(input.selectedFindingIds);
         const findings = available.map((finding) => ({ ...finding, selected: selected.has(finding.id) }));
-        return json({ finalText: composeFeedback(task, findings) });
+        const finalText = composeFeedback(task, findings);
+        const now = new Date().toISOString();
+        await ports.saveFeedbackDraft({
+          taskId: task.id,
+          sourceReviewRunId: sourceRun.id,
+          finalText,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return json({ finalText });
       }
 
       return json({ code: "NOT_FOUND", message: "Route not found" }, 404);

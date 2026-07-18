@@ -67,6 +67,12 @@ const initialSchema = `
     selected_finding_ids TEXT NOT NULL, final_text TEXT NOT NULL, sent_at TEXT, created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS feedback_deliveries_task_id_index ON feedback_deliveries(task_id);
+  CREATE TABLE IF NOT EXISTS feedback_drafts (
+    source_review_run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    final_text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS feedback_drafts_task_id_index ON feedback_drafts(task_id);
   CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 `;
 

@@ -5,6 +5,7 @@ import type {
   AgentRun,
   AgentRunType,
   FeedbackDelivery,
+  FeedbackDraft,
   FindingSelectionMode,
   ReviewFinding,
   Task,
@@ -15,6 +16,7 @@ import {
   agentEvents,
   agentRuns,
   feedbackDeliveries,
+  feedbackDrafts,
   reviewFindings,
   reviewRunSnapshots,
   tasks,
@@ -199,7 +201,10 @@ export class DatabasePorts implements
 
   async replaceFindings(taskId: string, runId: string, findings: ReviewFinding[]): Promise<void> {
     this.database.db.transaction((transaction) => {
-      transaction.delete(reviewFindings).where(eq(reviewFindings.taskId, taskId)).run();
+      transaction.delete(reviewFindings).where(and(
+        eq(reviewFindings.taskId, taskId),
+        eq(reviewFindings.runId, runId),
+      )).run();
       if (findings.length > 0) transaction.insert(reviewFindings).values(findings).run();
       transaction.update(agentRuns).set({ reviewParseStatus: "succeeded" }).where(eq(agentRuns.id, runId)).run();
     }, { behavior: "immediate" });
@@ -257,6 +262,34 @@ export class DatabasePorts implements
     return delivery as FeedbackDelivery;
   }
 
+  async getFeedbackDraft(taskId: string, sourceReviewRunId: string): Promise<FeedbackDraft | null> {
+    return (await this.database.db.select().from(feedbackDrafts).where(and(
+      eq(feedbackDrafts.taskId, taskId),
+      eq(feedbackDrafts.sourceReviewRunId, sourceReviewRunId),
+    )).get() as FeedbackDraft | undefined) ?? null;
+  }
+
+  async saveFeedbackDraft(candidate: FeedbackDraft): Promise<FeedbackDraft> {
+    return this.database.db.transaction((transaction) => {
+      const task = transaction.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, candidate.taskId)).get();
+      if (task?.status === "completed") throw new CompletedTaskReadOnlyError(candidate.taskId);
+      const existing = transaction.select().from(feedbackDrafts).where(and(
+        eq(feedbackDrafts.taskId, candidate.taskId),
+        eq(feedbackDrafts.sourceReviewRunId, candidate.sourceReviewRunId),
+      )).get();
+      if (existing) {
+        transaction.update(feedbackDrafts).set({
+          finalText: candidate.finalText,
+          updatedAt: candidate.updatedAt,
+        }).where(eq(feedbackDrafts.sourceReviewRunId, candidate.sourceReviewRunId)).run();
+      } else {
+        transaction.insert(feedbackDrafts).values(candidate).run();
+      }
+      return transaction.select().from(feedbackDrafts)
+        .where(eq(feedbackDrafts.sourceReviewRunId, candidate.sourceReviewRunId)).get() as FeedbackDraft;
+    }, { behavior: "immediate" });
+  }
+
   async getTask(taskId: string): Promise<Task | null> {
     return (await this.database.db.select().from(tasks).where(eq(tasks.id, taskId)).get() as Task | undefined) ?? null;
   }
@@ -296,18 +329,19 @@ export class DatabasePorts implements
     }, { behavior: "immediate" });
   }
 
-  async selectFindings(taskId: string, mode: FindingSelectionMode): Promise<ReviewFinding[]> {
+  async selectFindings(taskId: string, runId: string, mode: FindingSelectionMode): Promise<ReviewFinding[]> {
     return this.database.db.transaction((transaction) => {
       const task = transaction.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskId)).get();
       if (task?.status === "completed") throw new CompletedTaskReadOnlyError(taskId);
-      const findings = transaction.select().from(reviewFindings).where(eq(reviewFindings.taskId, taskId))
+      const reviewScope = and(eq(reviewFindings.taskId, taskId), eq(reviewFindings.runId, runId));
+      const findings = transaction.select().from(reviewFindings).where(reviewScope)
         .orderBy(asc(reviewFindings.createdAt), asc(reviewFindings.id)).all() as ReviewFinding[];
       for (const finding of findings) {
         const selected = mode === "all" || (mode === "P0" && finding.severity === "P0")
           || (mode === "P0_P1" && finding.severity !== "P2");
         transaction.update(reviewFindings).set({ selected }).where(eq(reviewFindings.id, finding.id)).run();
       }
-      return transaction.select().from(reviewFindings).where(eq(reviewFindings.taskId, taskId))
+      return transaction.select().from(reviewFindings).where(reviewScope)
         .orderBy(asc(reviewFindings.createdAt), asc(reviewFindings.id)).all() as ReviewFinding[];
     }, { behavior: "immediate" });
   }

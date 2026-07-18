@@ -193,11 +193,13 @@ describe("API endpoints", () => {
     await api.getGitFileDiff(taskId, "src/a b+#?.ts");
     await api.listFindings(taskId);
     await api.updateFinding(findingId, { selected: true });
-    await api.selectFindings(taskId, { mode: "P0_P1" });
+    await api.selectFindings(taskId, { sourceReviewRunId: "review-1", mode: "P0_P1" });
     await api.previewFeedback(taskId, {
       sourceReviewRunId: "review-1",
       selectedFindingIds: ["finding-1"],
     });
+    await api.getFeedbackDraft(taskId, "review-1");
+    await api.saveFeedbackDraft(taskId, "review-1", { finalText: "Edited feedback" });
 
     expect(calls.map(({ path }) => path)).toEqual([
       "/api/health",
@@ -229,6 +231,8 @@ describe("API endpoints", () => {
       "/api/findings/finding%20%2F%20one",
       "/api/tasks/task%20%2F%20one/findings/select",
       "/api/tasks/task%20%2F%20one/feedback/preview",
+      "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
+      "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
     ]);
     expect(calls[2]?.options).toMatchObject({
       method: "POST",

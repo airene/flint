@@ -24,7 +24,7 @@ export type ApiQueryValue = string | number | boolean | null | undefined;
 export type ApiQuery = Readonly<Record<string, ApiQueryValue | readonly ApiQueryValue[]>>;
 
 export interface ApiRequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   query?: ApiQuery;
   body?: unknown;
   headers?: HeadersInit;

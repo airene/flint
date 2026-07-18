@@ -8,6 +8,7 @@ import {
   deleteProjectResponseSchema,
   developTaskResponseSchema,
   feedbackPreviewResponseSchema,
+  feedbackDraftResponseSchema,
   feedbackTaskResponseSchema,
   findingResponseSchema,
   findingsResponseSchema,
@@ -22,6 +23,7 @@ import {
   runListResponseSchema,
   runResponseSchema,
   selectFindingsResponseSchema,
+  saveFeedbackDraftResponseSchema,
   settingsResponseSchema,
   taskListResponseSchema,
   taskResponseSchema,
@@ -40,6 +42,7 @@ import {
   type DevelopTaskResponse,
   type FeedbackPreviewRequest,
   type FeedbackPreviewResponse,
+  type FeedbackDraftResponse,
   type FeedbackTaskRequest,
   type FeedbackTaskResponse,
   type FindingResponse,
@@ -56,6 +59,8 @@ import {
   type RunResponse,
   type SelectFindingsRequest,
   type SelectFindingsResponse,
+  type SaveFeedbackDraftRequest,
+  type SaveFeedbackDraftResponse,
   type SettingsResponse,
   type TaskListResponse,
   type TaskResponse,
@@ -99,6 +104,8 @@ export interface ApiEndpoints {
   updateFinding(findingId: string, input: UpdateFindingRequest): Promise<FindingResponse>;
   selectFindings(taskId: string, input: SelectFindingsRequest): Promise<SelectFindingsResponse>;
   previewFeedback(taskId: string, input: FeedbackPreviewRequest): Promise<FeedbackPreviewResponse>;
+  getFeedbackDraft(taskId: string, reviewRunId: string): Promise<FeedbackDraftResponse>;
+  saveFeedbackDraft(taskId: string, reviewRunId: string, input: SaveFeedbackDraftRequest): Promise<SaveFeedbackDraftResponse>;
 }
 
 export function createApiEndpoints(client: ApiClient): ApiEndpoints {
@@ -179,6 +186,15 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
       method: "POST",
       body: input,
     }),
+    getFeedbackDraft: (taskId, reviewRunId) => client.request(
+      `/api/tasks/${id(taskId)}/reviews/${id(reviewRunId)}/feedback-draft`,
+      feedbackDraftResponseSchema,
+    ),
+    saveFeedbackDraft: (taskId, reviewRunId, input) => client.request(
+      `/api/tasks/${id(taskId)}/reviews/${id(reviewRunId)}/feedback-draft`,
+      saveFeedbackDraftResponseSchema,
+      { method: "PUT", body: input },
+    ),
   };
 }
 

@@ -156,12 +156,51 @@ test("completes the human-gated Codex and Claude workflow with an exact-session 
   const feedback = page.getByPlaceholder("Select review findings, then generate a feedback preview…");
   await expect(feedback).toHaveValue(/Validate input/);
   await feedback.fill("Please fix the selected validation finding and retain the public error shape.");
+  const taskId = new URL(page.url()).pathname.split("/").at(-1)!;
+  await expect.poll(async () => {
+    const runsResponse = await page.request.get(`/api/tasks/${taskId}/runs`);
+    const runs = await runsResponse.json() as Array<{ id: string; runType: string }>;
+    const reviewRunId = runs.find((run) => run.runType === "reviewer")?.id;
+    if (!reviewRunId) return "";
+    const response = await page.request.get(`/api/tasks/${taskId}/reviews/${reviewRunId}/feedback-draft`);
+    if (!response.ok()) return "";
+    const result = await response.json() as { draft: { finalText: string } | null };
+    return result.draft?.finalText ?? "";
+  }).toBe("Please fix the selected validation finding and retain the public error shape.");
+  await page.reload();
+  await expect(feedback).toHaveValue("Please fix the selected validation finding and retain the public error shape.");
   await page.getByRole("button", { name: "Resume Codex session →" }).click();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Start Claude Code review" }).click();
   await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Mark complete" }).click();
   await expect(page.locator(".task-header").getByText("completed", { exact: true })).toBeVisible();
+});
+
+test("flushes the current review draft before starting a later review", async ({ page }) => {
+  await createTask(page, await createRepository(), "Keep every review draft isolated.");
+  await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Start Claude Code review" }).click();
+  await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
+
+  const firstDraftText = "Keep this first review draft permanently.";
+  const feedback = page.getByPlaceholder("Select review findings, then generate a feedback preview…");
+  await feedback.fill(firstDraftText);
+  await page.getByRole("button", { name: "Start Claude Code review" }).click();
+  await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
+  await expect(feedback).toHaveValue("");
+
+  const taskId = new URL(page.url()).pathname.split("/").at(-1)!;
+  const runsResponse = await page.request.get(`/api/tasks/${taskId}/runs`);
+  const runs = await runsResponse.json() as Array<{ id: string; runType: string }>;
+  const reviewRunIds = runs.filter((run) => run.runType === "reviewer").map((run) => run.id);
+  expect(reviewRunIds).toHaveLength(2);
+  const firstDraftResponse = await page.request.get(
+    `/api/tasks/${taskId}/reviews/${reviewRunIds[0]}/feedback-draft`,
+  );
+  expect(firstDraftResponse.ok()).toBe(true);
+  const firstDraft = await firstDraftResponse.json() as { draft: { finalText: string } | null };
+  expect(firstDraft.draft?.finalText).toBe(firstDraftText);
 });
 
 test("selects and restores exact runs from task history", async ({ page }) => {

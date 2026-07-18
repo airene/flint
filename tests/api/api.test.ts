@@ -254,6 +254,23 @@ describe("local server API assembly", () => {
       }),
     });
     expect(preview.body.finalText).toContain("Validate input");
+    const generatedDraft = await request<{
+      draft: { sourceReviewRunId: string; finalText: string } | null;
+    }>(baseUrl, `/api/tasks/${createdTask.body.id}/reviews/${reviewed.body.run.id}/feedback-draft`);
+    expect(generatedDraft).toMatchObject({
+      status: 200,
+      body: { draft: { sourceReviewRunId: reviewed.body.run.id, finalText: preview.body.finalText } },
+    });
+    const editedDraftText = `${preview.body.finalText}\n\nManual edit for the first review.`;
+    const editedDraft = await request<{ sourceReviewRunId: string; finalText: string }>(
+      baseUrl,
+      `/api/tasks/${createdTask.body.id}/reviews/${reviewed.body.run.id}/feedback-draft`,
+      { method: "PUT", body: JSON.stringify({ finalText: editedDraftText }) },
+    );
+    expect(editedDraft).toMatchObject({
+      status: 200,
+      body: { sourceReviewRunId: reviewed.body.run.id, finalText: editedDraftText },
+    });
 
     await Bun.write(join(rootPath, "POST_REVIEW.txt"), "changed after successful review\n");
     environment.FAKE_CLI_SCENARIO = "schema-failure";
@@ -295,7 +312,7 @@ describe("local server API assembly", () => {
         body: JSON.stringify({
           sourceReviewRunId: reviewed.body.run.id,
           selectedFindingIds: [retained[0]!.id],
-          finalText: retainedPreview.body.finalText,
+          finalText: editedDraftText,
         }),
       },
     );
@@ -308,15 +325,53 @@ describe("local server API assembly", () => {
       body: JSON.stringify({
         sourceReviewRunId: reviewed.body.run.id,
         selectedFindingIds: [retained[0]!.id],
-        finalText: retainedPreview.body.finalText,
+        finalText: editedDraftText,
         confirmStaleSnapshot: true,
       }),
     });
     expect(feedback.status).toBe(202);
     await waitForTask(baseUrl, createdTask.body.id, "ready_for_review");
 
-    await request(baseUrl, `/api/tasks/${createdTask.body.id}/review`, { method: "POST", body: "{}" });
+    const latestReview = await request<{ run: AgentRun }>(baseUrl, `/api/tasks/${createdTask.body.id}/review`, {
+      method: "POST", body: "{}",
+    });
     await waitForTask(baseUrl, createdTask.body.id, "waiting_for_human");
+    await waitForReviewParse(baseUrl, latestReview.body.run.id, "succeeded");
+
+    const latestDraft = await request<{ draft: { finalText: string } | null }>(
+      baseUrl,
+      `/api/tasks/${createdTask.body.id}/reviews/${latestReview.body.run.id}/feedback-draft`,
+    );
+    expect(latestDraft).toMatchObject({ status: 200, body: { draft: null } });
+    const retainedDraft = await request<{ draft: { sourceReviewRunId: string; finalText: string } | null }>(
+      baseUrl,
+      `/api/tasks/${createdTask.body.id}/reviews/${reviewed.body.run.id}/feedback-draft`,
+    );
+    expect(retainedDraft).toMatchObject({
+      status: 200,
+      body: { draft: { sourceReviewRunId: reviewed.body.run.id, finalText: editedDraftText } },
+    });
+
+    const reviewHistory = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings`)).body;
+    expect(reviewHistory).toHaveLength(2);
+    expect(reviewHistory.find((finding) => finding.runId === reviewed.body.run.id)).toMatchObject({
+      userNote: "Keep the public error shape.",
+      selected: true,
+    });
+    const latestFinding = reviewHistory.find((finding) => finding.runId === latestReview.body.run.id)!;
+    const latestSelection = await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings/select`, {
+      method: "POST",
+      body: JSON.stringify({ sourceReviewRunId: latestReview.body.run.id, mode: "none" }),
+    });
+    expect(latestSelection.status).toBe(200);
+    expect(latestSelection.body).toHaveLength(1);
+    expect(latestSelection.body[0]).toMatchObject({ id: latestFinding.id, selected: false });
+    const afterLatestSelection = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${createdTask.body.id}/findings`)).body;
+    expect(afterLatestSelection.find((finding) => finding.runId === reviewed.body.run.id)).toMatchObject({
+      userNote: "Keep the public error shape.",
+      selected: true,
+    });
+
     const completed = await request<Task>(baseUrl, `/api/tasks/${createdTask.body.id}/complete`, {
       method: "POST", body: "{}",
     });
@@ -402,17 +457,32 @@ describe("local server API assembly", () => {
     await waitForTask(baseUrl, task.body.id, "waiting_for_human");
     await waitForReviewParse(baseUrl, reviewed.body.run.id, "succeeded");
     const [finding] = (await request<ReviewFinding[]>(baseUrl, `/api/tasks/${task.body.id}/findings`)).body;
+    const preview = await request<{ finalText: string }>(baseUrl, `/api/tasks/${task.body.id}/feedback/preview`, {
+      method: "POST",
+      body: JSON.stringify({ sourceReviewRunId: reviewed.body.run.id, selectedFindingIds: [finding!.id] }),
+    });
     await request(baseUrl, `/api/tasks/${task.body.id}/complete`, { method: "POST", body: "{}" });
 
     const updated = await request<{ code: string }>(baseUrl, `/api/findings/${finding!.id}`, {
       method: "PATCH", body: JSON.stringify({ selected: false, userNote: "mutated" }),
     });
     const selected = await request<{ code: string }>(baseUrl, `/api/tasks/${task.body.id}/findings/select`, {
-      method: "POST", body: JSON.stringify({ mode: "none" }),
+      method: "POST", body: JSON.stringify({ sourceReviewRunId: reviewed.body.run.id, mode: "none" }),
     });
+    const persistedDraft = await request<{ draft: { finalText: string } | null }>(
+      baseUrl,
+      `/api/tasks/${task.body.id}/reviews/${reviewed.body.run.id}/feedback-draft`,
+    );
+    const updatedDraft = await request<{ code: string }>(
+      baseUrl,
+      `/api/tasks/${task.body.id}/reviews/${reviewed.body.run.id}/feedback-draft`,
+      { method: "PUT", body: JSON.stringify({ finalText: "mutated" }) },
+    );
 
     expect(updated).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
     expect(selected).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+    expect(persistedDraft).toMatchObject({ status: 200, body: { draft: { finalText: preview.body.finalText } } });
+    expect(updatedDraft).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
     expect((await request<ReviewFinding[]>(baseUrl, `/api/tasks/${task.body.id}/findings`)).body[0]).toMatchObject({
       selected: true,
       userNote: null,

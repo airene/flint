@@ -86,23 +86,25 @@ describe("CLI argument arrays", () => {
   test("builds Claude reviewer invocation with read-only permissions and optional resume", () => {
     const args = buildClaudeArgs("/opt/claude", "reviewer", "review-session-456");
 
-    expect(args.slice(0, 8)).toEqual([
+    expect(args.slice(0, 9)).toEqual([
       "/opt/claude",
       "-p",
       "--output-format",
       "stream-json",
       "--verbose",
+      "--safe-mode",
       "--permission-mode",
       "plan",
       "--json-schema",
     ]);
-    expect(JSON.parse(args[8] ?? "")).toEqual(reviewJsonSchema);
+    expect(JSON.parse(args[9] ?? "")).toEqual(reviewJsonSchema);
+    const toolsIndex = args.indexOf("--tools");
+    expect(args.slice(toolsIndex + 1, toolsIndex + 4)).toEqual(["Read", "Glob", "Grep"]);
     expect(args).toContain("--allowedTools");
     expect(args).toContain("Read");
-    expect(args).toContain("Bash(git diff *)");
     expect(args).toContain("--disallowedTools");
     expect(args).toContain("Edit");
-    expect(args).toContain("Bash(git push *)");
+    expect(args.some((argument) => argument.includes("Bash"))).toBe(false);
     expect(args.slice(-2)).toEqual(["--resume", "review-session-456"]);
     expect(args).not.toContain("sh");
     expect(args).not.toContain("-c");

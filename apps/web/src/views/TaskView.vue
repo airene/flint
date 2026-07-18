@@ -28,6 +28,9 @@ const selectedRun = computed(() => workspace.runs.find((run) => run.id === selec
 const selectedHistoryEntry = computed(() => historyEntries.value.find((entry) => entry.runId === selectedRunId.value) ?? null);
 const selectedRunEvents = computed(() => workspace.events.filter((event) => event.runId === selectedRunId.value));
 const selectedIsReviewer = computed(() => selectedRun.value?.runType === "reviewer");
+const selectedReviewFindings = computed(() => selectedRun.value?.runType === "reviewer"
+  ? workspace.findings.filter((finding) => finding.runId === selectedRun.value?.id)
+  : []);
 const selectedIsFeedbackReview = computed(() => Boolean(
   selectedRun.value && selectedRun.value.id === workspace.feedbackReviewRun?.id,
 ));
@@ -148,15 +151,15 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
           <AgentPanel :title="selectedRunTitle" :run="selectedRun" :events="selectedRunEvents" />
           <ReviewPanel
             v-if="selectedIsReviewer"
-            :run="selectedRun" :findings="workspace.findings" :reviewer-label="reviewerLabel" :busy="workspace.busy"
+            :run="selectedRun" :findings="selectedReviewFindings" :reviewer-label="reviewerLabel" :busy="workspace.busy"
             :read-only="workspace.task.status !== 'waiting_for_human' || !selectedIsFeedbackReview"
             :stale="selectedReviewStale"
             @update-finding="updateFinding" @select-mode="workspace.selectMode" @jump-to-finding="jumpToFinding"
           />
           <FeedbackEditor
             v-if="workspace.task.status === 'waiting_for_human' && selectedIsFeedbackReview"
-            :findings="workspace.findings" :text="workspace.feedbackText" :developer-label="developerLabel" :busy="workspace.busy" :stale="workspace.staleFeedback"
-            @preview="workspace.previewFeedback" @update-text="workspace.feedbackText = $event"
+            :findings="selectedReviewFindings" :text="workspace.feedbackText" :developer-label="developerLabel" :busy="workspace.busy" :stale="workspace.staleFeedback"
+            @preview="workspace.previewFeedback" @update-text="workspace.updateFeedbackText"
             @send="workspace.sendFeedback(false)" @confirm-stale="workspace.sendFeedback(true)"
           />
           <ActivityPanel :events="selectedRunEvents" :connected="workspace.connected" />
@@ -177,7 +180,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
           <div class="diff-drawer-body">
             <DiffPanel
               :files="workspace.files" :selected-path="workspace.selectedPath" :diff="workspace.selectedDiff"
-              :findings="workspace.findings" :loading="workspace.loading"
+              :findings="selectedReviewFindings" :loading="workspace.loading"
               @select="workspace.selectFile" @refresh="workspace.refresh"
             />
           </div>

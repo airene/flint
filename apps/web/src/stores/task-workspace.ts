@@ -27,13 +27,13 @@ function webSocketUrl(): string {
 // Long-running tasks replay their full persisted history on load; keep only the most
 // recent window in memory so the tab cannot grow unbounded.
 const MAX_TASK_EVENTS = 5000;
+const FEEDBACK_DRAFT_SAVE_DELAY_MS = 250;
 
-export function latestFeedbackReviewRun(runs: AgentRun[], findings: ReviewFinding[]): AgentRun | null {
+export function latestFeedbackReviewRun(runs: AgentRun[], _findings: ReviewFinding[]): AgentRun | null {
   return runs.filter((run) => (
     run.runType === "reviewer"
     && run.status === "completed"
     && run.reviewParseStatus === "succeeded"
-    && (findings.length === 0 || findings.every((finding) => finding.runId === run.id))
   )).at(-1) ?? null;
 }
 
@@ -46,6 +46,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const selectedDiff = ref<GitFileDiffResponse | null>(null);
   const events = ref<AgentEvent[]>([]);
   const feedbackText = ref("");
+  const feedbackDraftRunId = ref<string | null>(null);
   const loading = ref(false);
   const busy = ref(false);
   const connected = ref(false);
@@ -54,13 +55,20 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const reviewSnapshotStale = ref(false);
   let controller: TaskEventController | null = null;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let feedbackDraftTimer: ReturnType<typeof setTimeout> | null = null;
+  let feedbackDraftQueue: Promise<void> = Promise.resolve();
   let generation = 0;
   const refreshGuard = new WorkspaceRefreshGuard();
 
   const activeRun = computed(() => runs.value.find((run) => run.status === "queued" || run.status === "running") ?? null);
   const latestReviewRun = computed(() => runs.value.filter((run) => run.runType === "reviewer").at(-1) ?? null);
   const feedbackReviewRun = computed(() => latestFeedbackReviewRun(runs.value, findings.value));
-  const selectedFindings = computed(() => findings.value.filter((finding) => finding.selected && !finding.dismissed));
+  const selectedFindings = computed(() => {
+    const runId = feedbackReviewRun.value?.id;
+    return runId
+      ? findings.value.filter((finding) => finding.runId === runId && finding.selected && !finding.dismissed)
+      : [];
+  });
 
   interface ActionContext {
     generation: number;
@@ -73,6 +81,45 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
 
   function isCurrent(context: ActionContext): boolean {
     return context.generation === generation && task.value?.id === context.taskId;
+  }
+
+  function clearFeedbackDraftTimer(): void {
+    if (feedbackDraftTimer) clearTimeout(feedbackDraftTimer);
+    feedbackDraftTimer = null;
+  }
+
+  function queueFeedbackDraftSave(context: ActionContext, reviewRunId: string, finalText: string): Promise<void> {
+    const save = feedbackDraftQueue.then(async () => {
+      try {
+        await apiEndpoints.saveFeedbackDraft(context.taskId, reviewRunId, { finalText });
+      } catch (problem) {
+        if (isCurrent(context) && feedbackReviewRun.value?.id === reviewRunId) error.value = message(problem);
+      }
+    });
+    feedbackDraftQueue = save.catch(() => undefined);
+    return save;
+  }
+
+  function flushFeedbackDraft(): Promise<void> {
+    if (!feedbackDraftTimer) return feedbackDraftQueue;
+    clearFeedbackDraftTimer();
+    const context = captureAction();
+    const reviewRunId = feedbackDraftRunId.value;
+    if (!context || !reviewRunId) return feedbackDraftQueue;
+    return queueFeedbackDraftSave(context, reviewRunId, feedbackText.value);
+  }
+
+  function updateFeedbackText(finalText: string): void {
+    feedbackText.value = finalText;
+    const context = captureAction();
+    const reviewRunId = feedbackReviewRun.value?.id;
+    feedbackDraftRunId.value = reviewRunId ?? null;
+    clearFeedbackDraftTimer();
+    if (!context || !reviewRunId) return;
+    feedbackDraftTimer = setTimeout(() => {
+      feedbackDraftTimer = null;
+      void queueFeedbackDraftSave(context, reviewRunId, finalText);
+    }, FEEDBACK_DRAFT_SAVE_DELAY_MS);
   }
 
   function mergeRun(run: AgentRun): boolean {
@@ -124,6 +171,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   }
 
   async function load(taskId: string): Promise<void> {
+    void flushFeedbackDraft();
     const loadGeneration = ++generation;
     controller?.stop();
     controller = null;
@@ -136,6 +184,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     staleFeedback.value = false;
     reviewSnapshotStale.value = false;
     feedbackText.value = "";
+    feedbackDraftRunId.value = null;
     events.value = [];
     task.value = null;
     runs.value = [];
@@ -148,11 +197,17 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId), apiEndpoints.getGitStatus(taskId),
       ]);
       const preferred = gitStatus.files[0]?.path ?? null;
-      const diff = preferred ? await apiEndpoints.getGitFileDiff(taskId, preferred) : null;
+      const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
+      const [diff, draftResponse] = await Promise.all([
+        preferred ? apiEndpoints.getGitFileDiff(taskId, preferred) : Promise.resolve(null),
+        reviewRun ? apiEndpoints.getFeedbackDraft(taskId, reviewRun.id) : Promise.resolve({ draft: null }),
+      ]);
       if (loadGeneration !== generation) return;
       task.value = loadedTask;
       runs.value = loadedRuns;
       findings.value = loadedFindings;
+      feedbackDraftRunId.value = reviewRun?.id ?? null;
+      feedbackText.value = draftResponse.draft?.finalText ?? "";
       files.value = gitStatus.files;
       reviewSnapshotStale.value = loadedRuns.some((run) => run.runType === "reviewer")
         && Boolean(loadedTask.latestSnapshotHash && gitStatus.snapshotHash && loadedTask.latestSnapshotHash !== gitStatus.snapshotHash);
@@ -175,10 +230,21 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       const [loadedTask, loadedRuns, loadedFindings, gitStatus] = await Promise.all([
         apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId), apiEndpoints.getGitStatus(taskId),
       ]);
+      const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
+      const draftChanged = reviewRun?.id !== feedbackDraftRunId.value;
+      if (draftChanged) await flushFeedbackDraft();
+      const draftResponse = draftChanged && reviewRun
+        ? await apiEndpoints.getFeedbackDraft(taskId, reviewRun.id)
+        : null;
       if (!canApplyRefresh(refreshToken, refreshGeneration, taskId)) return;
       task.value = loadedTask;
       runs.value = loadedRuns;
       findings.value = loadedFindings;
+      if (draftChanged) {
+        clearFeedbackDraftTimer();
+        feedbackDraftRunId.value = reviewRun?.id ?? null;
+        feedbackText.value = draftResponse?.draft?.finalText ?? "";
+      }
       files.value = gitStatus.files;
       reviewSnapshotStale.value = loadedRuns.some((run) => run.runType === "reviewer")
         && Boolean(loadedTask.latestSnapshotHash && gitStatus.snapshotHash && loadedTask.latestSnapshotHash !== gitStatus.snapshotHash);
@@ -208,6 +274,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   async function develop(prompt?: string): Promise<void> {
     const context = captureAction();
     if (!context) return;
+    await flushFeedbackDraft();
     const response = await action(context, () => apiEndpoints.developTask(context.taskId, prompt ? { prompt } : {}));
     if (response && isCurrent(context) && mergeRun(response.run)) task.value = response.task;
   }
@@ -215,6 +282,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   async function review(): Promise<void> {
     const context = captureAction();
     if (!context) return;
+    await flushFeedbackDraft();
     const response = await action(context, () => apiEndpoints.reviewTask(context.taskId));
     if (response && isCurrent(context) && mergeRun(response.run)) task.value = response.task;
   }
@@ -229,6 +297,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   async function complete(): Promise<void> {
     const context = captureAction();
     if (!context) return;
+    await flushFeedbackDraft();
     const completed = await action(context, () => apiEndpoints.completeTask(context.taskId));
     if (completed && isCurrent(context)) {
       task.value = completed;
@@ -250,22 +319,31 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       if (regeneratePreview && feedbackText.value === feedbackBeforeUpdate) {
         const reviewRun = feedbackReviewRun.value;
         if (!reviewRun) return;
+        await flushFeedbackDraft();
         const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
         const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, {
           sourceReviewRunId: reviewRun.id,
           selectedFindingIds,
         }));
-        if (preview && isCurrent(context) && feedbackText.value === feedbackBeforeUpdate) feedbackText.value = preview.finalText;
+        if (preview && isCurrent(context) && feedbackText.value === feedbackBeforeUpdate) {
+          feedbackDraftRunId.value = reviewRun.id;
+          feedbackText.value = preview.finalText;
+        }
       }
     }
   }
 
   async function selectMode(mode: FindingSelectionMode): Promise<void> {
     const context = captureAction();
-    if (!context) return;
-    const selected = await action(context, () => apiEndpoints.selectFindings(context.taskId, { mode }));
+    const reviewRun = feedbackReviewRun.value;
+    if (!context || !reviewRun) return;
+    const selected = await action(context, () => apiEndpoints.selectFindings(context.taskId, {
+      sourceReviewRunId: reviewRun.id,
+      mode,
+    }));
     if (selected && isCurrent(context)) {
-      findings.value = selected;
+      const selectedById = new Map(selected.map((finding) => [finding.id, finding]));
+      findings.value = findings.value.map((finding) => selectedById.get(finding.id) ?? finding);
       refreshGuard.mutate();
     }
   }
@@ -274,18 +352,23 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const context = captureAction();
     const reviewRun = feedbackReviewRun.value;
     if (!context || !reviewRun) return;
+    await flushFeedbackDraft();
     const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
     const preview = await action(context, () => apiEndpoints.previewFeedback(context.taskId, {
       sourceReviewRunId: reviewRun.id,
       selectedFindingIds,
     }));
-    if (preview && isCurrent(context)) feedbackText.value = preview.finalText;
+    if (preview && isCurrent(context)) {
+      feedbackDraftRunId.value = reviewRun.id;
+      feedbackText.value = preview.finalText;
+    }
   }
 
   async function sendFeedback(confirmStaleSnapshot = false): Promise<void> {
     const context = captureAction();
     const reviewRun = feedbackReviewRun.value;
     if (!context || !reviewRun) return;
+    await flushFeedbackDraft();
     const selectedFindingIds = selectedFindings.value.map((finding) => finding.id);
     const finalText = feedbackText.value;
     busy.value = true;
@@ -327,6 +410,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   }
 
   function dispose(): void {
+    void flushFeedbackDraft();
     generation += 1;
     controller?.stop(); controller = null; connected.value = false;
     if (refreshTimer) clearTimeout(refreshTimer);
@@ -338,6 +422,6 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   return {
     task, runs, findings, files, selectedPath, selectedDiff, events, feedbackText, loading, busy, connected, error, staleFeedback, reviewSnapshotStale,
     activeRun, latestReviewRun, feedbackReviewRun, selectedFindings,
-    load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, sendFeedback, selectFile, dispose,
+    load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, updateFeedbackText, sendFeedback, selectFile, dispose,
   };
 });

@@ -85,6 +85,8 @@ function setup(structuredOutput: unknown, hashes = ["snapshot-start", "snapshot-
         snapshotHash: captures.shift() ?? hashes.at(-1)!,
         gitStatus: " M src/input.ts",
         diffStat: "1 file changed, 3 insertions(+)",
+        trackedPatch: "diff --git a/src/input.ts b/src/input.ts\n+const valid = true;",
+        untrackedPatch: "diff --git a/new.txt b/new.txt\n+new file",
       };
     },
   };
@@ -114,12 +116,17 @@ describe("Review prompt", () => {
       task: task(),
       gitStatus: " M src/input.ts",
       diffStat: "1 file changed",
+      trackedPatch: "diff --git a/src/input.ts b/src/input.ts\n+const valid = true;",
+      untrackedPatch: "diff --git a/new.txt b/new.txt\n+new file",
     });
 
     expect(prompt).toContain("Add validation to user input.");
     expect(prompt).toContain("base-abc123");
     expect(prompt).toContain(" M src/input.ts");
     expect(prompt).toContain("1 file changed");
+    expect(prompt).toContain("diff --git a/src/input.ts b/src/input.ts");
+    expect(prompt).toContain("diff --git a/new.txt b/new.txt");
+    expect(prompt).not.toContain("请先用允许的只读命令");
     expect(prompt).toContain("功能正确性");
     expect(prompt).toContain("P0");
     expect(prompt).toContain("P1");
