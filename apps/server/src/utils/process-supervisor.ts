@@ -18,11 +18,58 @@ export interface ManagedProcess {
 }
 
 export async function terminateProcessTree(pid: number, signal: NodeJS.Signals): Promise<void> {
+  if (process.platform === "win32") {
+    const args = ["taskkill", "/PID", String(pid), "/T"];
+    if (signal === "SIGKILL") args.push("/F");
+    const taskkill = Bun.spawn(args, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const completed = await Promise.race([
+      taskkill.exited.then(() => true, () => true),
+      Bun.sleep(1_000).then(() => false),
+    ]);
+    if (!completed) taskkill.kill();
+    return;
+  }
   try {
-    process.kill(process.platform === "win32" ? pid : -pid, signal);
+    process.kill(-pid, signal);
   } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
   }
+}
+
+async function processTreeExists(pid: number): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
+async function processTreeExitedWithin(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (await processTreeExists(pid)) {
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(Math.min(10, Math.max(1, deadline - Date.now())));
+  }
+  return true;
+}
+
+export async function processExitedWithin(process: ManagedProcess, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    process.exited.then(() => true, () => true),
+    Bun.sleep(timeoutMs).then(() => false),
+  ]);
+}
+
+export async function stopProcessTree(managedProcess: ManagedProcess, graceMs = 100): Promise<void> {
+  if (process.platform !== "win32" && !await processTreeExists(managedProcess.pid)) return;
+  await terminateProcessTree(managedProcess.pid, "SIGTERM").catch(() => undefined);
+  if (process.platform !== "win32" && await processTreeExitedWithin(managedProcess.pid, graceMs)) return;
+  if (process.platform === "win32") await Bun.sleep(graceMs);
+  await terminateProcessTree(managedProcess.pid, "SIGKILL").catch(() => undefined);
+  if (process.platform === "win32") await processExitedWithin(managedProcess, graceMs);
+  else await processTreeExitedWithin(managedProcess.pid, graceMs);
 }
 
 export class ProcessSupervisor {

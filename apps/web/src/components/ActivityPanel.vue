@@ -78,7 +78,7 @@ function view(event: AgentEvent): EventView {
     case "run_queued": return { title: "Run queued" };
     case "run_started": return { title: "Run started" };
     case "run_completed": return { title: "Run completed" };
-    case "run_failed": return { title: "Run failed", detail: firstLine(parsed?.errorMessage) };
+    case "run_failed": return { title: "Run failed", detail: firstLine(payload?.message ?? parsed?.errorMessage) };
     case "run_cancelled": return { title: "Run cancelled" };
     case "run_interrupted": return { title: "Run interrupted" };
     case "session_started": return { title: "Session established" };

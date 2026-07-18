@@ -29,7 +29,16 @@ class ScenarioDriver implements AgentDriver {
   }
 
   async checkAvailability(): Promise<AgentAvailability> {
-    return { installed: true, executablePath: `/fake/${this.provider}`, version: "fake", authentication: "authenticated", message: null };
+    return {
+      installed: true,
+      executablePath: `/fake/${this.provider}`,
+      version: "fake",
+      authentication: "authenticated",
+      model: null,
+      modelSource: null,
+      reasoningEffort: null,
+      message: null,
+    };
   }
 
   async start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {

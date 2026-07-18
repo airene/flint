@@ -3,7 +3,8 @@ import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AgentStartRequest } from "@local-pair-review/shared";
-import { checkGitAvailability } from "../../apps/server/src/drivers/cli-availability";
+import { checkCodexAvailability, checkGitAvailability } from "../../apps/server/src/drivers/cli-availability";
+import { resolveCodexModel } from "../../apps/server/src/drivers/cli-model";
 import { ClaudeCliDriver } from "../../apps/server/src/drivers/claude-cli.driver";
 import { CodexCliDriver } from "../../apps/server/src/drivers/codex-cli.driver";
 import { AgentProcessError } from "../../apps/server/src/utils/process-supervisor";
@@ -34,7 +35,12 @@ function request(workingDirectory: string, overrides: Partial<AgentStartRequest>
 }
 
 function environment(scenario: string, extra: Record<string, string> = {}): Record<string, string | undefined> {
-  return { ...process.env, FAKE_CLI_SCENARIO: scenario, ...extra };
+  return {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: "/definitely/missing/claude-config",
+    FAKE_CLI_SCENARIO: scenario,
+    ...extra,
+  };
 }
 
 async function waitForFile(path: string, timeoutMs = 500): Promise<void> {
@@ -55,6 +61,9 @@ describe("CLI availability", () => {
       executablePath: codexFixture,
       version: "codex-cli 9.9.9-fake",
       authentication: "authenticated",
+      model: "gpt-5.6-test",
+      modelSource: "user_config",
+      reasoningEffort: "high",
       message: null,
     });
     expect(await claude.checkAvailability()).toEqual({
@@ -62,7 +71,136 @@ describe("CLI availability", () => {
       executablePath: claudeFixture,
       version: "claude-code 8.8.8-fake",
       authentication: "authenticated",
+      model: "default",
+      modelSource: "cli_default",
+      reasoningEffort: null,
       message: null,
+    });
+  });
+
+  test("reports Claude model overrides from the inherited environment", async () => {
+    const claude = new ClaudeCliDriver({
+      executablePath: claudeFixture,
+      environment: environment("normal", { ANTHROPIC_MODEL: "opus" }),
+    });
+
+    expect(await claude.checkAvailability()).toMatchObject({
+      model: "opus",
+      modelSource: "environment",
+      reasoningEffort: null,
+    });
+  });
+
+  test("maps real Codex managed origins and ignores project config on the global Settings probe", async () => {
+    const directory = await workspace();
+    const managed = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal", { FAKE_CODEX_MODEL_ORIGIN: "enterpriseManaged" }),
+      availabilityWorkingDirectory: directory,
+    });
+    const global = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("codex-project-config"),
+      availabilityWorkingDirectory: directory,
+    });
+    const unknown = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal", { FAKE_CODEX_MODEL_ORIGIN: "futureOrigin" }),
+      availabilityWorkingDirectory: directory,
+    });
+
+    expect(await managed.checkAvailability()).toMatchObject({
+      model: "gpt-5.6-test",
+      modelSource: "managed_config",
+    });
+    expect(await global.checkAvailability()).toMatchObject({ model: "gpt-5.6-test" });
+    expect(await unknown.checkAvailability()).toMatchObject({ modelSource: null });
+  });
+
+  test("bounds a Codex model probe even when the process ignores SIGTERM", async () => {
+    const startedAt = Date.now();
+    const result = await resolveCodexModel(
+      codexFixture,
+      environment("codex-model-probe-hangs"),
+      process.cwd(),
+      20,
+    );
+
+    expect(result).toEqual({ model: null, modelSource: null, reasoningEffort: null });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  test("bounds version probes when an executable ignores SIGTERM", async () => {
+    const startedAt = Date.now();
+    const result = await checkCodexAvailability(
+      codexFixture,
+      environment("availability-probe-hangs"),
+      process.cwd(),
+      20,
+    );
+
+    expect(result.installed).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  test("terminates a probe descendant after its leader exits", async () => {
+    const directory = await workspace();
+    const heartbeat = join(directory, "heartbeat");
+    const pidLog = join(directory, "child-pid");
+    let childPid: number | null = null;
+    try {
+      await checkCodexAvailability(
+        codexFixture,
+        environment("availability-probe-leaks-child", {
+          FAKE_CLI_HEARTBEAT_LOG: heartbeat,
+          FAKE_CLI_CHILD_PID_LOG: pidLog,
+        }),
+        process.cwd(),
+        200,
+      );
+      await waitForFile(heartbeat);
+      childPid = Number(await readFile(pidLog, "utf8"));
+      const stoppedAt = await readFile(heartbeat, "utf8");
+      await Bun.sleep(80);
+      expect(await readFile(heartbeat, "utf8")).toBe(stoppedAt);
+    } finally {
+      if (childPid) {
+        try { process.kill(childPid, "SIGKILL"); } catch { /* already stopped */ }
+      }
+    }
+  });
+
+  test("resolves a relative Claude config directory from the availability cwd", async () => {
+    const directory = await workspace();
+    await mkdir(join(directory, "claude"), { recursive: true });
+    await Bun.write(join(directory, "claude/settings.json"), JSON.stringify({ model: "sonnet" }));
+    const claude = new ClaudeCliDriver({
+      executablePath: claudeFixture,
+      environment: environment("normal", { CLAUDE_CONFIG_DIR: "claude" }),
+      availabilityWorkingDirectory: directory,
+    });
+
+    expect(await claude.checkAvailability()).toMatchObject({
+      model: "sonnet",
+      modelSource: "user_config",
+    });
+  });
+
+  test("resolves Claude's default config from the supplied child HOME", async () => {
+    const directory = await workspace();
+    await mkdir(join(directory, ".claude"), { recursive: true });
+    await Bun.write(join(directory, ".claude/settings.json"), JSON.stringify({ model: "opus" }));
+    const childEnvironment = environment("normal");
+    delete childEnvironment.CLAUDE_CONFIG_DIR;
+    childEnvironment.HOME = directory;
+    const claude = new ClaudeCliDriver({
+      executablePath: claudeFixture,
+      environment: childEnvironment,
+    });
+
+    expect(await claude.checkAvailability()).toMatchObject({
+      model: "opus",
+      modelSource: "user_config",
     });
   });
 
@@ -114,6 +252,7 @@ describe("CLI availability", () => {
     expect(probes.map((probe) => probe.args)).toEqual([
       ["--version"],
       ["login", "status"],
+      ["app-server", "--listen", "stdio://"],
       ["--version"],
       ["auth", "status"],
       ["--version"],

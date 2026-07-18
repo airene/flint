@@ -361,8 +361,20 @@ export const agentAvailabilitySchema = z.object({
   executablePath: z.string().nullable(),
   version: z.string().nullable(),
   authentication: z.enum(["unknown", "authenticated", "unauthenticated"]),
+  model: z.string().nullable(),
+  modelSource: z.enum([
+    "environment",
+    "user_config",
+    "project_config",
+    "managed_config",
+    "system_config",
+    "session_override",
+    "cli_default",
+  ]).nullable(),
+  reasoningEffort: z.string().nullable(),
   message: z.string().nullable(),
 }).strict();
+export type CliModelSource = NonNullable<z.infer<typeof agentAvailabilitySchema>["modelSource"]>;
 export type AgentAvailability = z.infer<typeof agentAvailabilitySchema>;
 
 export const cliStatusRequestSchema = z.object({}).strict();

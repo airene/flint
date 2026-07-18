@@ -10,6 +10,9 @@ const environment: Record<string, string | undefined> = {
   LOCAL_PAIR_REVIEW_DATABASE: join(dataDirectory, "data.sqlite"),
   CODEX_EXECUTABLE: resolve(root, "tests/fixtures/bin/codex"),
   CLAUDE_EXECUTABLE: resolve(root, "tests/fixtures/bin/claude"),
+  CLAUDE_CONFIG_DIR: join(dataDirectory, "claude"),
+  FLINT_CLAUDE_MANAGED_SETTINGS_PATH: join(dataDirectory, "managed-claude-settings.json"),
+  ANTHROPIC_MODEL: undefined,
   FAKE_CLI_SCENARIO: "e2e",
 };
 

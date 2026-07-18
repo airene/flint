@@ -13,6 +13,23 @@ async function recordProbe(): Promise<void> {
 
 if (args[0] === "--version") {
   await recordProbe();
+  if (scenario === "availability-probe-leaks-child") {
+    if (process.env.FAKE_CLI_HEARTBEAT_LOG) {
+      await Bun.write(process.env.FAKE_CLI_HEARTBEAT_LOG, String(Date.now()));
+    }
+    const child = Bun.spawn([
+      process.execPath,
+      "-e",
+      "while (true) { await Bun.write(process.env.FAKE_CLI_HEARTBEAT_LOG, String(Date.now())); await Bun.sleep(10); }",
+    ], { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: process.env });
+    if (process.env.FAKE_CLI_CHILD_PID_LOG) {
+      await Bun.write(process.env.FAKE_CLI_CHILD_PID_LOG, String(child.pid));
+    }
+  }
+  if (scenario === "availability-probe-hangs") {
+    process.on("SIGTERM", () => {});
+    await Bun.sleep(10_000);
+  }
   console.log("codex-cli 9.9.9-fake");
   process.exit(0);
 }
@@ -27,6 +44,49 @@ if (args[0] === "login" && args[1] === "status") {
     process.exit(2);
   }
   console.log("Logged in using ChatGPT subscription");
+  process.exit(0);
+}
+if (args[0] === "app-server") {
+  await recordProbe();
+  if (scenario === "codex-model-probe-hangs") {
+    process.on("SIGTERM", () => {});
+    await Bun.sleep(10_000);
+  }
+  const decoder = new TextDecoder();
+  let buffered = "";
+  const handle = (line: string) => {
+    const message = JSON.parse(line);
+    if (message.id === 1) {
+      console.log(JSON.stringify({ id: 1, result: { userAgent: "fake-codex" } }));
+    }
+    if (message.id === 2 && message.method === "config/read") {
+      const origin = process.env.FAKE_CODEX_MODEL_ORIGIN ?? "user";
+      const hasProjectCwd = typeof message.params?.cwd === "string";
+      console.log(JSON.stringify({
+        id: 2,
+        result: {
+          config: {
+            model: scenario === "codex-project-config" && hasProjectCwd ? "project-model" : "gpt-5.6-test",
+            model_reasoning_effort: "high",
+          },
+          origins: {
+            model: { name: { type: origin, file: "/fake/config.toml" }, version: "fake" },
+            model_reasoning_effort: { name: { type: "user", file: "/fake/config.toml" }, version: "fake" },
+          },
+        },
+      }));
+    }
+  };
+  for await (const chunk of Bun.stdin.stream()) {
+    buffered += decoder.decode(chunk, { stream: true });
+    let newline = buffered.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (line.trim()) handle(line);
+      newline = buffered.indexOf("\n");
+    }
+  }
   process.exit(0);
 }
 

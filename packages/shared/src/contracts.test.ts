@@ -123,9 +123,16 @@ test("CLI status and recheck responses use strict availability records", () => {
     executablePath: "/usr/local/bin/codex",
     version: "1.0.0",
     authentication: "authenticated",
+    model: "gpt-5.6-sol",
+    modelSource: "user_config",
+    reasoningEffort: "high",
     message: null,
   };
-  const response = { codex: cli, claude: cli, git: { ...cli, authentication: "unknown" } };
+  const response = {
+    codex: cli,
+    claude: { ...cli, model: "sonnet", reasoningEffort: null },
+    git: { ...cli, authentication: "unknown", model: null, modelSource: null, reasoningEffort: null },
+  };
 
   expectStrict("cliStatusResponseSchema", response);
   expectStrict("cliRecheckResponseSchema", response);

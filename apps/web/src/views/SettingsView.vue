@@ -8,11 +8,25 @@ const store = useSystemStore();
 const paths = reactive({ codexExecutable: "", claudeExecutable: "", gitExecutable: "" });
 const initialPaths = reactive({ codexExecutable: "", claudeExecutable: "", gitExecutable: "" });
 const hydrated = computed(() => Boolean(store.cliStatus) && !store.loading);
-const entries = computed<Array<{ key: keyof typeof paths; name: string; description: string; login: string | null; value: AgentAvailability | undefined }>>(() => [
-  { key: "codexExecutable", name: "Codex CLI", description: "Workspace-write developer agent using your subscription login.", login: "codex login", value: store.cliStatus?.codex },
-  { key: "claudeExecutable", name: "Claude Code", description: "Read-only reviewer using plan permission mode.", login: "claude auth login", value: store.cliStatus?.claude },
-  { key: "gitExecutable", name: "Git", description: "Repository status, snapshots and diff evidence.", login: null, value: store.cliStatus?.git },
+const entries = computed<Array<{ key: keyof typeof paths; name: string; description: string; login: string | null; showModel: boolean; showReasoning: boolean; value: AgentAvailability | undefined }>>(() => [
+  { key: "codexExecutable", name: "Codex CLI", description: "Workspace-write developer agent using your subscription login.", login: "codex login", showModel: true, showReasoning: true, value: store.cliStatus?.codex },
+  { key: "claudeExecutable", name: "Claude Code", description: "Read-only reviewer using plan permission mode.", login: "claude auth login", showModel: true, showReasoning: false, value: store.cliStatus?.claude },
+  { key: "gitExecutable", name: "Git", description: "Repository status, snapshots and diff evidence.", login: null, showModel: false, showReasoning: false, value: store.cliStatus?.git },
 ]);
+
+const sourceLabels = {
+  environment: "environment",
+  user_config: "user config",
+  project_config: "project config",
+  managed_config: "managed config",
+  system_config: "system config",
+  session_override: "session override",
+  cli_default: "CLI default",
+} as const;
+
+function sourceLabel(value: AgentAvailability | undefined): string {
+  return value?.modelSource ? sourceLabels[value.modelSource] : "source unavailable";
+}
 
 function customPath(value: string | null | undefined): string {
   return value?.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value ?? "") ? value! : "";
@@ -46,7 +60,7 @@ onMounted(() => { if (!store.cliStatus) void store.loadCliStatus().catch(() => u
     <div class="stack">
       <section v-for="entry in entries" :key="entry.name" class="panel cli-card">
         <div class="cli-icon">{{ entry.name.slice(0, 1) }}</div>
-        <div class="cli-main"><h2>{{ entry.name }}</h2><p>{{ entry.description }}</p><label><span>Custom absolute path</span><input v-model="paths[entry.key]" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="entry.value?.executablePath ?? 'Use PATH lookup'" spellcheck="false"></label><small v-if="entry.value?.message" class="cli-message">{{ entry.value.message }}</small><small v-if="entry.value?.authentication === 'unauthenticated' && entry.login" class="login-help">Complete subscription login in a terminal: <code>{{ entry.login }}</code></small></div>
+        <div class="cli-main"><h2>{{ entry.name }}</h2><p>{{ entry.description }}</p><div v-if="entry.showModel" class="runtime-metadata"><div><span>Model</span><code>{{ entry.value?.model ?? 'Unavailable' }}</code><small>{{ sourceLabel(entry.value) }}</small></div><div v-if="entry.showReasoning"><span>Reasoning effort</span><code>{{ entry.value?.reasoningEffort ?? 'Unavailable' }}</code></div></div><label><span>Custom absolute path</span><input v-model="paths[entry.key]" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="entry.value?.executablePath ?? 'Use PATH lookup'" spellcheck="false"></label><small v-if="entry.value?.message" class="cli-message">{{ entry.value.message }}</small><small v-if="entry.value?.authentication === 'unauthenticated' && entry.login" class="login-help">Complete subscription login in a terminal: <code>{{ entry.login }}</code></small></div>
         <div class="cli-status"><span :class="['badge', entry.value?.installed && entry.value.authentication !== 'unauthenticated' ? 'completed' : 'failed']">{{ !entry.value?.installed ? 'missing' : entry.login === null ? 'ok' : entry.value.authentication }}</span><small>{{ entry.value?.version ?? 'Version unavailable' }}</small></div>
       </section>
     </div>
@@ -56,4 +70,5 @@ onMounted(() => { if (!store.cliStatus) void store.loadCliStatus().catch(() => u
 
 <style scoped>
 .cli-card{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:start;gap:14px;padding:15px}.cli-icon{width:44px;height:44px;display:grid;place-items:center;border-radius:10px;color:#ffb48d;background:var(--accent-soft);font-weight:800}.cli-card h2{margin:0 0 4px;font-size:13px}.cli-card p{margin:0 0 9px;color:var(--muted);font-size:11px}.cli-main label{display:grid;gap:5px}.cli-main label span{color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.path-input{font-family:"SFMono-Regular",Consolas,monospace;font-size:10px}.cli-message,.login-help{display:block;margin-top:7px;color:#d6a1a6;font-size:9px;line-height:1.5}.login-help{color:#d7bc7a}.cli-card code{color:#d5a17f;font-size:9px}.cli-status{display:grid;justify-items:end;gap:6px}.cli-status small{color:var(--faint);font-size:9px}.security-note{margin-top:16px}.security-note h2{margin-bottom:7px}.security-note p{margin:0;color:var(--muted);font-size:11px;line-height:1.6}.security-note code{color:#d5a17f}
+.runtime-metadata{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.018)}.runtime-metadata>div{display:flex;align-items:baseline;gap:7px}.runtime-metadata span{color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.runtime-metadata code{font-size:10px}.runtime-metadata small{color:var(--faint);font-size:8px}
 </style>

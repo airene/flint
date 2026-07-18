@@ -40,6 +40,14 @@ test.afterEach(async () => {
   await Promise.all(repositories.splice(0).map((repository) => rm(repository, { recursive: true, force: true })));
 });
 
+test("shows the configured CLI models on Settings", async ({ page }) => {
+  await page.goto("/settings");
+
+  await expect(page.getByText("gpt-5.6-test", { exact: true })).toBeVisible();
+  await expect(page.getByText("high", { exact: true })).toBeVisible();
+  await expect(page.getByText("default", { exact: true })).toBeVisible();
+});
+
 test("completes the human-gated Codex and Claude workflow with an exact-session resume", async ({ page }) => {
   await createTask(page, await createRepository(), "Implement the requested change.");
 
