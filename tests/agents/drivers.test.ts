@@ -202,7 +202,7 @@ describe("Codex driver", () => {
     expect(invocation.prompt).toBe("Perform the fake task without contacting a model.");
   });
 
-  test("continues after invalid and unknown lines and preserves stderr", async () => {
+  test("continues after invalid and unknown lines and keeps stderr noise out of the event stream", async () => {
     const directory = await workspace();
     const invalidEvents: AgentEvent[] = [];
     const invalidDriver = new CodexCliDriver({
@@ -219,7 +219,8 @@ describe("Codex driver", () => {
     await stderrDriver.start(request(directory, { runId: "run-stderr" }), async (event) => { stderrEvents.push(event); });
 
     expect(invalidEvents.filter((event) => event.type === "raw")).toHaveLength(2);
-    expect(stderrEvents.find((event) => event.type === "stderr")?.payload).toEqual({ raw: "fake warning from stderr" });
+    expect(stderrEvents.filter((event) => event.type === "stderr")).toHaveLength(0);
+    expect(stderrEvents.map((event) => event.type)).toContain("turn_completed");
   });
 
   test("classifies nonzero exits, failed turns, and incomplete streams as failures", async () => {

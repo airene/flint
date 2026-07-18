@@ -1,4 +1,4 @@
-import { parsedEvent, rawEvent } from "./parser-types";
+import { parsedEvent, rawEvent, skippedLine } from "./parser-types";
 import type { ParsedAgentLine, ParserContext } from "./parser-types";
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -32,6 +32,10 @@ export function parseClaudeEventLine(raw: string, context: ParserContext): Parse
       event: parsedEvent(raw, "claude", context, "session_started", parsed),
       sessionId: record.session_id,
     };
+  }
+  if (record.type === "system" && record.subtype === "thinking_tokens") return skippedLine();
+  if (record.type === "user") {
+    return { event: parsedEvent(raw, "claude", context, "tool", parsed) };
   }
   if (record.type === "assistant") {
     const text = assistantText(record);

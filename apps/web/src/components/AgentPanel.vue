@@ -70,9 +70,11 @@ function eventText(event: AgentEvent): string {
 .agent-summary { display: grid; gap: 13px; }
 .run-meta { display: flex; gap: 7px; color: var(--faint); font-size: 10px; overflow: hidden; }
 .terminal-meta{display:flex;gap:7px;color:#8d97a6;font-size:9px}
-.prompt-block, .message-block { padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: #10141a; }
+.agent-panel { overflow: hidden; }
+.agent-summary { min-width: 0; }
+.prompt-block, .message-block { min-width: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: #10141a; }
 .mini-label { display: block; color: var(--faint); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
-p { margin: 0; color: #c7cfdb; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+p { margin: 0; color: #c7cfdb; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .error-text { border-color: rgba(255,107,117,.25); }.error-text p { color: #ffabb1; }
 .event-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 .event-lines { max-height: 220px; margin-top: 8px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }

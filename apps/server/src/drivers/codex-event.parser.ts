@@ -41,10 +41,13 @@ export function parseCodexEventLine(raw: string, context: ParserContext): Parsed
     const item = object(record.item);
     const itemType = item?.type;
     const eventType = itemType === "agent_message" ? "message"
+      : itemType === "reasoning" ? "message"
       : itemType === "plan" ? "plan"
+      : itemType === "todo_list" ? "plan"
       : itemType === "command_execution" ? "command"
       : itemType === "file_change" ? "file_changed"
       : itemType === "mcp_tool_call" ? "tool"
+      : itemType === "web_search" ? "tool"
       : undefined;
     if (!eventType) return rawEvent(raw, "codex", context, parsed);
     return {

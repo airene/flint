@@ -8,12 +8,17 @@ export interface ParserContext {
 }
 
 export interface ParsedAgentLine {
-  event: AgentEvent;
+  /** Absent when the line is deliberately dropped (e.g. progress heartbeats). */
+  event?: AgentEvent;
   sessionId?: string;
   finalMessage?: string;
   structuredOutput?: unknown;
   completed?: boolean;
   failed?: boolean;
+}
+
+export function skippedLine(): ParsedAgentLine {
+  return {};
 }
 
 export function rawEvent(

@@ -108,12 +108,13 @@ export abstract class StreamingCliDriver {
         if (parsed.structuredOutput !== undefined) state.structuredOutput = parsed.structuredOutput;
         if (parsed.completed) state.completed = true;
         if (parsed.failed) state.failed = true;
-        await emit(parsed.event);
+        if (parsed.event) await emit(parsed.event);
       });
+      // CLI stderr is routine logging (codex writes INFO/ERROR noise there even on success);
+      // keep it out of the event stream and surface it only when the run actually fails.
       const stderrLines: string[] = [];
       const stderr = readLines(process.stderr, async (line) => {
         stderrLines.push(line);
-        await emit(createAgentEvent(request, this.providerSource(), "stderr", { raw: line }));
       });
 
       const [exitCode] = await Promise.all([exited, stdout, stderr]);

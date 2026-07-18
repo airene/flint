@@ -1,10 +1,10 @@
-# Flint — local pair review
+# Flint — 本地结对评审
 
-Flint is a local-only workflow for a human to coordinate Codex development and Claude review in an existing Git repository. It preserves the review and feedback gate: findings are never sent automatically, and Codex resumes only with the exact persisted session ID.
+Flint 是一个完全在本地运行的工作流，让你可以在现有 Git 仓库中协调 Codex 开发与 Claude 评审。它保留了人工 review 和 feedback gate：Finding 永远不会自动发送，Codex 也只会使用已持久化的精确 session ID 恢复任务。
 
-## Install and CLI prerequisites
+## 安装与 CLI 前置条件
 
-Flint requires Bun 1.3 or newer, Git, the Codex CLI, and Claude Code. The versions verified for this checkout are Bun `1.3.14` and Git `2.50.1 (Apple Git-155)`. Codex and Claude versions are detected at runtime and displayed in **CLI Settings**; this README intentionally does not assume a particular installed version.
+Flint 需要 Bun 1.3 或更高版本、Git、Codex CLI 和 Claude Code。当前 checkout 已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。Codex 与 Claude 的版本会在运行时自动检测，并显示在 **CLI 设置**中；本 README 不假定用户安装了某个特定版本。
 
 ```bash
 bun install
@@ -12,20 +12,20 @@ codex login
 claude auth login
 ```
 
-Log in with each CLI's normal subscription flow. Flint does not require OpenAI or Anthropic API keys and removes common API credential variables before starting either child process.
+请使用各 CLI 的正常订阅流程登录。Flint 不需要 OpenAI 或 Anthropic API key，并会在启动子进程前移除常见的 API 凭据环境变量。
 
-## Run, test, and build
+## 运行、测试与构建
 
-Start the API server, then start the Vite UI in another terminal:
+先启动 API server，再在另一个 terminal 中启动 Vite UI：
 
 ```bash
 bun run dev
 bun run --filter @local-pair-review/web dev
 ```
 
-The API listens only on `127.0.0.1:3000`; Vite proxies `/api` and `/ws` to it during development.
+API 仅监听 `127.0.0.1:3000`；开发期间，Vite 会将 `/api` 和 `/ws` 代理到该地址。
 
-For the single-process production build, compile once and start the bundled Bun server. It serves the Vue SPA, API, and WebSocket from the same loopback origin:
+如需以单进程方式运行 production build，先完成构建，再启动打包后的 Bun server。Vue SPA、API 和 WebSocket 会通过同一个 loopback origin 提供服务：
 
 ```bash
 bun run build
@@ -39,19 +39,19 @@ bun run typecheck
 bun run build
 ```
 
-`bun run test:e2e` starts an isolated Bun server and Vite instance using the Fake Codex and Claude fixtures. It creates disposable Git repositories and does not contact either subscription service.
+`bun run test:e2e` 会使用 Fake Codex 和 Claude fixture 启动相互隔离的 Bun server 与 Vite 实例。测试会创建一次性的 Git 仓库，不会访问任何订阅服务。
 
-Verification status for this checkout: automated typecheck, Bun tests, Fake CLI browser E2E, and the production build pass. Bun `1.3.14` and Git `2.50.1 (Apple Git-155)` were verified. Real Codex and Claude smoke tests have **not** been executed because they require explicit user authorization; their CLI versions and results remain pending that authorization.
+当前 checkout 的验证状态：自动 typecheck、Bun tests、Fake CLI browser E2E 和 production build 均已通过。已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。真实 Codex 和 Claude smoke test **尚未执行**，因为它们需要用户明确授权；CLI 版本及真实测试结果将在获得授权后确认。
 
-## Configuration and local data
+## 配置与本地数据
 
-By default, Flint stores SQLite data at `~/.local-pair-review/data/app.db`. Override it for a separate local instance:
+默认情况下，Flint 将 SQLite 数据保存在 `~/.local-pair-review/data/app.db`。如需运行独立的本地实例，可以覆盖该路径：
 
 ```bash
 LOCAL_PAIR_REVIEW_DATABASE=/absolute/path/to/data.sqlite bun run dev
 ```
 
-The executable overrides must be absolute paths:
+CLI executable 的覆盖值必须使用绝对路径：
 
 ```bash
 CODEX_EXECUTABLE=/absolute/path/to/codex
@@ -59,35 +59,37 @@ CLAUDE_EXECUTABLE=/absolute/path/to/claude
 GIT_EXECUTABLE=/absolute/path/to/git
 ```
 
-The same paths can be saved and rechecked from **CLI Settings**. UI overrides are validated as absolute paths and persisted in the local `app_settings` table; clearing a field restores the startup default. `LOCAL_PAIR_REVIEW_WEB_ROOT` may override the built `apps/web/dist` directory for packaging.
+这些路径也可以在 **CLI 设置**中保存并重新检查。通过 UI 设置的路径会经过绝对路径校验，并持久化到本地 `app_settings` 表中；清空字段即可恢复启动时的默认值。打包时可以使用 `LOCAL_PAIR_REVIEW_WEB_ROOT` 覆盖构建后的 `apps/web/dist` 目录。
 
-## Security and permissions
+## 安全与权限
 
-Flint is intentionally local-only. The server binds to loopback, rejects non-local browser requests, uses argument arrays with an explicit working directory for subprocesses, and never calls a shell command string or changes the process working directory.
+Flint 的设计目标就是仅在本地运行。Server 只绑定 loopback 地址并拒绝非本地浏览器请求；启动子进程时使用参数数组和明确的 working directory，绝不会调用 shell command string，也不会修改当前进程的 working directory。
 
-Codex development starts with `--sandbox workspace-write` in the registered project directory. Claude review uses the CLI's `plan` permission mode and a narrow read-only tool allowlist; edit/write, destructive Git, commit, and push operations are denied at the CLI level. API credentials are stripped from child environments and diagnostic output is redacted before it is stored or displayed.
+Codex 开发任务会在已注册的项目目录中以 `--sandbox workspace-write` 启动。Claude review 使用 CLI 的 `plan` permission mode 和范围严格的只读 tool allowlist；edit/write、破坏性 Git 操作、commit 和 push 都会在 CLI 层被禁止。子进程环境中的 API 凭据会被移除，诊断输出也会在存储或展示前完成脱敏。
 
-## Workflow
+## 工作流程
 
-1. Register an absolute path to a local Git repository.
-2. Create a focused task from the current `HEAD` baseline.
-3. Start Codex development; Flint persists the exact Codex session ID as soon as it is emitted.
-4. Start a read-only Claude review after development is ready.
-5. Select or dismiss findings, add a human note, generate a feedback preview, and edit it if needed.
-6. Explicitly send the edited feedback to resume that exact Codex session.
-7. Run another review when wanted, or manually mark the task complete.
+1. 注册本地 Git 仓库的绝对路径。
+2. 以当前 `HEAD` 为 baseline，创建一个范围明确的 Task。
+3. 启动 Codex 开发；Flint 会在 Codex 输出 session ID 后立即精确持久化。
+4. 开发准备完成后，启动只读的 Claude review。
+5. 选择或忽略 Finding、添加人工备注、生成 feedback preview，并在需要时进行编辑。
+6. 明确发送编辑后的 feedback，恢复对应的精确 Codex session。
+7. 根据需要再次发起 review，或手动将 Task 标记为完成。
 
-## MVP limits
+## MVP 限制
 
-Flint has no automatic Codex/Claude loop, users, remote access, worktrees, commits, pull requests, or pushes. It does not modify a repository except through the developer CLI you explicitly start. A stale review snapshot asks for confirmation before feedback can be sent. Interrupted and failed runs remain visible with a manual recovery path; no background retry silently consumes a subscription.
+Flint 不提供自动 Codex/Claude 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确启动的 developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
 
-## Real CLI smoke tests
+## 真实 CLI smoke test
 
-These commands are intentionally excluded from normal tests and CI:
+以下命令有意排除在常规测试和 CI 之外：
 
 ```bash
 bun run smoke:codex
 bun run smoke:claude
 ```
 
-Each command creates a dedicated temporary Git repository, prints the resolved executable path, detected version, authentication mode, and repository path, then waits for you to type the exact confirmation `RUN`. Until that confirmation is entered, no real subscription command runs. The Codex smoke test requires a visible Diff and performs an exact-ID resume only after the initial run supplies a session ID. The Claude smoke test validates the structured result and exact session ID, and proves the repository snapshot did not change under read-only permissions. Both remove only the temporary repository they created.
+每条命令都会创建一个专用的临时 Git 仓库，输出解析后的 executable 路径、检测到的版本、authentication mode 和仓库路径，然后等待你输入精确确认文本 `RUN`。在收到确认前，不会执行任何真实订阅命令。
+
+Codex smoke test 要求生成可见的 Diff，并且只有在初始 Run 返回 session ID 后才会使用精确 ID 执行 resume。Claude smoke test 会验证 structured result 和精确 session ID，同时证明仓库 snapshot 在只读权限下没有发生变化。两项测试都只会删除各自创建的临时仓库。

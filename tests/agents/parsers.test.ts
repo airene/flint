@@ -54,10 +54,30 @@ describe("Codex JSONL parser", () => {
     const unknown = parseCodexEventLine(unknownRaw, context);
     const invalid = parseCodexEventLine("{not-json", context);
 
-    expect(unknown.event.type).toBe("raw");
-    expect(unknown.event.payload).toEqual({ raw: unknownRaw, parsed: JSON.parse(unknownRaw) });
-    expect(invalid.event.type).toBe("raw");
-    expect(invalid.event.payload).toMatchObject({ raw: "{not-json", parseError: expect.any(String) });
+    expect(unknown.event?.type).toBe("raw");
+    expect(unknown.event?.payload).toEqual({ raw: unknownRaw, parsed: JSON.parse(unknownRaw) });
+    expect(invalid.event?.type).toBe("raw");
+    expect(invalid.event?.payload).toMatchObject({ raw: "{not-json", parseError: expect.any(String) });
+  });
+
+  test("maps web search, todo list and reasoning items to typed events instead of raw", () => {
+    const search = parseCodexEventLine(JSON.stringify({
+      type: "item.started",
+      item: { id: "item-1", type: "web_search", query: "release best practices" },
+    }), context);
+    const todo = parseCodexEventLine(JSON.stringify({
+      type: "item.updated",
+      item: { id: "item-2", type: "todo_list", items: [{ text: "step", completed: false }] },
+    }), context);
+    const reasoning = parseCodexEventLine(JSON.stringify({
+      type: "item.completed",
+      item: { id: "item-3", type: "reasoning", text: "Considering the workflow." },
+    }), context);
+
+    expect(search.event?.type).toBe("tool");
+    expect(todo.event?.type).toBe("plan");
+    expect(reasoning.event?.type).toBe("message");
+    expect(reasoning.finalMessage).toBeUndefined();
   });
 });
 
@@ -120,12 +140,32 @@ describe("Claude stream-json parser", () => {
     const unknown = parseClaudeEventLine(unknownRaw, context);
     const invalid = parseClaudeEventLine("not-json", context);
 
-    expect(assistant.event.type).toBe("message");
+    expect(assistant.event?.type).toBe("message");
     expect(assistant.finalMessage).toBe("Reviewing changes.");
-    expect(assistant.event.payload).toMatchObject({ raw: assistantRaw, parsed: expect.any(Object) });
-    expect(unknown.event.type).toBe("raw");
-    expect(unknown.event.payload).toEqual({ raw: unknownRaw, parsed: JSON.parse(unknownRaw) });
-    expect(invalid.event.type).toBe("raw");
-    expect(invalid.event.payload).toMatchObject({ raw: "not-json", parseError: expect.any(String) });
+    expect(assistant.event?.payload).toMatchObject({ raw: assistantRaw, parsed: expect.any(Object) });
+    expect(unknown.event?.type).toBe("raw");
+    expect(unknown.event?.payload).toEqual({ raw: unknownRaw, parsed: JSON.parse(unknownRaw) });
+    expect(invalid.event?.type).toBe("raw");
+    expect(invalid.event?.payload).toMatchObject({ raw: "not-json", parseError: expect.any(String) });
+  });
+
+  test("drops thinking heartbeats and maps tool results to tool events", () => {
+    const heartbeat = parseClaudeEventLine(JSON.stringify({
+      type: "system",
+      subtype: "thinking_tokens",
+      estimated_tokens: 50,
+      session_id: "session-1",
+    }), context);
+    const toolResult = parseClaudeEventLine(JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "diff --git a/file b/file" }],
+      },
+      session_id: "session-1",
+    }), context);
+
+    expect(heartbeat.event).toBeUndefined();
+    expect(toolResult.event?.type).toBe("tool");
   });
 });
