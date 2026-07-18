@@ -68,6 +68,44 @@ describe("projects", () => {
     expect(await Bun.file(join(root, ".git", "HEAD")).exists()).toBe(true);
     expect(await projects.get(project.id)).toBeNull();
   });
+
+  test("never cascade-deletes a task inserted while unconfirmed project removal is deciding", async () => {
+    const root = repository();
+    const databasePath = join(temporaryDirectory(), "concurrent.db");
+    const primary = createDatabase(databasePath);
+    const concurrent = createDatabase(databasePath);
+    const projects = new ProjectService(primary);
+    const project = await projects.add(root);
+
+    try {
+      const removal = projects.remove(project.id);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      let insertionError: unknown;
+      let inserted = false;
+      try {
+        concurrent.sqlite.run(
+          "insert into tasks (id, project_id, title, original_prompt, working_directory, base_commit, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, 'draft', ?, ?)",
+          ["concurrent_task", project.id, "Concurrent", "Prompt", realpathSync(root), git(root, "rev-parse", "HEAD"), new Date().toISOString(), new Date().toISOString()],
+        );
+        inserted = true;
+      } catch (error) {
+        insertionError = error;
+      }
+
+      if (inserted) {
+        await expect(removal).rejects.toBeInstanceOf(ConfirmationRequiredError);
+        expect(concurrent.sqlite.query("select count(*) as count from tasks where id = 'concurrent_task'").get()).toEqual({ count: 1 });
+      } else {
+        await removal;
+        expect(String(insertionError)).toContain("FOREIGN KEY");
+      }
+    } finally {
+      primary.close();
+      concurrent.close();
+    }
+  });
 });
 
 describe("tasks", () => {
@@ -106,6 +144,19 @@ describe("tasks", () => {
     await tasks.transition(task.id, "reviewing");
 
     expect((await tasks.fallbackAfterRun(task.id, "reviewer", { reviewParseFailed: true })).status).toBe("waiting_for_human");
+  });
+
+  test("rejects a stale transition instead of overwriting a concurrent status change", async () => {
+    const root = repository();
+    const { database, projects, tasks } = services();
+    const project = await projects.add(root);
+    const task = await tasks.create(project.id, { title: "Task", originalPrompt: "Do work" });
+
+    const transition = tasks.transition(task.id, "developing");
+    database.sqlite.run("update tasks set status = 'completed' where id = ?", [task.id]);
+
+    await expect(transition).rejects.toThrow("Task status changed concurrently");
+    expect((await tasks.get(task.id))?.status).toBe("completed");
   });
 
   test("finds an active project write run without mocking the database", async () => {

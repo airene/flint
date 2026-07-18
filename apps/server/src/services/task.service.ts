@@ -19,6 +19,13 @@ export class InvalidTaskTransitionError extends Error {
   }
 }
 
+export class TaskTransitionConflictError extends Error {
+  constructor(readonly taskId: string, readonly expectedStatus: TaskStatus) {
+    super("Task status changed concurrently");
+    this.name = "TaskTransitionConflictError";
+  }
+}
+
 export class ProjectWriteRunConflictError extends Error {
   constructor(readonly projectId: string) {
     super("This project already has an active developer run");
@@ -94,7 +101,11 @@ export class TaskService {
     if (!task) throw new Error("Task not found");
     if (!transitions[task.status].includes(target)) throw new InvalidTaskTransitionError(task.status, target);
     const completedAt = target === "completed" ? now() : null;
-    await this.database.db.update(tasks).set({ status: target, updatedAt: now(), completedAt }).where(eq(tasks.id, taskId)).run();
+    const updated = await this.database.db.update(tasks).set({ status: target, updatedAt: now(), completedAt }).where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.status, task.status),
+    )).returning({ id: tasks.id }).get();
+    if (!updated) throw new TaskTransitionConflictError(taskId, task.status);
     return (await this.get(taskId))!;
   }
 

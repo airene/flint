@@ -73,8 +73,14 @@ export class ProjectService {
   }
 
   async remove(projectId: string, confirmed = false): Promise<void> {
-    const info = await this.removalInfo(projectId);
-    if (info.requiresConfirmation && !confirmed) throw new ConfirmationRequiredError(info);
-    await this.database.db.delete(projects).where(eq(projects.id, projectId)).run();
+    this.database.db.transaction((transaction) => {
+      const project = transaction.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).get();
+      if (!project) throw new Error("Project not found");
+      const result = transaction.select({ value: count() }).from(tasks).where(eq(tasks.projectId, projectId)).get();
+      const taskCount = result?.value ?? 0;
+      const info = { projectId, taskCount, requiresConfirmation: taskCount > 0 };
+      if (info.requiresConfirmation && !confirmed) throw new ConfirmationRequiredError(info);
+      transaction.delete(projects).where(eq(projects.id, projectId)).run();
+    }, { behavior: "immediate" });
   }
 }

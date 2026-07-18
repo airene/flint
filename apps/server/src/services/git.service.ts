@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { GitDiffResponse, GitFileDiffResponse, GitFileStatus, GitFilesResponse, GitStatusResponse } from "@local-pair-review/shared";
 import { validateRepositoryRelativePath } from "../utils/path";
@@ -24,9 +25,51 @@ function hasNul(bytes: Uint8Array): boolean {
   return bytes.includes(0);
 }
 
+interface UntrackedContent {
+  binary: boolean;
+  snapshotBytes: Uint8Array;
+}
+
+export interface SnapshotHashInput {
+  baseCommit: string;
+  trackedPatch: string;
+  stagedPatch: string;
+  untracked: ReadonlyArray<{ path: string; snapshotBytes: Uint8Array }>;
+}
+
+export function snapshotHashFromInputs(input: SnapshotHashInput): string {
+  const untrackedInputs = [...input.untracked].sort((a, b) => a.path.localeCompare(b.path)).map((entry) => (
+    `${frame(entry.path)}${frame(createHash("sha256").update(entry.snapshotBytes).digest("hex"))}`
+  ));
+  return createHash("sha256").update([
+    frame(input.baseCommit), frame(input.trackedPatch), frame(input.stagedPatch), ...untrackedInputs,
+  ].join("")).digest("hex");
+}
+
+async function readUntrackedContent(rootPath: string, path: string): Promise<UntrackedContent> {
+  validateRepositoryRelativePath(path);
+  const absolutePath = resolve(rootPath, path);
+  const metadata = await lstat(absolutePath);
+  if (metadata.isSymbolicLink()) {
+    const target = await readlink(absolutePath);
+    return { binary: false, snapshotBytes: new TextEncoder().encode(`symlink:${Buffer.byteLength(target)}:${target}`) };
+  }
+  if (!metadata.isFile()) {
+    return { binary: true, snapshotBytes: new TextEncoder().encode(`special:${metadata.mode}`) };
+  }
+
+  const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const bytes = await handle.readFile();
+    return { binary: hasNul(bytes), snapshotBytes: Buffer.concat([Buffer.from("file:"), bytes]) };
+  } finally {
+    await handle.close();
+  }
+}
+
 export class GitService {
   async status(rootPath: string): Promise<GitStatusResponse> {
-    const entries = command(rootPath, ["status", "--porcelain=v1", "-z"]).split("\0");
+    const entries = command(rootPath, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]).split("\0");
     entries.pop();
     const files: GitFileStatus[] = [];
     for (let index = 0; index < entries.length; index += 1) {
@@ -43,9 +86,15 @@ export class GitService {
         const numstat = command(rootPath, ["diff", "--numstat", "HEAD", "--", path], true);
         binary = numstat.startsWith("-\t-");
       } else if (untracked) {
-        try { binary = hasNul(await readFile(resolve(rootPath, path))); } catch { binary = false; }
+        try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
       }
       files.push({ path, previousPath, status: statusKind(x, y), staged: x !== " " && x !== "?", tracked: !untracked, binary });
+    }
+    const untrackedPaths = command(rootPath, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
+    for (const path of untrackedPaths) {
+      let binary = false;
+      try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
+      files.push({ path, previousPath: null, status: "untracked", staged: false, tracked: false, binary });
     }
     return { clean: files.length === 0, files: files.sort((a, b) => a.path.localeCompare(b.path)) };
   }
@@ -75,21 +124,17 @@ export class GitService {
     if (file.binary) return { file, patch: "" };
     const patch = !file.tracked
       ? command(rootPath, ["diff", "--no-index", "--", "/dev/null", path], true)
-      : file.staged
-        ? command(rootPath, ["diff", "--cached", baseCommit, "--", path])
-        : command(rootPath, ["diff", baseCommit, "--", path]);
+      : command(rootPath, ["diff", baseCommit, "--", path]);
     return { file, patch };
   }
 
   async snapshotHash(rootPath: string, baseCommit: string): Promise<string> {
     const diff = await this.diff(rootPath, baseCommit);
-    const untrackedInputs = await Promise.all(diff.files.filter((file) => !file.tracked).sort((a, b) => a.path.localeCompare(b.path)).map(async (file) => {
-      const bytes = await readFile(resolve(rootPath, file.path));
-      return `${frame(file.path)}${frame(createHash("sha256").update(bytes).digest("hex"))}`;
+    const untracked = await Promise.all(diff.files.filter((file) => !file.tracked).map(async (file) => {
+      const content = await readUntrackedContent(rootPath, file.path);
+      return { path: file.path, snapshotBytes: content.snapshotBytes };
     }));
-    return createHash("sha256").update([
-      frame(baseCommit), frame(diff.trackedPatch), frame(diff.stagedPatch), ...untrackedInputs,
-    ].join("")).digest("hex");
+    return snapshotHashFromInputs({ baseCommit, trackedPatch: diff.trackedPatch, stagedPatch: diff.stagedPatch, untracked });
   }
 }
 
