@@ -1,10 +1,10 @@
 # Flint — 本地结对评审
 
-Flint 是一个完全在本地运行的工作流，让你可以在现有 Git 仓库中协调 Codex 开发与 Claude 评审。它保留了人工 review 和 feedback gate：Finding 永远不会自动发送，Codex 也只会使用已持久化的精确 session ID 恢复任务。
+Flint 是一个完全在本地运行的工作流，让你可以在现有 Git 仓库中协调可配置的 Developer CLI 与只读 Reviewer CLI。默认组合是 Codex Developer 与 Claude Reviewer；也可以在 **CLI 设置**中将 Codex 或 Claude 分配给任一角色。Flint 保留了人工 review 和 feedback gate：Finding 永远不会自动发送，feedback 也只会恢复任务已持久化的精确 Developer session。
 
 ## 安装与 CLI 前置条件
 
-Flint 需要 Bun 1.3 或更高版本、Git、Codex CLI 和 Claude Code。当前 checkout 已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。Codex 与 Claude 的版本会在运行时自动检测，并显示在 **CLI 设置**中；本 README 不假定用户安装了某个特定版本。
+Flint 需要 Bun 1.3 或更高版本、Git，以及至少一个受支持且已登录的 Agent CLI。当前支持 Codex CLI 与 Claude Code，两者都可以担任 Developer 或 Reviewer；如需自由组合角色，请同时安装并登录两个 CLI。当前 checkout 已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。Codex 与 Claude 的版本会在运行时自动检测，并显示在 **CLI 设置**中；本 README 不假定用户安装了某个特定版本。
 
 ```bash
 bun install
@@ -12,15 +12,14 @@ codex login
 claude auth login
 ```
 
-请使用各 CLI 的正常订阅流程登录。Flint 不需要 OpenAI 或 Anthropic API key，并会在启动子进程前移除常见的 API 凭据环境变量。
+请为计划使用的 CLI 完成正常订阅登录。Flint 不需要 OpenAI 或 Anthropic API key，并会在启动子进程前移除常见的 API 凭据环境变量。
 
 ## 运行、测试与构建
 
-先启动 API server，再在另一个 terminal 中启动 Vite UI：
+一条命令同时启动 API server 和 Vite UI：
 
 ```bash
 bun run dev
-bun run --filter @local-pair-review/web dev
 ```
 
 API 仅监听 `127.0.0.1:3000`；开发期间，Vite 会将 `/api` 和 `/ws` 代理到该地址。
@@ -61,25 +60,33 @@ GIT_EXECUTABLE=/absolute/path/to/git
 
 这些路径也可以在 **CLI 设置**中保存并重新检查。通过 UI 设置的路径会经过绝对路径校验，并持久化到本地 `app_settings` 表中；清空字段即可恢复启动时的默认值。打包时可以使用 `LOCAL_PAIR_REVIEW_WEB_ROOT` 覆盖构建后的 `apps/web/dist` 目录。
 
+### 任务角色
+
+**CLI 设置**提供 `Developer CLI` 与 `Reviewer CLI` 两个全局默认值。当前 Codex 和 Claude 都支持两个角色，默认组合为 Codex Developer / Claude Reviewer，也允许同一个 provider 同时担任两个角色。
+
+角色设置只影响之后创建的新任务。任务创建时会固化当时的 Developer 与 Reviewer provider；之后修改全局设置不会改变已有任务使用的 provider 或精确 session。
+
 ## 安全与权限
 
 Flint 的设计目标就是仅在本地运行。Server 只绑定 loopback 地址并拒绝非本地浏览器请求；启动子进程时使用参数数组和明确的 working directory，绝不会调用 shell command string，也不会修改当前进程的 working directory。
 
-Codex 开发任务会在已注册的项目目录中以 `--sandbox workspace-write` 启动。Claude review 使用 CLI 的 `plan` permission mode 和范围严格的只读 tool allowlist；edit/write、破坏性 Git 操作、commit 和 push 都会在 CLI 层被禁止。子进程环境中的 API 凭据会被移除，诊断输出也会在存储或展示前完成脱敏。
+Developer 在已注册的项目目录中以允许修改工作区的权限运行：Codex 使用 `workspace-write` sandbox，Claude 使用 `acceptEdits` 和用户自己的权限配置，Flint 不会为 Claude 启用 `bypassPermissions`。
+
+Reviewer 始终受只读约束：Codex 使用 `read-only` sandbox 与结构化 review schema；Claude 使用 `plan` permission mode、范围严格的只读 tool allowlist 和 review JSON schema。Reviewer 的 edit/write、破坏性 Git 操作、commit 和 push 会在 CLI 层被禁止。子进程环境中的 API 凭据会被移除，诊断输出也会在存储或展示前完成脱敏。
 
 ## 工作流程
 
 1. 注册本地 Git 仓库的绝对路径。
 2. 以当前 `HEAD` 为 baseline，创建一个范围明确的 Task。
-3. 启动 Codex 开发；Flint 会在 Codex 输出 session ID 后立即精确持久化。
-4. 开发准备完成后，启动只读的 Claude review。
+3. 启动任务固化的 Developer CLI；Flint 会在 CLI 输出 session ID 后立即精确持久化。
+4. 开发准备完成后，启动任务固化的只读 Reviewer CLI。
 5. 选择或忽略 Finding、添加人工备注、生成 feedback preview，并在需要时进行编辑。
-6. 明确发送编辑后的 feedback，恢复对应的精确 Codex session。
+6. 明确发送编辑后的 feedback，恢复对应的精确 Developer session。
 7. 根据需要再次发起 review，或手动将 Task 标记为完成。
 
 ## MVP 限制
 
-Flint 不提供自动 Codex/Claude 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确启动的 developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
+Flint 不提供自动 Developer/Reviewer 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确启动的 Developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
 
 ## 真实 CLI smoke test
 
