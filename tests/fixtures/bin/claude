@@ -1,0 +1,137 @@
+#!/usr/bin/env bun
+
+const args = process.argv.slice(2);
+const scenario = process.env.FAKE_CLI_SCENARIO ?? "normal";
+const invocationLog = process.env.FAKE_CLI_INVOCATION_LOG;
+
+async function recordProbe(): Promise<void> {
+  const probeLog = process.env.FAKE_CLI_PROBE_LOG;
+  if (!probeLog) return;
+  const existing = await Bun.file(probeLog).text().catch(() => "");
+  await Bun.write(probeLog, `${existing}${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+}
+
+if (args[0] === "--version") {
+  await recordProbe();
+  console.log("claude-code 8.8.8-fake");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  await recordProbe();
+  if (scenario === "unauthenticated") {
+    console.error("Not logged in; OPENAI_API_KEY=sk-fake-auth-secret");
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ loggedIn: true, authMethod: "subscription" }));
+  process.exit(0);
+}
+
+const prompt = await Bun.stdin.text();
+if (invocationLog) {
+  await Bun.write(invocationLog, JSON.stringify({
+    executable: process.argv[1],
+    args,
+    cwd: process.cwd(),
+    prompt,
+  }));
+}
+
+const validStructuredOutput = {
+  summary: "Fake review found one issue.",
+  verdict: "changes_suggested",
+  findings: [{
+    severity: "P1",
+    title: "Validate input",
+    description: "The input is not validated.",
+    suggestion: "Add validation before use.",
+    file: "src/input.ts",
+    startLine: 7,
+    endLine: 9,
+  }],
+};
+const emit = (value: unknown) => console.log(JSON.stringify(value));
+const emitNormal = (structuredOutput: unknown = validStructuredOutput) => {
+  emit({
+    type: "system",
+    subtype: "init",
+    session_id: "claude-session-fake-456",
+    tools: ["Read", "Glob", "Grep", "Bash"],
+    model: "claude-test-model",
+    permissionMode: "plan",
+  });
+  emit({
+    type: "assistant",
+    session_id: "claude-session-fake-456",
+    message: {
+      id: "msg-fake-1",
+      type: "message",
+      role: "assistant",
+      model: "claude-test-model",
+      content: [{ type: "text", text: "Reviewing the current diff." }],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 44, output_tokens: 20 },
+    },
+  });
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    duration_ms: 151,
+    duration_api_ms: 120,
+    num_turns: 1,
+    result: "Fake Claude review completed.",
+    session_id: "claude-session-fake-456",
+    total_cost_usd: 0,
+    usage: { input_tokens: 44, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    structured_output: structuredOutput,
+  });
+};
+
+switch (scenario) {
+  case "normal":
+  case "resume":
+    emitNormal();
+    break;
+  case "schema-failure":
+    emitNormal({ summary: "Invalid", verdict: "unknown", findings: [] });
+    break;
+  case "invalid-json":
+    emit({ type: "system", subtype: "init", session_id: "claude-session-fake-456", tools: [], model: "fake", permissionMode: "plan" });
+    console.log("{bad-json");
+    emit({ type: "future_claude_event", session_id: "claude-session-fake-456", payload: { value: 8 } });
+    emit({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      duration_ms: 10,
+      duration_api_ms: 9,
+      num_turns: 1,
+      result: "Review completed after invalid event.",
+      session_id: "claude-session-fake-456",
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      structured_output: { summary: "No findings", verdict: "pass", findings: [] },
+    });
+    break;
+  case "stderr":
+    console.error("fake claude warning");
+    emitNormal();
+    break;
+  case "nonzero":
+    emit({ type: "system", subtype: "init", session_id: "claude-session-fake-456", tools: [], model: "fake", permissionMode: "plan" });
+    console.error("fake claude failure");
+    process.exit(29);
+  case "slow":
+    emit({ type: "system", subtype: "init", session_id: "claude-session-fake-456", tools: [], model: "fake", permissionMode: "plan" });
+    await Bun.sleep(10_000);
+    emitNormal();
+    break;
+  case "terminate":
+    emit({ type: "system", subtype: "init", session_id: "claude-session-fake-456", tools: [], model: "fake", permissionMode: "plan" });
+    process.kill(process.pid, "SIGTERM");
+    break;
+  default:
+    console.error(`unknown fake scenario: ${scenario}`);
+    process.exit(64);
+}

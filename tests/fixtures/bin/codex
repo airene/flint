@@ -1,0 +1,118 @@
+#!/usr/bin/env bun
+
+const args = process.argv.slice(2);
+const scenario = process.env.FAKE_CLI_SCENARIO ?? "normal";
+const invocationLog = process.env.FAKE_CLI_INVOCATION_LOG;
+
+async function recordProbe(): Promise<void> {
+  const probeLog = process.env.FAKE_CLI_PROBE_LOG;
+  if (!probeLog) return;
+  const existing = await Bun.file(probeLog).text().catch(() => "");
+  await Bun.write(probeLog, `${existing}${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+}
+
+if (args[0] === "--version") {
+  await recordProbe();
+  console.log("codex-cli 9.9.9-fake");
+  process.exit(0);
+}
+if (args[0] === "login" && args[1] === "status") {
+  await recordProbe();
+  if (scenario === "codex-unauthenticated") {
+    console.error("Not logged in");
+    process.exit(1);
+  }
+  if (scenario === "codex-auth-unsupported") {
+    console.error("error: unrecognized subcommand 'login'");
+    process.exit(2);
+  }
+  console.log("Logged in using ChatGPT subscription");
+  process.exit(0);
+}
+
+if (scenario === "pre-stdin-heartbeat") {
+  const pidLog = process.env.FAKE_CLI_PID_LOG;
+  const heartbeatLog = process.env.FAKE_CLI_HEARTBEAT_LOG;
+  if (pidLog) await Bun.write(pidLog, String(process.pid));
+  if (heartbeatLog) {
+    await Bun.write(heartbeatLog, String(Date.now()));
+    setInterval(() => { void Bun.write(heartbeatLog, String(Date.now())); }, 10);
+  }
+}
+
+const prompt = await Bun.stdin.text();
+if (invocationLog) {
+  await Bun.write(invocationLog, JSON.stringify({
+    executable: process.argv[1],
+    args,
+    cwd: process.cwd(),
+    prompt,
+  }));
+}
+
+const emit = (value: unknown) => console.log(JSON.stringify(value));
+const emitNormal = () => {
+  emit({ type: "thread.started", thread_id: args[1] === "resume" ? args[2] : "codex-session-fake-123" });
+  emit({ type: "turn.started" });
+  emit({
+    type: "item.completed",
+    item: { id: "item-fake-1", type: "agent_message", text: "Fake Codex completed the requested change." },
+  });
+  emit({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 3, output_tokens: 5 } });
+};
+
+switch (scenario) {
+  case "normal":
+  case "resume":
+    emitNormal();
+    break;
+  case "invalid-json":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    console.log("{not-json");
+    emit({ type: "future.codex.event", payload: { value: 7 } });
+    emit({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
+    break;
+  case "stderr":
+    console.error("fake warning from stderr");
+    emitNormal();
+    break;
+  case "nonzero":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    console.error("fake codex failure");
+    process.exit(23);
+  case "turn-failed":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    emit({ type: "turn.failed", error: { message: "fake turn failure" } });
+    break;
+  case "incomplete":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    break;
+  case "slow":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    emit({ type: "turn.started" });
+    await Bun.sleep(10_000);
+    emit({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
+    break;
+  case "slow-tree": {
+    const child = Bun.spawn([process.execPath, "-e", "while (true) { await Bun.write(process.env.FAKE_CLI_HEARTBEAT_LOG, String(Date.now())); await Bun.sleep(10); }"], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      env: process.env,
+    });
+    const childPidLog = process.env.FAKE_CLI_CHILD_PID_LOG;
+    if (childPidLog) await Bun.write(childPidLog, String(child.pid));
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    emit({ type: "turn.started" });
+    await Bun.sleep(10_000);
+    emit({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
+    break;
+  }
+  case "terminate":
+    emit({ type: "thread.started", thread_id: "codex-session-fake-123" });
+    process.kill(process.pid, "SIGTERM");
+    break;
+  default:
+    console.error(`unknown fake scenario: ${scenario}`);
+    process.exit(64);
+}

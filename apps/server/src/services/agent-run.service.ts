@@ -1,0 +1,233 @@
+import type {
+  AgentDriver,
+  AgentEvent,
+  AgentRun,
+  AgentRunStatus,
+  AgentRunType,
+  AgentStartResult,
+  Provider,
+  ReviewParseStatus,
+  Task,
+} from "@local-pair-review/shared";
+import { AgentProcessError } from "../utils/process-supervisor";
+import { redactSensitive } from "../utils/redact";
+import type { EventService } from "./event.service";
+
+export interface FinishRunInput {
+  runId: string;
+  patch: {
+    status: AgentRunStatus;
+    reviewParseStatus: ReviewParseStatus | null;
+    exitCode: number | null;
+    finalMessage: string | null;
+    structuredOutput: unknown | null;
+    errorMessage: string | null;
+    finishedAt: string;
+  };
+}
+
+export interface AgentRunPersistencePort {
+  markRunning(runId: string, processId: number): Promise<void>;
+  /** Must atomically update AgentRun.externalSessionId and the provider session on Task. */
+  recordSession(runId: string, taskId: string, provider: Provider, sessionId: string): Promise<void>;
+}
+
+export interface TaskRunStatePort {
+  /** Must atomically insert the queued Run, check locks, and transition Task. */
+  queue(run: AgentRun): Promise<AgentRun>;
+  /** Must atomically finish the Run and transition Task to its success state. */
+  succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun>;
+  /** Must atomically finish the Run and apply the spec's Task fallback. */
+  fail(input: FinishRunInput & {
+    taskId: string;
+    runType: AgentRunType;
+    sessionId: string | null;
+  }): Promise<AgentRun>;
+}
+
+export interface StartAgentRunInput {
+  task: Task;
+  runType: AgentRunType;
+  prompt: string;
+  sessionId?: string;
+  signal?: AbortSignal;
+}
+
+export interface StartedAgentRun {
+  run: AgentRun;
+  completion: Promise<AgentRun>;
+}
+
+interface AgentRunServiceOptions {
+  drivers: Record<Provider, AgentDriver>;
+  persistence: AgentRunPersistencePort;
+  taskState: TaskRunStatePort;
+  events: EventService;
+  createId?: () => string;
+  now?: () => string;
+}
+
+function providerFor(runType: AgentRunType): Provider {
+  return runType === "reviewer" ? "claude" : "codex";
+}
+
+function sessionFromEvent(event: AgentEvent): string | undefined {
+  if (event.type !== "session_started" || !event.payload || typeof event.payload !== "object") return undefined;
+  const payload = event.payload as Record<string, unknown>;
+  const parsed = payload.parsed;
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.thread_id === "string") return record.thread_id;
+  if (typeof record.session_id === "string") return record.session_id;
+  return undefined;
+}
+
+export class AgentRunService {
+  private readonly drivers: Record<Provider, AgentDriver>;
+  private readonly persistence: AgentRunPersistencePort;
+  private readonly taskState: TaskRunStatePort;
+  private readonly events: EventService;
+  private readonly createId: () => string;
+  private readonly now: () => string;
+  private readonly activeDrivers = new Map<string, AgentDriver>();
+
+  constructor(options: AgentRunServiceOptions) {
+    this.drivers = options.drivers;
+    this.persistence = options.persistence;
+    this.taskState = options.taskState;
+    this.events = options.events;
+    this.createId = options.createId ?? (() => crypto.randomUUID());
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  async start(input: StartAgentRunInput): Promise<StartedAgentRun> {
+    const provider = providerFor(input.runType);
+    const run: AgentRun = {
+      id: this.createId(),
+      taskId: input.task.id,
+      projectId: input.task.projectId,
+      provider,
+      runType: input.runType,
+      status: "queued",
+      reviewParseStatus: input.runType === "reviewer" ? "pending" : null,
+      externalSessionId: input.sessionId ?? null,
+      processId: null,
+      exitCode: null,
+      prompt: input.prompt,
+      finalMessage: null,
+      structuredOutput: null,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null,
+    };
+
+    const persisted = await this.taskState.queue(run);
+    const driver = this.drivers[provider];
+    this.activeDrivers.set(run.id, driver);
+    const completion = this.execute(persisted, input, driver);
+    return { run: persisted, completion };
+  }
+
+  async cancel(runId: string): Promise<void> {
+    await this.activeDrivers.get(runId)?.cancel(runId);
+  }
+
+  private async execute(run: AgentRun, input: StartAgentRunInput, driver: AgentDriver): Promise<AgentRun> {
+    let capturedSession = input.sessionId ?? null;
+    try {
+      await this.events.publish(this.lifecycleEvent(run, "run_queued", { runType: run.runType }));
+      const result = await driver.start({
+        runId: run.id,
+        taskId: run.taskId,
+        projectId: run.projectId,
+        workingDirectory: input.task.workingDirectory,
+        prompt: input.prompt,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      }, async (event) => {
+        if (event.type === "run_started") {
+          const payload = event.payload as { processId?: unknown };
+          if (typeof payload.processId === "number") await this.persistence.markRunning(run.id, payload.processId);
+        }
+        const sessionId = sessionFromEvent(event);
+        if (sessionId && sessionId !== capturedSession) {
+          capturedSession = sessionId;
+          await this.persistence.recordSession(run.id, run.taskId, run.provider, sessionId);
+        }
+        await this.events.publish(event);
+      });
+
+      if (result.sessionId && result.sessionId !== capturedSession) {
+        capturedSession = result.sessionId;
+        await this.persistence.recordSession(run.id, run.taskId, run.provider, result.sessionId);
+      }
+      const terminal = await this.taskState.succeed({
+        runId: run.id,
+        taskId: run.taskId,
+        runType: run.runType,
+        patch: this.successPatch(run, result),
+      });
+      try {
+        await this.events.publish(this.lifecycleEvent(run, "run_completed", { finalMessage: result.finalMessage }));
+      } catch {
+        // The completed Run/Task transaction is authoritative; never emit a contradictory failure.
+      }
+      return terminal;
+    } catch (error) {
+      const cancelled = error instanceof AgentProcessError && error.kind === "cancelled";
+      const status = cancelled ? "cancelled" : "failed";
+      try {
+        await this.events.publish(this.lifecycleEvent(
+          run,
+          cancelled ? "run_cancelled" : "run_failed",
+          { message: error instanceof Error ? error.message : String(error) },
+        ));
+      } catch {
+        // The original persistence/driver error remains authoritative.
+      }
+      const terminal = await this.taskState.fail({
+        runId: run.id,
+        taskId: run.taskId,
+        runType: run.runType,
+        sessionId: capturedSession,
+        patch: {
+          status,
+          reviewParseStatus: run.reviewParseStatus,
+          exitCode: error instanceof AgentProcessError ? error.exitCode : null,
+          finalMessage: null,
+          structuredOutput: null,
+          errorMessage: redactSensitive(error instanceof Error ? error.message : String(error)),
+          finishedAt: this.now(),
+        },
+      });
+      return terminal;
+    } finally {
+      this.activeDrivers.delete(run.id);
+    }
+  }
+
+  private successPatch(run: AgentRun, result: AgentStartResult): FinishRunInput["patch"] {
+    return {
+      status: "completed",
+      reviewParseStatus: run.reviewParseStatus,
+      exitCode: 0,
+      finalMessage: result.finalMessage,
+      structuredOutput: result.structuredOutput,
+      errorMessage: null,
+      finishedAt: this.now(),
+    };
+  }
+
+  private lifecycleEvent(run: AgentRun, type: AgentEvent["type"], payload: unknown): AgentEvent {
+    return {
+      sequence: 0,
+      timestamp: this.now(),
+      projectId: run.projectId,
+      taskId: run.taskId,
+      runId: run.id,
+      source: "system",
+      type,
+      payload,
+    };
+  }
+}
