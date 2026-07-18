@@ -204,6 +204,176 @@ export const createTaskRequestSchema = z.object({
 }).strict();
 export type CreateTaskRequest = z.infer<typeof createTaskRequestSchema>;
 
+export const projectResponseSchema = projectSchema;
+export type ProjectResponse = z.infer<typeof projectResponseSchema>;
+export const projectListResponseSchema = z.array(projectSchema);
+export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
+export const createProjectResponseSchema = projectResponseSchema;
+export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>;
+
+export const updateProjectRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  lastOpenedAt: z.string().nullable().optional(),
+}).strict().refine((request) => Object.keys(request).length > 0, {
+  message: "At least one project field is required",
+});
+export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>;
+
+export const deleteProjectRequestSchema = z.object({
+  confirm: z.boolean().default(false),
+}).strict();
+export type DeleteProjectRequest = z.infer<typeof deleteProjectRequestSchema>;
+export const deleteProjectResponseSchema = z.object({ deleted: z.literal(true) }).strict();
+export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>;
+
+export const taskResponseSchema = taskSchema;
+export type TaskResponse = z.infer<typeof taskResponseSchema>;
+export const taskListResponseSchema = z.array(taskSchema);
+export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
+export const createTaskResponseSchema = taskResponseSchema;
+export type CreateTaskResponse = z.infer<typeof createTaskResponseSchema>;
+
+export const updateTaskRequestSchema = z.object({
+  title: z.string().min(1).optional(),
+  originalPrompt: z.string().min(1).optional(),
+}).strict().refine((request) => Object.keys(request).length > 0, {
+  message: "At least one task field is required",
+});
+export type UpdateTaskRequest = z.infer<typeof updateTaskRequestSchema>;
+export const completeTaskRequestSchema = z.object({}).strict();
+export type CompleteTaskRequest = z.infer<typeof completeTaskRequestSchema>;
+export const completeTaskResponseSchema = taskResponseSchema;
+export type CompleteTaskResponse = z.infer<typeof completeTaskResponseSchema>;
+
+export const developTaskRequestSchema = z.object({
+  prompt: z.string().min(1).optional(),
+}).strict();
+export type DevelopTaskRequest = z.infer<typeof developTaskRequestSchema>;
+export const reviewTaskRequestSchema = z.object({}).strict();
+export type ReviewTaskRequest = z.infer<typeof reviewTaskRequestSchema>;
+export const feedbackTaskRequestSchema = z.object({
+  sourceReviewRunId: z.string().min(1),
+  selectedFindingIds: z.array(z.string().min(1)),
+  finalText: z.string().min(1),
+  confirmStaleSnapshot: z.boolean().default(false),
+}).strict();
+export type FeedbackTaskRequest = z.infer<typeof feedbackTaskRequestSchema>;
+
+const taskRunResponseSchema = z.object({
+  task: taskSchema,
+  run: agentRunSchema,
+}).strict();
+export const developTaskResponseSchema = taskRunResponseSchema;
+export type DevelopTaskResponse = z.infer<typeof developTaskResponseSchema>;
+export const reviewTaskResponseSchema = taskRunResponseSchema;
+export type ReviewTaskResponse = z.infer<typeof reviewTaskResponseSchema>;
+export const feedbackTaskResponseSchema = z.object({
+  task: taskSchema,
+  run: agentRunSchema,
+  delivery: feedbackDeliverySchema,
+}).strict();
+export type FeedbackTaskResponse = z.infer<typeof feedbackTaskResponseSchema>;
+
+export const cancelRunRequestSchema = z.object({}).strict();
+export type CancelRunRequest = z.infer<typeof cancelRunRequestSchema>;
+export const runResponseSchema = agentRunSchema;
+export type RunResponse = z.infer<typeof runResponseSchema>;
+export const cancelRunResponseSchema = runResponseSchema;
+export type CancelRunResponse = z.infer<typeof cancelRunResponseSchema>;
+export const runListResponseSchema = z.array(agentRunSchema);
+export type RunListResponse = z.infer<typeof runListResponseSchema>;
+
+export const updateFindingRequestSchema = z.object({
+  selected: z.boolean().optional(),
+  dismissed: z.boolean().optional(),
+  userNote: z.string().nullable().optional(),
+}).strict().refine((request) => Object.keys(request).length > 0, {
+  message: "At least one finding field is required",
+});
+export type UpdateFindingRequest = z.infer<typeof updateFindingRequestSchema>;
+export const findingResponseSchema = reviewFindingSchema;
+export type FindingResponse = z.infer<typeof findingResponseSchema>;
+export const findingsResponseSchema = z.array(reviewFindingSchema);
+export type FindingsResponse = z.infer<typeof findingsResponseSchema>;
+
+export const findingSelectionModeSchema = z.enum(["P0", "P0_P1", "all", "none"]);
+export type FindingSelectionMode = z.infer<typeof findingSelectionModeSchema>;
+export const selectFindingsRequestSchema = z.object({ mode: findingSelectionModeSchema }).strict();
+export type SelectFindingsRequest = z.infer<typeof selectFindingsRequestSchema>;
+export const selectFindingsResponseSchema = findingsResponseSchema;
+export type SelectFindingsResponse = z.infer<typeof selectFindingsResponseSchema>;
+
+export const feedbackPreviewRequestSchema = z.object({
+  selectedFindingIds: z.array(z.string().min(1)),
+}).strict();
+export type FeedbackPreviewRequest = z.infer<typeof feedbackPreviewRequestSchema>;
+export const feedbackPreviewResponseSchema = z.object({ finalText: z.string() }).strict();
+export type FeedbackPreviewResponse = z.infer<typeof feedbackPreviewResponseSchema>;
+
+export const gitFileStatusSchema = z.object({
+  path: z.string().min(1),
+  previousPath: z.string().nullable(),
+  status: z.enum(["added", "modified", "deleted", "renamed", "untracked"]),
+  staged: z.boolean(),
+  tracked: z.boolean(),
+  binary: z.boolean(),
+}).strict();
+export type GitFileStatus = z.infer<typeof gitFileStatusSchema>;
+
+export const gitStatusRequestSchema = z.object({}).strict();
+export type GitStatusRequest = z.infer<typeof gitStatusRequestSchema>;
+export const gitStatusResponseSchema = z.object({
+  clean: z.boolean(),
+  files: z.array(gitFileStatusSchema),
+}).strict();
+export type GitStatusResponse = z.infer<typeof gitStatusResponseSchema>;
+
+export const gitDiffRequestSchema = z.object({}).strict();
+export type GitDiffRequest = z.infer<typeof gitDiffRequestSchema>;
+export const gitDiffResponseSchema = z.object({
+  baseCommit: z.string().min(1),
+  trackedPatch: z.string(),
+  stagedPatch: z.string(),
+  untrackedPatch: z.string(),
+  stat: z.string(),
+  files: z.array(gitFileStatusSchema),
+}).strict();
+export type GitDiffResponse = z.infer<typeof gitDiffResponseSchema>;
+
+export const gitFilesRequestSchema = z.object({}).strict();
+export type GitFilesRequest = z.infer<typeof gitFilesRequestSchema>;
+export const gitFilesResponseSchema = z.object({ files: z.array(gitFileStatusSchema) }).strict();
+export type GitFilesResponse = z.infer<typeof gitFilesResponseSchema>;
+export const gitFileDiffRequestSchema = z.object({ path: z.string().min(1) }).strict();
+export type GitFileDiffRequest = z.infer<typeof gitFileDiffRequestSchema>;
+export const gitFileDiffResponseSchema = z.object({
+  file: gitFileStatusSchema,
+  patch: z.string(),
+}).strict();
+export type GitFileDiffResponse = z.infer<typeof gitFileDiffResponseSchema>;
+
+export const agentAvailabilitySchema = z.object({
+  installed: z.boolean(),
+  executablePath: z.string().nullable(),
+  version: z.string().nullable(),
+  authentication: z.enum(["unknown", "authenticated", "unauthenticated"]),
+  message: z.string().nullable(),
+}).strict();
+export type AgentAvailability = z.infer<typeof agentAvailabilitySchema>;
+
+export const cliStatusRequestSchema = z.object({}).strict();
+export type CliStatusRequest = z.infer<typeof cliStatusRequestSchema>;
+export const cliStatusResponseSchema = z.object({
+  codex: agentAvailabilitySchema,
+  claude: agentAvailabilitySchema,
+  git: agentAvailabilitySchema,
+}).strict();
+export type CliStatusResponse = z.infer<typeof cliStatusResponseSchema>;
+export const cliRecheckRequestSchema = z.object({}).strict();
+export type CliRecheckRequest = z.infer<typeof cliRecheckRequestSchema>;
+export const cliRecheckResponseSchema = cliStatusResponseSchema;
+export type CliRecheckResponse = z.infer<typeof cliRecheckResponseSchema>;
+
 export const apiErrorCodeSchema = z.enum([
   "VALIDATION_ERROR",
   "NOT_FOUND",
@@ -233,14 +403,6 @@ export interface AgentStartResult {
   sessionId: string | null;
   finalMessage: string | null;
   structuredOutput: unknown | null;
-}
-
-export interface AgentAvailability {
-  installed: boolean;
-  executablePath: string | null;
-  version: string | null;
-  authentication: "unknown" | "authenticated" | "unauthenticated";
-  message: string | null;
 }
 
 export interface AgentDriver {

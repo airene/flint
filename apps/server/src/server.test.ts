@@ -14,7 +14,7 @@ test("health endpoint reports a healthy local server", async () => {
   expect(createServer).toBeDefined();
   if (!createServer) return;
 
-  const server = createServer({ port: 31_501 });
+  const server = createServer({ port: 0 });
   try {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/health`);
     expect(response.status).toBe(200);
@@ -28,7 +28,7 @@ test("websocket rejects a subscribe handshake without a task id", async () => {
   expect(createServer).toBeDefined();
   if (!createServer) return;
 
-  const server = createServer({ port: 31_502 });
+  const server = createServer({ port: 0 });
   try {
     const close = await new Promise<CloseEvent>((resolve, reject) => {
       const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -40,13 +40,13 @@ test("websocket rejects a subscribe handshake without a task id", async () => {
   } finally {
     server.stop();
   }
-});
+}, 1_000);
 
 test("websocket confirms a valid subscribe handshake", async () => {
   expect(createServer).toBeDefined();
   if (!createServer) return;
 
-  const server = createServer({ port: 31_503 });
+  const server = createServer({ port: 0 });
   try {
     const response = await new Promise<unknown>((resolve, reject) => {
       const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
