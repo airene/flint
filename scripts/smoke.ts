@@ -148,7 +148,7 @@ try {
       console.log("Smoke test not authorized; no real subscription command was invoked.");
     } else if (provider === "codex") {
       const initial = await runCli(
-        buildCodexArgs(path), repository,
+        buildCodexArgs(path, "developer_initial"), repository,
         "In this temporary repository only, create SMOKE.md containing the single line 'Codex smoke test'. Do not commit, push, or access the network.",
       );
       console.log(redactSensitive(initial.stdout).trim());
@@ -159,16 +159,21 @@ try {
       if (!(await repositorySnapshot(repository)).trim()) throw new Error("Codex smoke completed without producing a visible Git diff.");
       console.log(`Codex session ID: ${sessionId}`);
       const resumed = await runCli(
-        buildCodexArgs(path, sessionId), repository,
+        buildCodexArgs(path, "developer_feedback", sessionId), repository,
         "Confirm the exact-session smoke run completed. Do not make further changes.",
       );
       console.log(redactSensitive(resumed.stdout).trim());
       console.error(redactSensitive(resumed.stderr).trim());
       if (resumed.exitCode !== 0) throw new Error(`Codex exact-session resume exited with ${resumed.exitCode}.`);
+      const resumedSessionId = codexSessionId(resumed.stdout);
+      if (resumedSessionId && resumedSessionId !== sessionId) {
+        throw new Error(`Codex resume continued thread ${resumedSessionId} instead of the original ${sessionId}.`);
+      }
+      if (!resumedSessionId) console.log("Codex resume output did not re-announce a thread ID; verify the transcript above manually.");
     } else {
       const before = await repositorySnapshot(repository);
       const result = await runCli(
-        buildClaudeArgs(path), repository,
+        buildClaudeArgs(path, "reviewer"), repository,
         "Review this temporary repository without changing files. Return a structured review of the current diff.",
       );
       console.log(redactSensitive(result.stdout).trim());

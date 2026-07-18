@@ -59,13 +59,13 @@ function cancelDirtyConfirmation(): void {
       <div class="panel-body task-form">
         <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
         <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><textarea id="task-prompt" v-model="prompt" class="textarea" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
-        <div class="create-row"><p class="help">If the working tree is dirty, Flint asks for explicit confirmation before creating the task.</p><button class="button primary" :disabled="Boolean(store.pendingDirtyTask) || !title.trim() || !prompt.trim()" @click="createTask(false)">Create task</button></div>
+        <div class="create-row"><p class="help">Creating the task immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p><button class="button primary" :disabled="Boolean(store.pendingDirtyTask) || !title.trim() || !prompt.trim()" @click="createTask(false)">Create & start {{ developerLabel }}</button></div>
       </div>
     </section>
 
     <section v-if="store.pendingDirtyTask?.projectId === store.currentProject?.id" class="dirty-confirm">
-      <div><strong>Working tree has existing changes</strong><p>They will be included in the review snapshot together with Agent changes.</p><ul><li v-for="file in store.dirtyWorkingTreeFiles" :key="file" class="mono">{{ file }}</li></ul></div>
-      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">Cancel</button><button class="button danger" @click="createTask(true)">Create anyway</button></div>
+      <div><strong>Working tree has existing changes</strong><p>They will be included in the review snapshot together with Agent changes. Confirming creates the task and immediately starts {{ developerLabel }}.</p><ul><li v-for="file in store.dirtyWorkingTreeFiles" :key="file" class="mono">{{ file }}</li></ul></div>
+      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">Cancel</button><button class="button danger" @click="createTask(true)">Create & start anyway</button></div>
     </section>
 
     <section class="tasks-section">

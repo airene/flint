@@ -77,16 +77,15 @@ Reviewer 始终受只读约束：Codex 使用 `read-only` sandbox 与结构化 r
 ## 工作流程
 
 1. 注册本地 Git 仓库的绝对路径。
-2. 以当前 `HEAD` 为 baseline，创建一个范围明确的 Task。
-3. 启动任务固化的 Developer CLI；Flint 会在 CLI 输出 session ID 后立即精确持久化。
-4. 开发准备完成后，启动任务固化的只读 Reviewer CLI。
-5. 选择或忽略 Finding、添加人工备注、生成 feedback preview，并在需要时进行编辑。
-6. 明确发送编辑后的 feedback，恢复对应的精确 Developer session。
-7. 根据需要再次发起 review，或手动将 Task 标记为完成。
+2. 以当前 `HEAD` 为 baseline，通过 **Create & start** 创建一个范围明确的 Task；确认后会**立即启动**任务固化的 Developer CLI（消耗对应订阅额度），Flint 会在 CLI 输出 session ID 后立即精确持久化。若工作区存在未提交变更，会先要求明确确认。
+3. 开发准备完成后，启动任务固化的只读 Reviewer CLI。
+4. 选择或忽略 Finding、添加人工备注、生成 feedback preview，并在需要时进行编辑。
+5. 明确发送编辑后的 feedback，恢复对应的精确 Developer session。
+6. 根据需要再次发起 review，或手动将 Task 标记为完成。
 
 ## MVP 限制
 
-Flint 不提供自动 Developer/Reviewer 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确启动的 Developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
+Flint 不提供自动 Developer/Reviewer 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确创建并启动（Create & start）、继续或恢复的 Developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
 
 ## 真实 CLI smoke test
 

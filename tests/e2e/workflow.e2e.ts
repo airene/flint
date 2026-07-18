@@ -26,13 +26,15 @@ async function createRepository(): Promise<string> {
   return repository;
 }
 
+// Creating a task auto-starts the fixed Developer run (Create & start), so callers
+// should assert on the resulting run/task state instead of a draft Start button.
 async function createTask(page: Page, repository: string, prompt: string, developerLabel = "Codex"): Promise<void> {
   await page.goto("/projects");
   await page.locator("#root-path").fill(repository);
   await page.getByRole("button", { name: "Register repository" }).click();
   await page.getByLabel("Title").fill("E2E workflow task");
   await page.getByLabel(`${developerLabel} prompt`).fill(prompt);
-  await page.getByRole("button", { name: "Create task" }).click();
+  await page.getByRole("button", { name: `Create & start ${developerLabel}` }).click();
   await expect(page.getByRole("heading", { name: "E2E workflow task" })).toBeVisible();
 }
 
@@ -64,9 +66,7 @@ test("saves registry-driven role defaults and snapshots dynamic task panel title
     await expect(page.getByLabel("Reviewer CLI")).toHaveValue("codex");
 
     await createTask(page, await createRepository(), "Exercise role-specific task panels.", "Claude Code");
-    await expect(page.getByRole("region", { name: "Run history" }).getByText("No runs yet", { exact: true })).toBeVisible();
     await expect(page.getByText("Claude Code session", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Start Claude Code development" }).click();
     await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Claude Code Developer #1", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Start Codex review" }).click();
@@ -90,7 +90,6 @@ test("keeps same-provider Developer and Reviewer stream events isolated by run",
       data: { developerProvider: "codex", reviewerProvider: "codex" },
     });
     await createTask(page, await createRepository(), "Keep same-provider streams isolated.");
-    await page.getByRole("button", { name: "Start Codex development" }).click();
     await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Start Codex review" }).click();
     await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
@@ -144,7 +143,6 @@ test("keeps a saved unavailable provider selected while disabling its options", 
 test("completes the human-gated Codex and Claude workflow with an exact-session resume", async ({ page }) => {
   await createTask(page, await createRepository(), "Implement the requested change.");
 
-  await page.getByRole("button", { name: "Start Codex development" }).click();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Start Claude Code review" }).click();
   await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
@@ -170,7 +168,6 @@ test("selects and restores exact runs from task history", async ({ page }) => {
   const initialPrompt = "Implement history replay without losing the original result.";
   await createTask(page, await createRepository(), initialPrompt);
 
-  await page.getByRole("button", { name: "Start Codex development" }).click();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Start Claude Code review" }).click();
   await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
@@ -250,7 +247,6 @@ test("selects and restores exact runs from task history", async ({ page }) => {
 
 test("recovers persisted task state after a browser reload", async ({ page }) => {
   await createTask(page, await createRepository(), "Implement reload recovery.");
-  await page.getByRole("button", { name: "Start Codex development" }).click();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: "E2E workflow task" })).toBeVisible();
@@ -260,7 +256,6 @@ test("recovers persisted task state after a browser reload", async ({ page }) =>
 
 test("surfaces a Fake Codex developer failure in the task activity", async ({ page }) => {
   await createTask(page, await createRepository(), "[e2e:fail] fail the developer run.");
-  await page.getByRole("button", { name: "Start Codex development" }).click();
   await expect(page.locator(".activity-panel")).toContainText("Fake Codex E2E failure requested by test prompt");
   const codexPanel = page.locator(".agent-panel").filter({ has: page.getByRole("heading", { name: "Codex Developer" }) });
   await expect(codexPanel.getByText("failed", { exact: true })).toBeVisible();

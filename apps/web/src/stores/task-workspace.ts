@@ -24,6 +24,10 @@ function webSocketUrl(): string {
   return `${protocol}//${globalThis.location?.host ?? "127.0.0.1:3000"}/ws`;
 }
 
+// Long-running tasks replay their full persisted history on load; keep only the most
+// recent window in memory so the tab cannot grow unbounded.
+const MAX_TASK_EVENTS = 5000;
+
 export function latestFeedbackReviewRun(runs: AgentRun[], findings: ReviewFinding[]): AgentRun | null {
   return runs.filter((run) => (
     run.runType === "reviewer"
@@ -96,9 +100,12 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       url: webSocketUrl(),
       onEvent(event) {
         if (connectionGeneration !== generation || task.value?.id !== taskId) return;
-        if (events.value.some((candidate) => candidate.taskId === event.taskId && candidate.sequence === event.sequence)) return;
+        // TaskEventController delivers events deduplicated and in ascending sequence
+        // order, so an ordered O(1) append replaces the previous per-event scan + sort.
+        const last = events.value.at(-1);
+        if (last && event.sequence <= last.sequence) return;
         events.value.push(event);
-        events.value.sort((left, right) => left.sequence - right.sequence);
+        if (events.value.length > MAX_TASK_EVENTS) events.value.splice(0, events.value.length - MAX_TASK_EVENTS);
         if (["run_completed", "run_failed", "run_cancelled", "run_interrupted", "review_parsed", "review_parse_failed"].includes(event.type)) scheduleRefresh();
       },
       onTerminalEvent() {
