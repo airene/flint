@@ -1,28 +1,39 @@
 import { healthResponseSchema, webSocketSubscribeSchema } from "@local-pair-review/shared";
+import type { LocalPairReviewApplication } from "./api/application";
+import { forbiddenLocalRequestResponse, isAllowedLocalRequest } from "./api/security";
 
 export interface LocalPairReviewServer {
   port: number;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
-export function createServer(options: { port?: number } = {}): LocalPairReviewServer {
+export function createServer(options: { port?: number; application?: LocalPairReviewApplication } = {}): LocalPairReviewServer {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: options.port ?? 0,
-    fetch(request, serverInstance) {
+    async fetch(request, serverInstance) {
       const url = new URL(request.url);
-      if (url.pathname === "/api/health" && request.method === "GET") {
-        return Response.json(healthResponseSchema.parse({ status: "ok" }));
-      }
-
+      if (!isAllowedLocalRequest(request)) return forbiddenLocalRequestResponse();
       if (url.pathname === "/ws" && serverInstance.upgrade(request)) {
         return undefined;
+      }
+
+      if (options.application) return options.application.handle(request);
+      if (url.pathname === "/api/health" && request.method === "GET") {
+        return Response.json(healthResponseSchema.parse({ status: "ok" }));
       }
 
       return new Response("Not found", { status: 404 });
     },
     websocket: {
-      message(socket, rawMessage) {
+      open(socket) {
+        options.application?.socketOpen(socket);
+      },
+      async message(socket, rawMessage) {
+        if (options.application) {
+          await options.application.socketMessage(socket, rawMessage);
+          return;
+        }
         if (typeof rawMessage !== "string") {
           socket.close(1008, "Subscription must be JSON text");
           return;
@@ -48,11 +59,20 @@ export function createServer(options: { port?: number } = {}): LocalPairReviewSe
           afterSequence: subscription.data.afterSequence,
         }));
       },
+      close(socket) {
+        options.application?.socketClose(socket);
+      },
     },
   });
 
   return {
     port: server.port as number,
-    stop: () => server.stop(true),
+    async stop() {
+      try {
+        await options.application?.shutdown();
+      } finally {
+        server.stop(true);
+      }
+    },
   };
 }

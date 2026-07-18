@@ -7,8 +7,8 @@ import { validateRepositoryRelativePath } from "../utils/path";
 
 const decoder = new TextDecoder();
 
-function command(rootPath: string, args: string[], allowNonZero = false): string {
-  const result = Bun.spawnSync(["git", ...args], { cwd: rootPath, stdout: "pipe", stderr: "pipe" });
+function command(executable: string, rootPath: string, args: string[], allowNonZero = false): string {
+  const result = Bun.spawnSync([executable, ...args], { cwd: rootPath, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0 && !allowNonZero) throw new Error(`Git ${args[0]} failed: ${decoder.decode(result.stderr).trim()}`);
   return decoder.decode(result.stdout);
 }
@@ -68,8 +68,14 @@ async function readUntrackedContent(rootPath: string, path: string): Promise<Unt
 }
 
 export class GitService {
+  constructor(private readonly executable = "git") {}
+
+  async head(rootPath: string): Promise<string> {
+    return command(this.executable, rootPath, ["rev-parse", "HEAD"]).trim();
+  }
+
   async status(rootPath: string): Promise<GitStatusResponse> {
-    const entries = command(rootPath, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]).split("\0");
+    const entries = command(this.executable, rootPath, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]).split("\0");
     entries.pop();
     const files: GitFileStatus[] = [];
     for (let index = 0; index < entries.length; index += 1) {
@@ -83,14 +89,14 @@ export class GitService {
       const untracked = x === "?" || y === "?";
       let binary = false;
       if (!untracked && statusKind(x, y) !== "deleted") {
-        const numstat = command(rootPath, ["diff", "--numstat", "HEAD", "--", path], true);
+        const numstat = command(this.executable, rootPath, ["diff", "--numstat", "HEAD", "--", path], true);
         binary = numstat.startsWith("-\t-");
       } else if (untracked) {
         try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
       }
       files.push({ path, previousPath, status: statusKind(x, y), staged: x !== " " && x !== "?", tracked: !untracked, binary });
     }
-    const untrackedPaths = command(rootPath, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
+    const untrackedPaths = command(this.executable, rootPath, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
     for (const path of untrackedPaths) {
       let binary = false;
       try { binary = (await readUntrackedContent(rootPath, path)).binary; } catch { binary = true; }
@@ -102,13 +108,13 @@ export class GitService {
   async diff(rootPath: string, baseCommit: string): Promise<GitDiffResponse> {
     const status = await this.status(rootPath);
     const untracked = status.files.filter((file) => !file.tracked && !file.binary);
-    const untrackedPatch = untracked.map((file) => command(rootPath, ["diff", "--no-index", "--", "/dev/null", file.path], true)).join("");
+    const untrackedPatch = untracked.map((file) => command(this.executable, rootPath, ["diff", "--no-index", "--", "/dev/null", file.path], true)).join("");
     return {
       baseCommit,
-      trackedPatch: command(rootPath, ["diff", baseCommit, "--"]),
-      stagedPatch: command(rootPath, ["diff", "--cached", baseCommit, "--"]),
+      trackedPatch: command(this.executable, rootPath, ["diff", baseCommit, "--"]),
+      stagedPatch: command(this.executable, rootPath, ["diff", "--cached", baseCommit, "--"]),
       untrackedPatch,
-      stat: command(rootPath, ["diff", "--stat", baseCommit, "--"]),
+      stat: command(this.executable, rootPath, ["diff", "--stat", baseCommit, "--"]),
       files: status.files,
     };
   }
@@ -123,8 +129,8 @@ export class GitService {
     if (!file) throw new Error("File is not changed in this task");
     if (file.binary) return { file, patch: "" };
     const patch = !file.tracked
-      ? command(rootPath, ["diff", "--no-index", "--", "/dev/null", path], true)
-      : command(rootPath, ["diff", baseCommit, "--", path]);
+      ? command(this.executable, rootPath, ["diff", "--no-index", "--", "/dev/null", path], true)
+      : command(this.executable, rootPath, ["diff", baseCommit, "--", path]);
     return { file, patch };
   }
 

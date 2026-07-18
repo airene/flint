@@ -90,6 +90,7 @@ export class AgentRunService {
   private readonly createId: () => string;
   private readonly now: () => string;
   private readonly activeDrivers = new Map<string, AgentDriver>();
+  private readonly interrupting = new Set<string>();
 
   constructor(options: AgentRunServiceOptions) {
     this.drivers = options.drivers;
@@ -129,6 +130,12 @@ export class AgentRunService {
   }
 
   async cancel(runId: string): Promise<void> {
+    await this.activeDrivers.get(runId)?.cancel(runId);
+  }
+
+  async interrupt(runId: string): Promise<void> {
+    if (!this.activeDrivers.has(runId)) return;
+    this.interrupting.add(runId);
     await this.activeDrivers.get(runId)?.cancel(runId);
   }
 
@@ -174,12 +181,13 @@ export class AgentRunService {
       }
       return terminal;
     } catch (error) {
+      const interrupted = this.interrupting.has(run.id);
       const cancelled = error instanceof AgentProcessError && error.kind === "cancelled";
-      const status = cancelled ? "cancelled" : "failed";
+      const status = interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
       try {
         await this.events.publish(this.lifecycleEvent(
           run,
-          cancelled ? "run_cancelled" : "run_failed",
+          interrupted ? "run_interrupted" : cancelled ? "run_cancelled" : "run_failed",
           { message: error instanceof Error ? error.message : String(error) },
         ));
       } catch {
@@ -203,6 +211,7 @@ export class AgentRunService {
       return terminal;
     } finally {
       this.activeDrivers.delete(run.id);
+      this.interrupting.delete(run.id);
     }
   }
 

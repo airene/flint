@@ -8,7 +8,7 @@ export class GitRootValidationError extends Error {
   }
 }
 
-export async function canonicalGitRoot(path: string): Promise<string> {
+export async function canonicalGitRoot(path: string, gitExecutable = "git"): Promise<string> {
   let directory: string;
   try {
     directory = await realpath(resolve(path));
@@ -16,7 +16,7 @@ export async function canonicalGitRoot(path: string): Promise<string> {
     throw new GitRootValidationError("Project path does not exist or cannot be resolved", cause);
   }
 
-  const result = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
+  const result = Bun.spawnSync([gitExecutable, "rev-parse", "--show-toplevel"], {
     cwd: directory,
     stdout: "pipe",
     stderr: "pipe",

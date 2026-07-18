@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import type { Project } from "@local-pair-review/shared";
-import { projects, tasks } from "../db/schema";
+import { agentRuns, projects, tasks } from "../db/schema";
 import type { AppDatabase } from "../db/database";
 import { canonicalGitRoot } from "../utils/path";
 
@@ -20,6 +20,13 @@ export class ConfirmationRequiredError extends Error {
   }
 }
 
+export class ActiveProjectRunError extends Error {
+  constructor(readonly projectId: string) {
+    super("Cannot delete a project with an active run.");
+    this.name = "ActiveProjectRunError";
+  }
+}
+
 export interface ProjectRemovalInfo {
   projectId: string;
   taskCount: number;
@@ -29,10 +36,10 @@ export interface ProjectRemovalInfo {
 function now(): string { return new Date().toISOString(); }
 
 export class ProjectService {
-  constructor(private readonly database: AppDatabase) {}
+  constructor(private readonly database: AppDatabase, private readonly gitExecutable = "git") {}
 
   async add(path: string): Promise<Project> {
-    const rootPath = await canonicalGitRoot(path);
+    const rootPath = await canonicalGitRoot(path, this.gitExecutable);
     const existing = await this.database.db.select().from(projects).where(eq(projects.rootPath, rootPath)).get();
     if (existing) throw new DuplicateProjectError(rootPath);
     const timestamp = now();
@@ -76,6 +83,11 @@ export class ProjectService {
     this.database.db.transaction((transaction) => {
       const project = transaction.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).get();
       if (!project) throw new Error("Project not found");
+      const activeRun = transaction.select({ id: agentRuns.id }).from(agentRuns).where(and(
+        eq(agentRuns.projectId, projectId),
+        inArray(agentRuns.status, ["queued", "running"]),
+      )).get();
+      if (activeRun) throw new ActiveProjectRunError(projectId);
       const result = transaction.select({ value: count() }).from(tasks).where(eq(tasks.projectId, projectId)).get();
       const taskCount = result?.value ?? 0;
       const info = { projectId, taskCount, requiresConfirmation: taskCount > 0 };

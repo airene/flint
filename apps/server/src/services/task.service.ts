@@ -65,9 +65,7 @@ export class TaskService {
     if (!project) throw new Error("Project not found");
     let baseCommit: string;
     try {
-      const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: project.rootPath, stdout: "pipe", stderr: "pipe" });
-      if (result.exitCode !== 0) throw new Error();
-      baseCommit = new TextDecoder().decode(result.stdout).trim();
+      baseCommit = await this.git.head(project.rootPath);
     } catch {
       throw new Error("A task requires a Git repository with an initial commit");
     }
