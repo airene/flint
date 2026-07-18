@@ -114,3 +114,6 @@ dist
 
 # Local subagent-driven development ledger
 .superpowers/
+
+# Parallel implementation worktrees
+.worktrees/
