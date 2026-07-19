@@ -224,6 +224,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     return availability;
   }
 
+  async function requireGit(): Promise<AgentAvailability> {
+    const availability = await checkGitAvailability(gitExecutable, environment, process.cwd());
+    if (cliStatus) cliStatus = { ...cliStatus, git: availability };
+    if (!availability.installed) {
+      throw new CliUnavailableError("git", availability.message ?? "Git is unavailable or cannot be executed.");
+    }
+    return availability;
+  }
+
   async function requireTask(taskId: string): Promise<Task> {
     const task = await tasks.get(taskId);
     if (!task) throw new NotFoundError("Task");
@@ -309,7 +318,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (method === "GET" && path === "/api/projects") return json(await projects.list());
       if (method === "POST" && path === "/api/projects") {
         ensureAccepting();
-        await requireCli("git");
+        await requireGit();
         const input = await body(request, createProjectRequestSchema);
         return json(await projects.add(input.rootPath), 201);
       }
@@ -340,6 +349,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (method === "POST") {
           ensureAccepting();
           const input = await body(request, createTaskRequestSchema);
+          await requireGit();
           return json(await tasks.create(projectId!, input), 201);
         }
       }
@@ -387,6 +397,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         await body(request, reviewTaskRequestSchema);
         const task = await requireTask(parameters[0]!);
         await requireCli(task.reviewerProvider);
+        await requireGit();
         const started = await reviews.start(task);
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
@@ -411,6 +422,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (!sourceSnapshotHash) {
           throw new RunConflictError("The source review snapshot is unavailable.");
         }
+        await requireGit();
         const current = await git.snapshotHash(task.workingDirectory, task.baseCommit);
         if (current !== sourceSnapshotHash && !input.confirmStaleSnapshot) throw new StaleSnapshotError();
         const started = await feedback.send({
@@ -444,6 +456,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/git\/(status|diff|files)$/);
       if (parameters && method === "GET") {
         const task = await requireTask(parameters[0]!);
+        await requireGit();
         if (parameters[1] === "status") {
           const capture = await git.capture(task.workingDirectory, task.baseCommit);
           return json({ ...capture.status, snapshotHash: capture.snapshotHash });
@@ -457,6 +470,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         const task = await requireTask(parameters[0]!);
         const filePath = url.searchParams.get("path");
         if (!filePath) throw new SyntaxError("path query parameter is required");
+        await requireGit();
         return json(await git.fileDiff(task.workingDirectory, task.baseCommit, filePath));
       }
 

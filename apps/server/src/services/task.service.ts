@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { AgentRoleSettings, Task, TaskStatus } from "@local-pair-review/shared";
 import type { AppDatabase } from "../db/database";
 import { projects, tasks } from "../db/schema";
-import { GitService } from "./git.service";
+import { GitCliExecutionError, GitService } from "./git.service";
 import { assertTaskTransition } from "./task-run-state";
 
 export { InvalidTaskTransitionError } from "./task-run-state";
@@ -66,7 +66,8 @@ export class TaskService {
     let baseCommit: string;
     try {
       baseCommit = await this.git.head(project.rootPath);
-    } catch {
+    } catch (error) {
+      if (error instanceof GitCliExecutionError) throw error;
       throw new Error("A task requires a Git repository with an initial commit");
     }
     const status = await this.git.status(project.rootPath);
