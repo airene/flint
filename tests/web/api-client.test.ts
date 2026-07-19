@@ -191,6 +191,7 @@ describe("API endpoints", () => {
     await api.markProjectOpened(projectId, { lastOpenedAt: "2026-07-19T00:00:00.000Z" });
     await api.deleteProject(projectId, { confirm: true });
     await api.listTasks(projectId);
+    await api.listUnfinishedTasks();
     await api.createTask(projectId, { title: "Task", originalPrompt: "Implement it" });
     await api.getTask(taskId);
     await api.completeTask(taskId);
@@ -215,6 +216,7 @@ describe("API endpoints", () => {
     });
     await api.getFeedbackDraft(taskId, "review-1");
     await api.saveFeedbackDraft(taskId, "review-1", { finalText: "Edited feedback" });
+    await api.listAttachments(taskId);
 
     expect(calls.map(({ path }) => path)).toEqual([
       "/api/system/settings",
@@ -225,6 +227,7 @@ describe("API endpoints", () => {
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one/tasks",
+      "/api/tasks/unfinished",
       "/api/projects/project%20%2F%20one/tasks",
       "/api/tasks/task%20%2F%20one",
       "/api/tasks/task%20%2F%20one/complete",
@@ -241,6 +244,7 @@ describe("API endpoints", () => {
       "/api/tasks/task%20%2F%20one/feedback/preview",
       "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
       "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
+      "/api/tasks/task%20%2F%20one/attachments",
     ]);
     expect(calls[1]?.options).toMatchObject({
       method: "POST",
@@ -248,6 +252,6 @@ describe("API endpoints", () => {
     });
     expect(calls[4]?.options?.query).toEqual({ q: "src/app", limit: 7 });
     expect(calls[6]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
-    expect(calls[17]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
+    expect(calls[18]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
   });
 });

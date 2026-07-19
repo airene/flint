@@ -32,15 +32,17 @@ describe("buildRunHistory", () => {
       run({ id: "developer-1", startedAt: "2026-07-18T00:00:00.000Z" }),
       run({ id: "reviewer-1", provider: "claude", runType: "reviewer", startedAt: "2026-07-18T00:02:00.000Z" }),
       run({ id: "developer-2", runType: "developer_feedback", startedAt: "2026-07-18T00:04:00.000Z" }),
+      run({ id: "reviewer-2", provider: "claude", runType: "reviewer_followup", startedAt: "2026-07-18T00:06:00.000Z" }),
     ], providerLabel);
 
-    expect(entries.map((entry) => entry.runId)).toEqual(["developer-2", "reviewer-1", "developer-1"]);
+    expect(entries.map((entry) => entry.runId)).toEqual(["reviewer-2", "developer-2", "reviewer-1", "developer-1"]);
     expect(entries.map(({ roleLabel, roleOrdinal }) => ({ roleLabel, roleOrdinal }))).toEqual([
+      { roleLabel: "Reviewer", roleOrdinal: 2 },
       { roleLabel: "Developer", roleOrdinal: 2 },
       { roleLabel: "Reviewer", roleOrdinal: 1 },
       { roleLabel: "Developer", roleOrdinal: 1 },
     ]);
-    expect(entries[0]).toMatchObject({ providerLabel: "Codex", status: "completed", timestamp: "2026-07-18T00:04:00.000Z" });
+    expect(entries[0]).toMatchObject({ providerLabel: "Claude", status: "completed", timestamp: "2026-07-18T00:06:00.000Z" });
   });
 
   test("summarizes the first non-empty prompt line", () => {

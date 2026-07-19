@@ -13,6 +13,7 @@ import { AgentProcessError } from "../utils/process-supervisor";
 import { redactSensitive } from "../utils/redact";
 import { createRunEvent } from "../utils/agent-event";
 import type { EventService } from "./event.service";
+import { taskStatusPolicyForRun, type TaskStatusPolicy } from "./task-run-state";
 
 export interface FinishRunInput {
   runId: string;
@@ -34,15 +35,22 @@ export interface AgentRunPersistencePort {
 }
 
 export interface TaskRunStatePort {
-  /** Must atomically insert the queued Run, check locks, and transition Task. */
-  queue(run: AgentRun, options?: { snapshotHash?: string }): Promise<AgentRun>;
-  /** Must atomically finish the Run and transition Task to its success state. */
-  succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun>;
-  /** Must atomically finish the Run and apply the spec's Task fallback. */
+  /** Must atomically insert the queued Run, bind a delivery batch when supplied, check locks, and transition Task. */
+  queue(run: AgentRun, options?: { snapshotHash?: string; deliveryBatchId?: string }): Promise<AgentRun>;
+  /** Must atomically finish the Run and either transition or preserve current Task state according to policy. */
+  succeed(input: FinishRunInput & {
+    taskId: string;
+    runType: AgentRunType;
+    /** preserve_current means terminal persistence must not update Task.status. */
+    taskStatusPolicy: TaskStatusPolicy;
+  }): Promise<AgentRun>;
+  /** Must atomically finish the Run and either apply the fallback or preserve current Task state according to policy. */
   fail(input: FinishRunInput & {
     taskId: string;
     runType: AgentRunType;
     sessionId: string | null;
+    /** preserve_current means terminal persistence must not update Task.status. */
+    taskStatusPolicy: TaskStatusPolicy;
   }): Promise<AgentRun>;
 }
 
@@ -53,6 +61,10 @@ export interface StartAgentRunInput {
   sessionId?: string;
   /** Review-only snapshot persisted atomically with the queued Run. */
   snapshotHash?: string;
+  /** Absolute paths for images already claimed by this Task or message. */
+  imagePaths?: readonly string[];
+  /** Conversation batch associated atomically with the queued Run. */
+  deliveryBatchId?: string;
   signal?: AbortSignal;
 }
 
@@ -71,7 +83,13 @@ interface AgentRunServiceOptions {
 }
 
 function providerFor(task: Task, runType: AgentRunType): Provider {
-  return runType === "reviewer" ? task.reviewerProvider : task.developerProvider;
+  return runType === "reviewer" || runType === "reviewer_followup"
+    ? task.reviewerProvider
+    : task.developerProvider;
+}
+
+function isFollowup(runType: AgentRunType): boolean {
+  return runType === "developer_followup" || runType === "reviewer_followup";
 }
 
 function sessionFromEvent(event: AgentEvent): string | undefined {
@@ -93,6 +111,7 @@ export class AgentRunService {
   private readonly createId: () => string;
   private readonly now: () => string;
   private readonly activeDrivers = new Map<string, AgentDriver>();
+  private readonly activeCompletions = new Map<string, Promise<AgentRun>>();
   private readonly interrupting = new Set<string>();
 
   constructor(options: AgentRunServiceOptions) {
@@ -105,6 +124,9 @@ export class AgentRunService {
   }
 
   async start(input: StartAgentRunInput): Promise<StartedAgentRun> {
+    if (isFollowup(input.runType) && !input.sessionId) {
+      throw new Error(`${input.runType} requires an exact session`);
+    }
     const provider = providerFor(input.task, input.runType);
     const run: AgentRun = {
       id: this.createId(),
@@ -125,10 +147,18 @@ export class AgentRunService {
       finishedAt: null,
     };
 
-    const persisted = await this.taskState.queue(run, input.snapshotHash ? { snapshotHash: input.snapshotHash } : {});
+    const persisted = await this.taskState.queue(run, {
+      ...(input.snapshotHash ? { snapshotHash: input.snapshotHash } : {}),
+      ...(input.deliveryBatchId ? { deliveryBatchId: input.deliveryBatchId } : {}),
+    });
     const driver = this.drivers[provider];
     this.activeDrivers.set(run.id, driver);
-    const completion = this.execute(persisted, input, driver);
+    const completion = Promise.resolve().then(() => this.execute(persisted, input, driver));
+    this.activeCompletions.set(run.id, completion);
+    const cleanup = () => {
+      queueMicrotask(() => this.activeCompletions.delete(run.id));
+    };
+    void completion.then(cleanup, cleanup);
     return { run: persisted, completion };
   }
 
@@ -136,17 +166,23 @@ export class AgentRunService {
     await this.activeDrivers.get(runId)?.cancel(runId);
   }
 
-  async interrupt(runId: string): Promise<void> {
-    if (!this.activeDrivers.has(runId)) return;
+  async interrupt(runId: string): Promise<AgentRun | null> {
+    const completion = this.activeCompletions.get(runId);
+    if (!this.activeDrivers.has(runId) || !completion) return null;
     this.interrupting.add(runId);
     await this.activeDrivers.get(runId)?.cancel(runId);
+    return await completion;
+  }
+
+  async waitForTerminal(runId: string): Promise<AgentRun | null> {
+    return await (this.activeCompletions.get(runId) ?? Promise.resolve(null));
   }
 
   private async execute(run: AgentRun, input: StartAgentRunInput, driver: AgentDriver): Promise<AgentRun> {
     let capturedSession = input.sessionId ?? null;
     try {
       await this.events.publish(this.lifecycleEvent(run, "run_queued", { runType: run.runType }));
-      const result = await driver.start({
+      const request = {
         runId: run.id,
         taskId: run.taskId,
         projectId: run.projectId,
@@ -154,8 +190,10 @@ export class AgentRunService {
         prompt: input.prompt,
         runType: run.runType,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.imagePaths?.length ? { imagePaths: input.imagePaths } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
-      }, async (event) => {
+      };
+      const result = await driver.start(request, async (event) => {
         if (event.type === "run_started") {
           const payload = event.payload as { processId?: unknown };
           if (typeof payload.processId === "number") await this.persistence.markRunning(run.id, payload.processId);
@@ -177,6 +215,7 @@ export class AgentRunService {
         runId: run.id,
         taskId: run.taskId,
         runType: run.runType,
+        taskStatusPolicy: taskStatusPolicyForRun(run.runType),
         patch,
       });
       try {
@@ -194,6 +233,7 @@ export class AgentRunService {
         taskId: run.taskId,
         runType: run.runType,
         sessionId: capturedSession,
+        taskStatusPolicy: taskStatusPolicyForRun(run.runType),
         patch: {
           status,
           reviewParseStatus: run.reviewParseStatus,
@@ -226,7 +266,9 @@ export class AgentRunService {
       reviewParseStatus: run.reviewParseStatus,
       exitCode: 0,
       finalMessage: redactSensitive(result.finalMessage),
-      structuredOutput: redactSensitive(result.structuredOutput),
+      structuredOutput: run.runType === "reviewer_followup"
+        ? null
+        : redactSensitive(result.structuredOutput),
       errorMessage: null,
       finishedAt: this.now(),
     };

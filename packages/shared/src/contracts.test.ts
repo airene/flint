@@ -175,6 +175,15 @@ test("role-aware settings contracts accept dynamic provider descriptors and reje
     label: "Codex",
     executableSetting: "codexExecutable",
     roles: ["developer", "reviewer"],
+    capabilities: {
+      developerInitialImage: true,
+      developerResumeImage: true,
+      reviewerInitialImage: true,
+      reviewerResumeImage: true,
+      liveMessages: false,
+      interrupt: true,
+      approvals: true,
+    },
     availability,
   };
 
@@ -235,4 +244,162 @@ test("resource response DTO schemas are exported for the planned routes", () => 
   for (const schemaName of schemaNames) {
     expect(getSchema(schemaName), schemaName).toBeDefined();
   }
+});
+
+test("interactive workflow records are strict and preserve explicit lifecycle state", () => {
+  expectStrict("taskMessageSchema", {
+    id: "message_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    targetRole: "reviewer",
+    sourceReviewRunId: "review_1",
+    text: "Why did you flag this?",
+    deliveryMode: "queue",
+    status: "queued",
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T00:00:00.000Z",
+    deliveredAt: null,
+    errorMessage: null,
+  });
+  expectStrict("taskAttachmentSchema", {
+    id: "attachment_1",
+    projectId: "project_1",
+    taskId: null,
+    messageId: null,
+    state: "draft",
+    storagePath: "/data/drafts/attachment_1.png",
+    mediaType: "image/png",
+    sizeBytes: 128,
+    checksum: "sha256:abc",
+    createdAt: "2026-07-19T00:00:00.000Z",
+    expiresAt: "2026-07-20T00:00:00.000Z",
+    claimedAt: null,
+  });
+  expectStrict("taskAttachmentMetadataSchema", {
+    id: "attachment_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    messageId: "message_1",
+    mediaType: "image/png",
+    sizeBytes: 128,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    claimedAt: "2026-07-19T00:00:01.000Z",
+  });
+  expect(getSchema("taskAttachmentListResponseSchema").safeParse([{
+    id: "attachment_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    messageId: null,
+    mediaType: "image/png",
+    sizeBytes: 128,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    claimedAt: "2026-07-19T00:00:01.000Z",
+  }]).success).toBe(true);
+  expectStrict("approvalRequestSchema", {
+    id: "approval_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    runId: "run_1",
+    providerRequestId: "provider_request_1",
+    toolName: "shell",
+    actionSummary: "Run the test suite",
+    workingDirectory: "/repo",
+    status: "resolved",
+    decision: "allow_once",
+    reason: null,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    resolvedAt: "2026-07-19T00:00:01.000Z",
+  });
+});
+
+test("follow-up runs and interaction events are distinct from a formal reviewer run", () => {
+  const runTypes = getSchema("agentRunTypeSchema");
+  expect(runTypes.safeParse("developer_followup").success).toBe(true);
+  expect(runTypes.safeParse("reviewer_followup").success).toBe(true);
+  expect(runTypes.safeParse("reviewer").success).toBe(true);
+
+  const eventTypes = getSchema("agentEventTypeSchema");
+  for (const eventType of [
+    "message_queued",
+    "message_delivered",
+    "message_failed",
+    "approval_requested",
+    "approval_resolved",
+  ]) expect(eventTypes.safeParse(eventType).success).toBe(true);
+});
+
+test("approval resolving state durably carries the first decision without a resolution time", () => {
+  const approval = getSchema("approvalRequestSchema");
+  const resolving = {
+    id: "approval_1", projectId: "project_1", taskId: "task_1", runId: "run_1",
+    providerRequestId: "provider_request_1", toolName: "shell", actionSummary: "Run tests",
+    workingDirectory: "/repo", status: "resolving", decision: "deny", reason: "unsafe",
+    createdAt: "2026-07-19T00:00:00.000Z", resolvedAt: null,
+  };
+  expect(approval.safeParse(resolving).success).toBe(true);
+  expect(approval.safeParse({ ...resolving, decision: null }).success).toBe(false);
+  expect(approval.safeParse({ ...resolving, resolvedAt: "2026-07-19T00:00:01.000Z" }).success).toBe(false);
+});
+
+test("provider interaction capabilities are independent by role and delivery phase", () => {
+  expectStrict("providerCapabilitiesSchema", {
+    developerInitialImage: true,
+    developerResumeImage: false,
+    reviewerInitialImage: true,
+    reviewerResumeImage: false,
+    liveMessages: false,
+    interrupt: true,
+    approvals: true,
+  });
+});
+
+test("create-task and message requests carry at most four unique attachment IDs", () => {
+  const createTask = getSchema("createTaskRequestSchema");
+  expect(createTask.safeParse({
+    title: "Task",
+    originalPrompt: "Prompt",
+    attachmentIds: ["attachment_1", "attachment_2", "attachment_3", "attachment_4"],
+  }).success).toBe(true);
+  expect(createTask.safeParse({
+    title: "Task",
+    originalPrompt: "Prompt",
+    attachmentIds: ["1", "2", "3", "4", "5"],
+  }).success).toBe(false);
+
+  const message = getSchema("createTaskMessageRequestSchema");
+  expect(message.safeParse({
+    targetRole: "developer",
+    sourceReviewRunId: null,
+    text: "Please continue",
+    deliveryMode: "interrupt",
+    attachmentIds: ["attachment_1"],
+  }).success).toBe(true);
+  expect(message.safeParse({
+    targetRole: "reviewer",
+    sourceReviewRunId: null,
+    text: "No exact review target",
+    deliveryMode: "queue",
+    attachmentIds: [],
+  }).success).toBe(false);
+  expect(message.safeParse({
+    targetRole: "developer",
+    sourceReviewRunId: null,
+    text: "Duplicate attachment",
+    deliveryMode: "queue",
+    attachmentIds: ["attachment_1", "attachment_1"],
+  }).success).toBe(false);
+});
+
+test("unfinished task summaries expose derived attention without prompt or activity bodies", () => {
+  expectStrict("unfinishedTaskSummarySchema", {
+    id: "task_1",
+    projectId: "project_1",
+    projectName: "Flint",
+    title: "Interactive task",
+    status: "waiting_for_human",
+    latestRunStatus: "completed",
+    pendingApprovalCount: 1,
+    attention: "pending_approval",
+    updatedAt: "2026-07-19T00:00:00.000Z",
+  });
 });

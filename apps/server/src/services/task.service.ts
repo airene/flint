@@ -88,6 +88,13 @@ export class TaskService {
     return (await this.database.db.select().from(tasks).where(eq(tasks.id, taskId)).get()) ?? null;
   }
 
+  async discardDraft(taskId: string): Promise<void> {
+    await this.database.db.delete(tasks).where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.status, "draft"),
+    )).run();
+  }
+
   async list(projectId: string): Promise<Task[]> {
     return this.database.db.select().from(tasks).where(eq(tasks.projectId, projectId)).orderBy(tasks.createdAt).all();
   }

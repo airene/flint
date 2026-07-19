@@ -15,6 +15,7 @@ import { DuplicateFeedbackError, StaleFeedbackLeaseError } from "../services/fee
 import { GitCliExecutionError } from "../services/git.service";
 import { InvalidAppSettingError } from "../services/app-settings.service";
 import { GitRootValidationError } from "../utils/path";
+import { UnsupportedProviderCapabilityError } from "../drivers/agent-control";
 
 export class NotFoundError extends Error {
   constructor(resource: string) {
@@ -88,11 +89,14 @@ export function errorResponse(error: unknown): Response {
     || error instanceof ServiceShuttingDownError
     || error instanceof RunConflictError
     || error instanceof StaleFeedbackLeaseError
+    || error instanceof UnsupportedProviderCapabilityError
     || isSqliteConstraintError(error)
   ) {
     const details = error instanceof ConfirmationRequiredError ? error.data
       : error instanceof DirtyWorkingTreeError ? { files: error.files }
         : error instanceof StaleSnapshotError ? { reason: "STALE_SNAPSHOT" }
+          : error instanceof UnsupportedProviderCapabilityError
+            ? { provider: error.provider, capability: error.capability }
         : undefined;
     return Response.json({ code: "CONFLICT", message: error.message, ...(details ? { details } : {}) }, { status: 409 });
   }

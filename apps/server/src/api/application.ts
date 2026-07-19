@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { ZodType } from "zod";
 import {
   cancelRunRequestSchema,
+  approvalDecisionRequestSchema,
+  createTaskMessageRequestSchema,
   cliRecheckRequestSchema,
   completeTaskRequestSchema,
   createProjectRequestSchema,
@@ -19,6 +23,7 @@ import {
   type AgentAvailability,
   type AgentEvent,
   type AgentRun,
+  type ApprovalRequest,
   type Provider,
   type CliStatusResponse,
   type CliRecheckRequest,
@@ -26,6 +31,7 @@ import {
   type Project,
   type ReviewFinding,
   type Task,
+  type TaskMessage,
   webSocketSubscribeSchema,
 } from "@local-pair-review/shared";
 import { createDatabase } from "../db/database";
@@ -36,16 +42,22 @@ import { createTemporaryCodexReviewSchema } from "../drivers/codex-review-schema
 import { createProviderRegistry } from "../drivers/provider-registry";
 import { AgentRunService } from "../services/agent-run.service";
 import { AppSettingsService } from "../services/app-settings.service";
+import { AttachmentService, AttachmentValidationError } from "../services/attachment.service";
 import { EventService } from "../services/event.service";
 import { FeedbackService, composeFeedback } from "../services/feedback.service";
 import { GitService } from "../services/git.service";
 import { ProjectService } from "../services/project.service";
 import { ReviewService, type ReviewContextPort } from "../services/review.service";
 import { TaskService } from "../services/task.service";
-import { DatabasePorts } from "./database-ports";
+import { UnfinishedTaskService } from "../services/unfinished-task.service";
+import { ConversationService } from "../services/conversation.service";
+import { ApprovalService, type ApprovalProviderControl } from "../services/approval.service";
+import { AttachmentClaimConflictError, DatabasePorts, PersistenceOwnershipError } from "./database-ports";
 import { CliUnavailableError, errorResponse, NotFoundError, RequestValidationError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
+import { createUnfinishedTasksRoute } from "./unfinished-tasks";
 import { createRunEvent } from "../utils/agent-event";
+import { UnsupportedProviderCapabilityError } from "../drivers/agent-control";
 
 export interface ApplicationOptions {
   databasePath?: string;
@@ -53,6 +65,7 @@ export interface ApplicationOptions {
   claudeExecutable?: string;
   gitExecutable?: string;
   environment?: Readonly<Record<string, string | undefined>>;
+  approvalControls?: Partial<Record<Provider, ApprovalProviderControl>>;
 }
 
 export interface LocalPairReviewApplication {
@@ -91,9 +104,21 @@ function eventFor(run: AgentRun, type: AgentEvent["type"], timestamp: string): A
   return createRunEvent(run, "system", type, { recovered: true }, timestamp);
 }
 
+const UNFINISHED_EVENT_TYPES = new Set<AgentEvent["type"]>([
+  "run_queued",
+  "run_started",
+  "run_completed",
+  "run_failed",
+  "run_cancelled",
+  "run_interrupted",
+  "approval_requested",
+  "approval_resolved",
+]);
+
 export async function createApplication(options: ApplicationOptions = {}): Promise<LocalPairReviewApplication> {
   const environment = options.environment ?? process.env;
-  const database = createDatabase(options.databasePath ?? ":memory:");
+  const databasePath = options.databasePath ?? ":memory:";
+  const database = createDatabase(databasePath);
   const settings = new AppSettingsService(database, {
     codexExecutable: options.codexExecutable ?? "codex",
     claudeExecutable: options.claudeExecutable ?? "claude",
@@ -105,6 +130,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const projects = new ProjectService(database, gitExecutable);
   const tasks = new TaskService(database, git, settings);
   const ports = new DatabasePorts(database, git, { instanceId: randomUUID() });
+  const attachmentDataRoot = databasePath === ":memory:"
+    ? join(tmpdir(), "flint-attachment-data")
+    : dirname(resolve(databasePath));
+  const attachments = new AttachmentService({ dataRoot: attachmentDataRoot, persistence: ports });
+  const unfinishedTasks = new UnfinishedTaskService(ports);
+  const unfinishedTasksRoute = createUnfinishedTasksRoute(unfinishedTasks);
   let leaseLost = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   try {
@@ -122,7 +153,22 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }, 1_000);
   heartbeatTimer.unref?.();
   const hub = new EventHub();
-  const events = new EventService(ports, hub);
+  async function broadcastUnfinishedTask(taskId: string): Promise<void> {
+    try {
+      const summary = (await unfinishedTasks.list()).find((candidate) => candidate.id === taskId);
+      hub.broadcastUnfinished(summary
+        ? { type: "unfinished_task_upsert", task: summary }
+        : { type: "unfinished_task_remove", taskId });
+    } catch {
+      // The database is authoritative; a reconnect replaces the app-level snapshot.
+    }
+  }
+  const events = new EventService(ports, {
+    async broadcast(event) {
+      hub.broadcast(event);
+      if (UNFINISHED_EVENT_TYPES.has(event.type)) await broadcastUnfinishedTask(event.taskId);
+    },
+  });
   let codexReviewSchema: Awaited<ReturnType<typeof createTemporaryCodexReviewSchema>>;
   try {
     codexReviewSchema = await createTemporaryCodexReviewSchema();
@@ -165,15 +211,116 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const reviews = new ReviewService({ agentRuns, context: reviewContext, persistence: ports, events });
   const feedback = new FeedbackService({ agentRuns, persistence: ports });
   const active = new Map<string, Promise<AgentRun>>();
+  const approvalDecisions = new Map<string, Promise<ApprovalRequest>>();
   let accepting = true;
   let cliStatus: CliStatusResponse | null = null;
   let shutdownTask: Promise<void> | null = null;
 
+  async function publishApprovalEvent(approval: ApprovalRequest): Promise<void> {
+    const run = await ports.getRun(approval.runId);
+    if (!run) return;
+    try {
+      await events.publish(createRunEvent(run, "system", "approval_resolved", {
+        approvalId: approval.id,
+        status: approval.status,
+        decision: approval.decision,
+      }));
+    } catch {
+      // Approval persistence is authoritative; the Activity stream can recover on refresh.
+    }
+  }
+
+  const approvals = new ApprovalService({
+    controls: {
+      codex: options.approvalControls?.codex ?? codex,
+      claude: options.approvalControls?.claude ?? claude,
+    },
+    persistence: ports,
+    security: {
+      async recordSecurityError(runId, securityError) {
+        const run = await ports.getRun(runId);
+        if (run) await events.publish(createRunEvent(run, "system", "raw", { securityError }));
+      },
+    },
+  });
+
   function track(runId: string, completion: Promise<AgentRun> | Promise<{ run: AgentRun }>): void {
     const terminal = completion.then((result) => "run" in result ? result.run : result);
     active.set(runId, terminal);
-    void terminal.catch(() => undefined).finally(() => active.delete(runId));
+    void terminal.then(async (run) => {
+      for (const approval of await approvals.expireRun(run)) await publishApprovalEvent(approval);
+    }).catch(() => undefined).finally(() => active.delete(runId));
   }
+
+  async function decideApproval(approvalId: string, decision: "allow_once" | "deny", reason: string | null): Promise<ApprovalRequest> {
+    const pending = approvalDecisions.get(approvalId);
+    if (pending) return await pending;
+    const operation = (async () => {
+      const before = await ports.getApproval(approvalId);
+      const decided = await approvals.decide(approvalId, decision, reason);
+      if (before.status !== "resolved" && decided.status === "resolved") await publishApprovalEvent(decided);
+      return decided;
+    })();
+    approvalDecisions.set(approvalId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (approvalDecisions.get(approvalId) === operation) approvalDecisions.delete(approvalId);
+    }
+  }
+
+  async function publishMessageEvent(message: TaskMessage, type: "message_queued" | "message_delivered" | "message_failed"): Promise<void> {
+    const runs = await ports.listRuns(message.taskId);
+    const targetRun = type === "message_queued" && message.sourceReviewRunId
+      ? runs.find((run) => run.id === message.sourceReviewRunId)
+      : runs.filter((run) => message.targetRole === "reviewer"
+        ? run.runType === "reviewer" || run.runType === "reviewer_followup"
+        : run.runType !== "reviewer" && run.runType !== "reviewer_followup").at(-1);
+    if (!targetRun) return;
+    try {
+      await events.publish(createRunEvent(targetRun, "system", type, {
+        messageId: message.id,
+        status: message.status,
+        targetRole: message.targetRole,
+      }));
+    } catch {
+      // Message persistence is authoritative; a stream outage must not duplicate delivery.
+    }
+  }
+
+  const conversations = new ConversationService({
+    persistence: {
+      async createMessage(message, attachmentIds) {
+        const persisted = await ports.createMessage(message, attachmentIds);
+        await publishMessageEvent(persisted, "message_queued");
+        return persisted;
+      },
+      listMessagesInFifoOrder: (taskId) => ports.listMessagesInFifoOrder(taskId),
+      listOpenDeliveryBatches: (taskId) => ports.listOpenDeliveryBatches(taskId),
+      reserveDeliveryBatch: (input) => ports.reserveDeliveryBatch(input),
+      async settleDeliveryBatch(input) {
+        const settled = await ports.settleDeliveryBatch(input);
+        for (const message of settled) {
+          await publishMessageEvent(message, message.status === "delivered" ? "message_delivered" : "message_failed");
+        }
+        return settled;
+      },
+      getTask: (taskId) => ports.getTask(taskId),
+      getRun: (runId) => ports.getRun(runId),
+      listRuns: (taskId) => ports.listRuns(taskId),
+      attachmentPaths: (messageIds) => ports.attachmentPaths(messageIds),
+      discardIncompleteFormalFindings: (runId) => ports.discardIncompleteFormalFindings(runId),
+    },
+    agentRuns: {
+      async start(input) {
+        const started = await agentRuns.start(input);
+        track(started.run.id, started.completion);
+        return started;
+      },
+      interrupt: (runId) => agentRuns.interrupt(runId),
+      waitForTerminal: (runId) => agentRuns.waitForTerminal(runId),
+    },
+  });
 
   async function clis(recheck = false): Promise<CliStatusResponse> {
     if (!cliStatus || recheck) {
@@ -229,6 +376,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       throw new CliUnavailableError(provider, availability.message ?? `${provider} is unavailable or not authenticated.`);
     }
     return availability;
+  }
+
+  function requireImageCapability(
+    provider: Provider,
+    capability: "developerInitialImage" | "developerResumeImage" | "reviewerInitialImage" | "reviewerResumeImage",
+    imagePathsOrIds: readonly string[],
+  ): void {
+    if (imagePathsOrIds.length && !providerRegistry.get(provider).driver.capabilities[capability]) {
+      throw new UnsupportedProviderCapabilityError(provider, capability);
+    }
   }
 
   async function requireGit(): Promise<AgentAvailability> {
@@ -293,7 +450,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
 
   try {
     const recovered = await ports.recoverInterrupted();
-    for (const run of recovered) await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
+    for (const run of recovered) {
+      for (const approval of await approvals.expireRun(run)) await publishApprovalEvent(approval);
+      await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
+    }
+    for (const taskId of await ports.listOpenConversationTaskIds()) conversations.resume(taskId);
   } catch (error) {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     try { ports.releaseApplicationLease(); } finally { database.close(); }
@@ -321,6 +482,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         updateSettings(input);
         return json(await settingsResponse(true));
       }
+
+      const unfinishedResponse = await unfinishedTasksRoute(request);
+      if (unfinishedResponse) return unfinishedResponse;
 
       if (method === "GET" && path === "/api/projects") return json(await projects.list());
       if (method === "POST" && path === "/api/projects") {
@@ -356,6 +520,23 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         return json(await git.projectFiles(project.id, project.rootPath, input.q ?? "", input.limit ?? 50));
       }
 
+      parameters = match(path, /^\/api\/projects\/([^/]+)\/attachment-drafts$/);
+      if (parameters && method === "POST") {
+        ensureAccepting();
+        const project = await requireProject(parameters[0]!);
+        try {
+          const attachment = await attachments.createDraft(
+            project.id,
+            new Uint8Array(await request.arrayBuffer()),
+            request.headers.get("content-type") ?? undefined,
+          );
+          return json({ id: attachment.id }, 201);
+        } catch (error) {
+          if (error instanceof AttachmentValidationError) throw new RequestValidationError(error.message);
+          throw error;
+        }
+      }
+
       parameters = match(path, /^\/api\/projects\/([^/]+)\/tasks$/);
       if (parameters) {
         const [projectId] = parameters;
@@ -364,8 +545,24 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (method === "POST") {
           ensureAccepting();
           const input = await body(request, createTaskRequestSchema);
+          const attachmentIds = input.attachmentIds ?? [];
           await requireGit();
-          return json(await tasks.create(projectId!, input), 201);
+          const task = await tasks.create(projectId!, input);
+          try {
+            if (attachmentIds.length
+              && !providerRegistry.get(task.developerProvider).driver.capabilities.developerInitialImage) {
+              throw new RunConflictError(`${task.developerProvider} does not support developer initial-run images through its configured CLI protocol.`);
+            }
+            await attachments.claim(projectId!, task.id, attachmentIds);
+          } catch (error) {
+            await tasks.discardDraft(task.id);
+            if (error instanceof AttachmentClaimConflictError || error instanceof PersistenceOwnershipError) {
+              throw new RunConflictError(error.message);
+            }
+            throw error;
+          }
+          await broadcastUnfinishedTask(task.id);
+          return json(task, 201);
         }
       }
 
@@ -380,7 +577,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         ensureAccepting();
         await body(request, completeTaskRequestSchema);
         await requireTask(parameters[0]!);
-        return json(await tasks.complete(parameters[0]!));
+        const completed = await tasks.complete(parameters[0]!);
+        await broadcastUnfinishedTask(completed.id);
+        return json(completed);
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/develop$/);
@@ -391,11 +590,14 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         await requireCli(task.developerProvider);
         const initial = task.status === "draft";
         if (!initial && !task.developerSessionId) throw new RunConflictError("Continuing development requires an exact developer session ID.");
+        const imagePaths = initial ? await ports.initialAttachmentPaths(task.id) : [];
+        requireImageCapability(task.developerProvider, initial ? "developerInitialImage" : "developerResumeImage", imagePaths);
         const started = await agentRuns.start({
           task,
           runType: initial ? "developer_initial" : "developer_feedback",
           prompt: input.prompt ?? (initial ? task.originalPrompt : "Continue the current task and summarize the changes from this run."),
           ...(initial ? {} : { sessionId: task.developerSessionId! }),
+          imagePaths,
         });
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
@@ -408,7 +610,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         const task = await requireTask(parameters[0]!);
         await requireCli(task.reviewerProvider);
         await requireGit();
-        const started = await reviews.start(task);
+        const imagePaths = await ports.initialAttachmentPaths(task.id);
+        requireImageCapability(task.reviewerProvider, "reviewerInitialImage", imagePaths);
+        const started = await reviews.start(task, imagePaths);
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
       }
@@ -461,6 +665,54 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "GET") {
         await requireTask(parameters[0]!);
         return json(await ports.listRuns(parameters[0]!));
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/messages$/);
+      if (parameters) {
+        const task = await requireTask(parameters[0]!);
+        if (method === "GET") return json(await ports.listMessages(task.id));
+        if (method === "POST") {
+          ensureAccepting();
+          const input = await body(request, createTaskMessageRequestSchema);
+          const provider = input.targetRole === "reviewer" ? task.reviewerProvider : task.developerProvider;
+          await requireCli(provider);
+          requireImageCapability(
+            provider,
+            input.targetRole === "reviewer" ? "reviewerResumeImage" : "developerResumeImage",
+            input.attachmentIds,
+          );
+          try {
+            return json(await conversations.enqueue({
+              ...input,
+              projectId: task.projectId,
+              taskId: task.id,
+            }), 202);
+          } catch (error) {
+            if (error instanceof AttachmentClaimConflictError || error instanceof PersistenceOwnershipError) {
+              throw new RunConflictError(error.message);
+            }
+            throw error;
+          }
+        }
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/attachments$/);
+      if (parameters && method === "GET") {
+        const task = await requireTask(parameters[0]!);
+        return json(await ports.listTaskAttachments(task.id));
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/approvals$/);
+      if (parameters && method === "GET") {
+        await requireTask(parameters[0]!);
+        return json(await ports.listApprovals(parameters[0]!));
+      }
+
+      parameters = match(path, /^\/api\/approvals\/([^/]+)\/decision$/);
+      if (parameters && method === "POST") {
+        ensureAccepting();
+        const input = await body(request, approvalDecisionRequestSchema);
+        return json(await decideApproval(parameters[0]!, input.decision, input.reason ?? null));
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/git\/(status|diff|files)$/);
@@ -612,6 +864,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       const text = typeof rawMessage === "string" ? rawMessage : new TextDecoder().decode(rawMessage);
       let parsed: unknown;
       try { parsed = JSON.parse(text); } catch { socket.close(1008, "Invalid subscription message"); return; }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        && Object.keys(parsed).length === 1
+        && (parsed as { action?: unknown }).action === "subscribe_unfinished") {
+        hub.beginUnfinished(socket);
+        socket.send(JSON.stringify({ action: "subscribed_unfinished" }));
+        return;
+      }
       const subscription = webSocketSubscribeSchema.safeParse(parsed);
       if (!subscription.success || !(await tasks.get(subscription.data.taskId))) {
         socket.close(1008, "Invalid subscription message");

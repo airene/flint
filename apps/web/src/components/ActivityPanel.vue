@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { AgentEvent } from "@local-pair-review/shared";
+import type { AgentEvent, ApprovalRequest } from "@local-pair-review/shared";
+import ApprovalCard from "./ApprovalCard.vue";
+import type { ApprovalCardDecision } from "./approval-card";
 
-const props = defineProps<{ events: AgentEvent[]; connected: boolean }>();
+const props = withDefaults(defineProps<{
+  events: AgentEvent[];
+  connected: boolean;
+  approvals?: ApprovalRequest[];
+  approvalErrors?: Record<string, string>;
+}>(), { approvals: () => [], approvalErrors: () => ({}) });
+const emit = defineEmits<{ decideApproval: [approvalId: string, decision: ApprovalCardDecision] }>();
 const filter = ref("all");
 
 interface EventView {
@@ -111,6 +119,11 @@ function view(event: AgentEvent): EventView {
       return { title: "Review findings parsed", detail: [count, verdict].filter(Boolean).join(" · ") || undefined };
     }
     case "review_parse_failed": return { title: "Review output needs manual inspection" };
+    case "message_queued": return { title: "Message queued" };
+    case "message_delivered": return { title: "Message delivered" };
+    case "message_failed": return { title: "Message delivery failed" };
+    case "approval_requested": return { title: "Approval requested" };
+    case "approval_resolved": return { title: "Approval resolved" };
     case "raw": return {
       title: typeof parsed?.type === "string" ? `Unparsed: ${parsed.type}` : "Unparsed output",
       detail: firstLine(payload?.raw),
@@ -133,6 +146,12 @@ const visible = computed(() => props.events
         <option value="all">All sources</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="system">System</option>
       </select>
     </header>
+    <div v-if="approvals.length" class="approval-list">
+      <ApprovalCard
+        v-for="approval in approvals" :key="approval.id" :request="approval"
+        :error="approvalErrors[approval.id]" @decide="emit('decideApproval', approval.id, $event)"
+      />
+    </div>
     <div v-if="visible.length" class="timeline scroll-area">
       <div v-for="row in visible" :key="`${row.event.taskId}:${row.event.sequence}`" :class="['timeline-row', { warning: row.view.warning }]">
         <span :class="['source-mark', row.event.source]" />
@@ -149,6 +168,7 @@ const visible = computed(() => props.events
 
 <style scoped>
 .connection-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--red); }.connection-dot.connected { background:var(--green); }
+.approval-list{display:grid;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border)}
 .mini-select { color:var(--muted); border:0; outline:0; background:transparent; font-size:10px; }
 .timeline { max-height: 390px; }
 .timeline-row { position:relative; display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; padding:10px 14px; border-bottom:1px solid var(--border-soft); }

@@ -120,7 +120,7 @@ export class ReviewService {
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
-  async start(task: Task): Promise<StartedReview> {
+  async start(task: Task, imagePaths: readonly string[] = []): Promise<StartedReview> {
     const startSnapshot = await this.options.context.capture(task);
     const started = await this.options.agentRuns.start({
       task,
@@ -134,6 +134,7 @@ export class ReviewService {
       }),
       sessionId: undefined,
       snapshotHash: startSnapshot.snapshotHash,
+      imagePaths,
     });
     return {
       run: started.run,

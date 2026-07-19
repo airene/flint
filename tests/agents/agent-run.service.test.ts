@@ -24,6 +24,7 @@ class ScenarioDriver implements AgentDriver {
     provider: "codex" | "claude",
     private readonly result: AgentStartResult | AgentProcessError,
     private readonly order: string[],
+    private readonly requests: AgentStartRequest[],
   ) {
     this.provider = provider;
   }
@@ -42,6 +43,7 @@ class ScenarioDriver implements AgentDriver {
   }
 
   async start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
+    this.requests.push(request);
     await emit(agentEvent(request, "run_started", { processId: 4321 }, this.provider));
     if (!(this.result instanceof AgentProcessError)) {
       const sessionId = this.result.sessionId;
@@ -136,6 +138,8 @@ class MemoryRunPersistence implements AgentRunPersistencePort {
 
 class RecordingTaskState implements TaskRunStatePort {
   readonly queuedSnapshots: Array<string | undefined> = [];
+  readonly queuedDeliveryBatchIds: Array<string | undefined> = [];
+  readonly terminalPolicies: Array<"transition" | "preserve_current"> = [];
 
   constructor(
     private readonly order: string[],
@@ -143,20 +147,26 @@ class RecordingTaskState implements TaskRunStatePort {
     private readonly failSucceed = false,
   ) {}
 
-  async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
+  async queue(
+    run: AgentRun,
+    options: { snapshotHash?: string; deliveryBatchId?: string } = {},
+  ): Promise<AgentRun> {
     this.queuedSnapshots.push(options.snapshotHash);
+    this.queuedDeliveryBatchIds.push(options.deliveryBatchId);
     this.order.push(`task:queued:${run.runType}`);
     return this.persistence.create(run);
   }
 
-  async succeed(input: FinishRunInput & { taskId: string; runType: AgentRun["runType"] }): Promise<AgentRun> {
+  async succeed(input: Parameters<TaskRunStatePort["succeed"]>[0]): Promise<AgentRun> {
     this.order.push(`task:succeeded:${input.runType}`);
+    this.terminalPolicies.push(input.taskStatusPolicy);
     if (this.failSucceed) throw new Error("terminal transaction failed");
     return this.persistence.finish(input);
   }
 
-  async fail(input: FinishRunInput & { taskId: string; runType: AgentRun["runType"]; sessionId: string | null }): Promise<AgentRun> {
+  async fail(input: Parameters<TaskRunStatePort["fail"]>[0]): Promise<AgentRun> {
     this.order.push(`task:${input.patch.status}:${input.runType}:${input.sessionId ?? "none"}`);
+    this.terminalPolicies.push(input.taskStatusPolicy);
     return this.persistence.finish(input);
   }
 }
@@ -170,6 +180,7 @@ function service(
   const persistence = new MemoryRunPersistence(order);
   const taskState = new RecordingTaskState(order, persistence, behavior.failSucceed);
   const emitted: AgentEvent[] = [];
+  const requests: AgentStartRequest[] = [];
   let sequence = 0;
   const events = new EventService({
     async append(input) {
@@ -185,8 +196,8 @@ function service(
     persistence,
     agentRuns: new AgentRunService({
       drivers: {
-        codex: new ScenarioDriver("codex", codexResult, order),
-        claude: new ScenarioDriver("claude", claudeResult, order),
+        codex: new ScenarioDriver("codex", codexResult, order, requests),
+        claude: new ScenarioDriver("claude", claudeResult, order, requests),
       },
       persistence,
       taskState,
@@ -196,6 +207,7 @@ function service(
     }),
     taskState,
     emitted,
+    requests,
   };
 }
 
@@ -378,5 +390,103 @@ describe("AgentRunService", () => {
     expect(started.run.provider).toBe("claude");
     expect(completed.externalSessionId).toBe("claude-developer-session");
     expect(order).toContain("session:developer_initial:task-1:claude-developer-session");
+  });
+
+  test("requires an exact session for every follow-up run", async () => {
+    const order: string[] = [];
+    const { agentRuns } = service(order, {
+      sessionId: "unused",
+      finalMessage: "unused",
+      structuredOutput: null,
+    }, new AgentProcessError("failed", "unused"));
+
+    for (const runType of ["developer_followup", "reviewer_followup"] as const) {
+      await expect(agentRuns.start({
+        task: { ...task(), status: runType === "developer_followup" ? "ready_for_review" : "waiting_for_human" },
+        runType,
+        prompt: "Follow up",
+      })).rejects.toThrow("exact session");
+    }
+
+    expect(order).toEqual([]);
+  });
+
+  test("resumes developer follow-up in the exact supplied session", async () => {
+    const order: string[] = [];
+    const { agentRuns, requests, taskState } = service(order, {
+      sessionId: "developer-session-exact",
+      finalMessage: "Fixed",
+      structuredOutput: null,
+    }, new AgentProcessError("failed", "unused"));
+
+    const terminal = await (await agentRuns.start({
+      task: { ...task(), status: "ready_for_review", developerSessionId: "developer-session-exact" },
+      runType: "developer_followup",
+      prompt: "Please adjust this",
+      sessionId: "developer-session-exact",
+      deliveryBatchId: "delivery-batch-exact",
+    })).completion;
+
+    expect(requests[0]).toMatchObject({
+      runType: "developer_followup",
+      sessionId: "developer-session-exact",
+    });
+    expect(order).toContain("task:queued:developer_followup");
+    expect(order).toContain("task:succeeded:developer_followup");
+    expect(taskState.queuedDeliveryBatchIds).toEqual(["delivery-batch-exact"]);
+    expect(terminal).toMatchObject({ status: "completed", reviewParseStatus: null });
+  });
+
+  test("resumes reviewer follow-up read-only without formal review output", async () => {
+    const order: string[] = [];
+    const { agentRuns, requests, taskState } = service(order, new AgentProcessError("failed", "unused"), {
+      sessionId: "review-session-exact",
+      finalMessage: "Explanation",
+      structuredOutput: {
+        summary: "must not become a formal review",
+        verdict: "changes_suggested",
+        findings: [{ title: "incomplete" }],
+      },
+    });
+
+    const started = await agentRuns.start({
+      task: { ...task(), status: "waiting_for_human" },
+      runType: "reviewer_followup",
+      prompt: "Explain this finding",
+      sessionId: "review-session-exact",
+    });
+    const terminal = await started.completion;
+
+    expect(started.run).toMatchObject({ provider: "claude", reviewParseStatus: null });
+    expect(requests[0]).toMatchObject({
+      runType: "reviewer_followup",
+      sessionId: "review-session-exact",
+    });
+    expect(terminal).toMatchObject({
+      status: "completed",
+      finalMessage: "Explanation",
+      structuredOutput: null,
+      reviewParseStatus: null,
+    });
+    expect(taskState.terminalPolicies).toEqual(["preserve_current"]);
+  });
+
+  test("uses the workflow-neutral Task policy when reviewer follow-up fails", async () => {
+    const order: string[] = [];
+    const { agentRuns, taskState } = service(
+      order,
+      new AgentProcessError("failed", "unused"),
+      new AgentProcessError("failed", "review follow-up failed"),
+    );
+
+    const terminal = await (await agentRuns.start({
+      task: { ...task(), status: "ready_for_review" },
+      runType: "reviewer_followup",
+      prompt: "Explain",
+      sessionId: "review-session-exact",
+    })).completion;
+
+    expect(terminal.status).toBe("failed");
+    expect(taskState.terminalPolicies).toEqual(["preserve_current"]);
   });
 });

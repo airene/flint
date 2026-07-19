@@ -56,6 +56,84 @@ describe("CLI argument arrays", () => {
     ]);
   });
 
+  test("places controlled absolute image paths correctly for all Codex role and phase combinations", () => {
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "developer_initial",
+      undefined,
+      undefined,
+      ["/tmp/input-one.png", "/tmp/input-two.jpg"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "--json",
+      "--sandbox",
+      "workspace-write",
+      "--image",
+      "/tmp/input-one.png",
+      "--image",
+      "/tmp/input-two.jpg",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "developer_followup",
+      "developer-session",
+      undefined,
+      ["/tmp/developer-followup.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "resume",
+      "developer-session",
+      "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "--image",
+      "/tmp/developer-followup.png",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "reviewer",
+      undefined,
+      "/tmp/review-schema.json",
+      ["/tmp/review-initial.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "--json",
+      "--sandbox",
+      "read-only",
+      "--output-schema",
+      "/tmp/review-schema.json",
+      "--image",
+      "/tmp/review-initial.png",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "reviewer_followup",
+      "review-session",
+      "/tmp/review-schema.json",
+      ["/tmp/review.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "resume",
+      "review-session",
+      "--json",
+      "-c",
+      'sandbox_mode="read-only"',
+      "--image",
+      "/tmp/review.png",
+      "-",
+    ]);
+  });
+
   test("builds Codex reviewer invocation with read-only schema output", () => {
     expect(buildCodexArgs("/opt/codex", "reviewer", undefined, "/tmp/review-schema.json")).toEqual([
       "/opt/codex",
@@ -65,6 +143,19 @@ describe("CLI argument arrays", () => {
       "read-only",
       "--output-schema",
       "/tmp/review-schema.json",
+      "-",
+    ]);
+  });
+
+  test("keeps Codex reviewer follow-up resume read-only without formal review output", () => {
+    expect(buildCodexArgs("/opt/codex", "reviewer_followup", "review-session-456", "/tmp/review-schema.json")).toEqual([
+      "/opt/codex",
+      "exec",
+      "resume",
+      "review-session-456",
+      "--json",
+      "-c",
+      'sandbox_mode="read-only"',
       "-",
     ]);
   });
@@ -86,7 +177,7 @@ describe("CLI argument arrays", () => {
   test("builds Claude reviewer invocation with read-only permissions and optional resume", () => {
     const args = buildClaudeArgs("/opt/claude", "reviewer", "review-session-456");
 
-    expect(args.slice(0, 9)).toEqual([
+    expect(args).toEqual([
       "/opt/claude",
       "-p",
       "--output-format",
@@ -96,18 +187,52 @@ describe("CLI argument arrays", () => {
       "--permission-mode",
       "plan",
       "--json-schema",
+      JSON.stringify(reviewJsonSchema),
+      "--tools",
+      "Read",
+      "Glob",
+      "Grep",
+      "--allowedTools",
+      "Read",
+      "Glob",
+      "Grep",
+      "--disallowedTools",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "--resume",
+      "review-session-456",
     ]);
-    expect(JSON.parse(args[9] ?? "")).toEqual(reviewJsonSchema);
-    const toolsIndex = args.indexOf("--tools");
-    expect(args.slice(toolsIndex + 1, toolsIndex + 4)).toEqual(["Read", "Glob", "Grep"]);
-    expect(args).toContain("--allowedTools");
-    expect(args).toContain("Read");
-    expect(args).toContain("--disallowedTools");
-    expect(args).toContain("Edit");
     expect(args.some((argument) => argument.includes("Bash"))).toBe(false);
-    expect(args.slice(-2)).toEqual(["--resume", "review-session-456"]);
     expect(args).not.toContain("sh");
     expect(args).not.toContain("-c");
+  });
+
+  test("keeps Claude reviewer follow-up resume read-only without formal review output", () => {
+    expect(buildClaudeArgs("/opt/claude", "reviewer_followup", "review-session-456")).toEqual([
+      "/opt/claude",
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--safe-mode",
+      "--permission-mode",
+      "plan",
+      "--tools",
+      "Read",
+      "Glob",
+      "Grep",
+      "--allowedTools",
+      "Read",
+      "Glob",
+      "Grep",
+      "--disallowedTools",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "--resume",
+      "review-session-456",
+    ]);
   });
 });
 

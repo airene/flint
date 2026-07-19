@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ErrorBanner from "../components/ErrorBanner.vue";
-import FileMentionInput from "../components/FileMentionInput.vue";
+import TaskComposer, { type ComposerSubmission } from "../components/TaskComposer.vue";
+import { uploadAttachmentDraft } from "../api/endpoints";
 import { useProjectsStore } from "../stores/projects";
 import { useSystemStore } from "../stores/system";
 
@@ -14,6 +15,12 @@ const title = ref("");
 const prompt = ref("");
 const developerLabel = computed(() => system.providerLabel(system.cliStatus?.roles.developerProvider));
 const reviewerLabel = computed(() => system.providerLabel(system.cliStatus?.roles.reviewerProvider));
+const developerInitialImagesEnabled = computed(() => Boolean(
+  system.providerById(system.cliStatus?.roles.developerProvider)?.capabilities?.developerInitialImage,
+));
+const developerImageDisabledReason = computed(() => (
+  `${developerLabel.value} cannot receive images on an initial run. Text tasks remain available.`
+));
 
 async function load(): Promise<void> {
   try { await store.selectProject(String(route.params.projectId)); } catch { /* rendered */ }
@@ -21,14 +28,18 @@ async function load(): Promise<void> {
 onMounted(load);
 watch(() => route.params.projectId, load);
 
-async function createTask(confirmDirtyWorkingTree = false): Promise<void> {
-  if (!title.value.trim() || !prompt.value.trim() || !store.currentProject) return;
+async function createTask(submission?: ComposerSubmission, confirmDirtyWorkingTree = false): Promise<void> {
+  if (!title.value.trim() || !prompt.value.trim() || !store.currentProject || (!confirmDirtyWorkingTree && !submission)) return;
   const projectId = store.currentProject.id;
   const selectionGeneration = store.selectionGeneration;
   try {
     const task = confirmDirtyWorkingTree
       ? await store.retryCreateTaskWithDirtyWorkingTreeConfirmation(projectId)
-      : await store.createTask(projectId, { title: title.value.trim(), originalPrompt: prompt.value.trim() });
+      : await store.createTask(projectId, {
+        title: title.value.trim(),
+        originalPrompt: submission.text.trim(),
+        attachmentIds: submission.attachmentIds,
+      });
     if (task && store.selectionGeneration === selectionGeneration && store.currentProject?.id === projectId
       && String(route.params.projectId) === projectId) await router.push({ path: `/tasks/${task.id}`, query: { start: "1" } });
   } catch { /* dirty/error state is rendered */ }
@@ -59,14 +70,14 @@ function cancelDirtyConfirmation(): void {
       <header class="panel-header"><h2 class="panel-title">New task</h2><span class="badge">base = current HEAD</span></header>
       <div class="panel-body task-form">
         <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
-        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><FileMentionInput id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" multiline :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
-        <div class="create-row"><p class="help">Creating the task immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p><button class="button primary" :disabled="Boolean(store.pendingDirtyTask) || !title.trim() || !prompt.trim()" @click="createTask(false)">Create & start {{ developerLabel }}</button></div>
+        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><TaskComposer id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" :upload-image="uploadAttachmentDraft" :disabled="Boolean(store.pendingDirtyTask)" :images-enabled="developerInitialImagesEnabled" :image-disabled-reason="developerImageDisabledReason" placeholder="Describe the change and acceptance criteria…" @submit="createTask($event, false)" /></div>
+        <div class="create-row"><p class="help">Sending creates the task and immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p></div>
       </div>
     </section>
 
     <section v-if="store.pendingDirtyTask?.projectId === store.currentProject?.id" class="dirty-confirm">
       <div><strong>Working tree has existing changes</strong><p>They will be included in the review snapshot together with Agent changes. Confirming creates the task and immediately starts {{ developerLabel }}.</p><ul><li v-for="file in store.dirtyWorkingTreeFiles" :key="file" class="mono">{{ file }}</li></ul></div>
-      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">Cancel</button><button class="button danger" @click="createTask(true)">Create & start anyway</button></div>
+      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">Cancel</button><button class="button danger" @click="createTask(undefined, true)">Create & start anyway</button></div>
     </section>
 
     <section class="tasks-section">

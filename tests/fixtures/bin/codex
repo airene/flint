@@ -132,7 +132,12 @@ function hasWorkspaceWriteResumeConfig(): boolean {
   return configIndex !== -1 && args[configIndex + 1] === 'sandbox_mode="workspace-write"';
 }
 
-if (args[1] === "resume" && !hasWorkspaceWriteResumeConfig()) {
+function hasReadOnlyResumeConfig(): boolean {
+  const configIndex = args.indexOf("-c");
+  return configIndex !== -1 && args[configIndex + 1] === 'sandbox_mode="read-only"';
+}
+
+if (args[1] === "resume" && !hasWorkspaceWriteResumeConfig() && !hasReadOnlyResumeConfig()) {
   console.error("Fake Codex resume requires -c sandbox_mode=\"workspace-write\"");
   process.exit(25);
 }
