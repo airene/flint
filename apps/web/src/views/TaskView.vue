@@ -57,6 +57,8 @@ const selectedReviewStale = computed(() => {
 const composerText = ref("");
 const deliveryMode = ref<MessageDeliveryMode>("queue");
 const composerGeneration = ref(0);
+const conversationAvailable = computed(() => Boolean(workspace.task?.developerSessionId)
+  && workspace.task?.status !== "completed");
 const selectedFormalReview = computed(() => {
   const run = selectedRun.value;
   return run?.runType === "reviewer" && run.status === "completed" && run.externalSessionId ? run : null;
@@ -170,6 +172,12 @@ async function updateFinding(id: string, changes: UpdateFindingRequest): Promise
 async function jumpToFinding(finding: ReviewFinding): Promise<void> {
   if (finding.file) await workspace.selectFile(finding.file);
 }
+
+async function completeTask(): Promise<void> {
+  if (workspace.task?.status === "ready_for_review"
+    && !window.confirm("Complete this task without review? The completed task will become read-only.")) return;
+  await workspace.complete();
+}
 </script>
 
 <template>
@@ -180,8 +188,9 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
         :task="workspace.task" :runs="workspace.runs" :busy="workspace.busy"
         :developer-ready="developerReady" :reviewer-ready="reviewerReady"
         :developer-label="developerLabel" :reviewer-label="reviewerLabel"
-        :diff-file-count="workspace.files.length"
-        @develop="workspace.develop" @review="workspace.review()" @cancel="workspace.cancel" @complete="workspace.complete"
+        :diff-file-count="workspace.files.length" :event-count="workspace.events.length"
+        :connected="workspace.connected"
+        @develop="workspace.develop" @review="workspace.review()" @cancel="workspace.cancel" @complete="completeTask"
         @open-diff="diffOpen = true"
       />
       <ErrorBanner :message="workspace.error" @dismiss="workspace.error = null" />
@@ -193,13 +202,6 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
       <div v-if="runtimeWarnings.length" class="panel runtime-warning">
         <div><strong>Local CLI action required</strong><span v-for="warning in runtimeWarnings" :key="warning">{{ warning }}</span></div>
         <RouterLink class="button" to="/settings">Open CLI Settings</RouterLink>
-      </div>
-
-      <div class="context-strip panel">
-        <div><span>Repository</span><code>{{ workspace.task.workingDirectory }}</code></div>
-        <div><span>Base commit</span><code>{{ workspace.task.baseCommit.slice(0, 12) }}</code></div>
-        <div><span>{{ developerLabel }} session</span><code>{{ workspace.task.developerSessionId?.slice(0, 20) ?? "not established" }}</code></div>
-        <div><span>Events</span><code>{{ workspace.events.length }} · {{ workspace.connected ? 'live' : 'reconnecting' }}</code></div>
       </div>
 
       <div class="run-workspace">
@@ -227,8 +229,8 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
         </div>
         <div v-else class="panel empty-state run-detail-empty"><strong>No run selected</strong><span>Start an action to create the first run.</span></div>
       </div>
-      <section class="panel conversation-panel">
-        <header class="panel-header">
+      <section v-if="conversationAvailable" class="panel conversation-panel">
+        <header class="panel-header conversation-header">
           <div>
             <h2 class="panel-title">Message {{ composerTargetRole === 'reviewer' ? `${reviewerLabel} Reviewer` : `${developerLabel} Developer` }}</h2>
             <small v-if="selectedFormalReview">Exact Review session · {{ selectedFormalReview.externalSessionId }}</small>
@@ -261,7 +263,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
           :aria-label="`${composerTargetRole === 'reviewer' ? reviewerLabel : developerLabel} ${composerTargetRole} follow-up message`"
           :images-enabled="composerImagesEnabled"
           :image-disabled-reason="`${composerProvider ?? 'Provider'} cannot receive images in this resumed session.`"
-          placeholder="Send a persisted follow-up…" @submit="sendMessage"
+          :rows="2" placeholder="Send a persisted follow-up…" @submit="sendMessage"
         />
       </section>
     </template>
@@ -291,11 +293,11 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 </template>
 
 <style scoped>
-.task-page{max-width:none;padding-bottom:calc(48px + var(--task-action-bar-h, 0px))}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:var(--text-body);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
+.task-page{max-width:none;padding-bottom:calc(48px + var(--task-action-bar-h, 0px))}.loading-task{margin-top:10vh}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
 .runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:var(--yellow-ink);font-size:11px}.runtime-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
 .repository-warning{display:grid;gap:4px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.repository-warning strong{color:var(--yellow-ink);font-size:11px}.repository-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
-.conversation-panel{margin-top:14px;padding-bottom:14px}.conversation-panel>.panel-header{align-items:flex-start}.conversation-panel small{display:block;margin-top:4px;color:var(--faint);font-size:9px}.delivery-mode{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px}.delivery-mode select{padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:var(--input-bg);color:var(--text)}.message-list{display:grid;gap:6px;max-height:210px;overflow:auto;padding:10px 14px;border-bottom:1px solid var(--border)}.task-message{padding:8px 10px;border:1px solid var(--border-soft);border-radius:5px;background:var(--block-bg)}.task-message>div{display:flex;justify-content:space-between;gap:8px}.task-message strong{font-size:10px}.task-message span{color:var(--faint);font-size:9px;text-transform:capitalize}.task-message p{margin:5px 0 0;color:var(--text-body);font-size:10px;white-space:pre-wrap}.task-message small{color:var(--red-ink)}.task-message .task-message-attachments{color:var(--faint)}.task-message.failed{border-color:rgba(255,100,100,.35)}.attachment-history-entry{border-style:dashed}.composer-note{margin:10px 14px 0;color:var(--yellow-ink);font-size:10px}.conversation-panel>.task-composer{padding:12px 14px 0}
-@media(max-width:900px){.run-workspace{grid-template-columns:1fr}.context-strip{grid-template-columns:repeat(2,1fr);gap:10px}.context-strip>div{border:0;padding:0}}
+.conversation-panel{margin-top:14px;padding:10px}.conversation-header{min-height:37px;align-items:center;margin-bottom:8px;padding:0;border-bottom:0}.conversation-panel small{display:block;margin-top:4px;color:var(--faint);font-size:9px}.delivery-mode{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px}.delivery-mode select{padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:var(--input-bg);color:var(--text)}.message-list{display:grid;gap:6px;max-height:210px;margin-bottom:10px;overflow:auto;padding:10px 0;border-bottom:1px solid var(--border)}.task-message{padding:8px 10px;border:1px solid var(--border-soft);border-radius:5px;background:var(--block-bg)}.task-message>div{display:flex;justify-content:space-between;gap:8px}.task-message strong{font-size:10px}.task-message span{color:var(--faint);font-size:9px;text-transform:capitalize}.task-message p{margin:5px 0 0;color:var(--text-body);font-size:10px;white-space:pre-wrap}.task-message small{color:var(--red-ink)}.task-message .task-message-attachments{color:var(--faint)}.task-message.failed{border-color:rgba(255,100,100,.35)}.attachment-history-entry{border-style:dashed}.composer-note{margin:0 0 8px;color:var(--yellow-ink);font-size:10px}
+@media(max-width:900px){.run-workspace{grid-template-columns:1fr}}
 
 .diff-drawer-root{position:fixed;inset:0;z-index:60;visibility:hidden;pointer-events:none;transition:visibility 0s .26s}
 .diff-drawer-root.open{visibility:visible;pointer-events:auto;transition:visibility 0s 0s}

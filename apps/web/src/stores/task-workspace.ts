@@ -205,7 +205,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         if (events.value.length > MAX_TASK_EVENTS) events.value.splice(0, events.value.length - MAX_TASK_EVENTS);
         queueNotificationEvent(event, { generation: connectionGeneration, taskId });
         if ([
-          "run_completed", "run_failed", "run_cancelled", "run_interrupted", "review_parsed", "review_parse_failed",
+          "session_started", "run_completed", "run_failed", "run_cancelled", "run_interrupted", "review_parsed", "review_parse_failed",
           "message_queued", "message_delivered", "message_failed", "approval_requested", "approval_resolved",
         ].includes(event.type)) scheduleRefresh();
       },

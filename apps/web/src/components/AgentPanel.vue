@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentEvent, AgentRun } from "@local-pair-review/shared";
+import FinalResponse from "./FinalResponse.vue";
 
 const props = defineProps<{
   title: string;
@@ -50,7 +51,7 @@ function eventText(event: AgentEvent): string {
       </div>
       <div v-if="run.finalMessage" class="message-block">
         <span class="mini-label">Final response</span>
-        <p>{{ run.finalMessage }}</p>
+        <FinalResponse :content="run.finalMessage" />
       </div>
       <div v-if="run.errorMessage" class="message-block error-text">
         <span class="mini-label">Error · exit {{ run.exitCode ?? "?" }}</span>

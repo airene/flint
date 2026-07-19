@@ -154,15 +154,17 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
       :disabled="interactionDisabled" :placeholder="placeholder" :aria-label="ariaLabel" @update:model-value="emit('update:modelValue', $event)"
       @paste="onPaste" @submit="submit"
     />
-    <p v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason }}</p>
     <AttachmentStrip :attachments="attachments" :disabled="interactionDisabled" @remove="remove" @retry="retry" />
     <div class="composer-actions">
-      <span class="attachment-count">{{ attachments.length }}/4 images</span>
+      <div class="composer-attachment-status">
+        <span v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason }}</span>
+        <span class="attachment-count">{{ attachments.length }}/4 images</span>
+      </div>
       <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? 'Sending…' : submitLabel }}</button>
     </div>
   </section>
 </template>
 
 <style scoped>
-.task-composer{display:grid;gap:7px}.attachment-capability{margin:0;color:var(--faint);font-size:10px}.composer-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}.attachment-count{color:var(--faint);font-size:10px}
+.task-composer{display:grid;gap:7px}.composer-actions,.composer-attachment-status{display:flex;align-items:center;gap:8px}.composer-actions{justify-content:space-between}.composer-attachment-status{min-width:0;color:var(--faint);font-size:10px}.attachment-capability{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment-count{flex:none;white-space:nowrap}
 </style>

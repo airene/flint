@@ -11,6 +11,7 @@ import {
 describe("task run state policy", () => {
   test("owns manual transitions and run start transitions", () => {
     expect(() => assertTaskTransition("draft", "developing")).not.toThrow();
+    expect(() => assertTaskTransition("ready_for_review", "completed")).not.toThrow();
     expect(() => assertTaskTransition("draft", "reviewing")).toThrow("Cannot transition task");
     expect(taskStatusForRunStart("draft", "developer_initial")).toBe("developing");
     expect(taskStatusForRunStart("waiting_for_human", "developer_feedback")).toBe("fixing");

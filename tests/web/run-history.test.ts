@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { AgentRun } from "@local-pair-review/shared";
 import { buildRunHistory, selectRunAfterUpdate } from "../../apps/web/src/components/run-history";
 
+const runHistoryComponent = await Bun.file(new URL("../../apps/web/src/components/RunHistory.vue", import.meta.url)).text();
+
 function run(overrides: Partial<AgentRun> = {}): AgentRun {
   return {
     id: "run-1",
@@ -71,5 +73,12 @@ describe("selectRunAfterUpdate", () => {
     const runs = [...initialRuns, run({ id: "newest", startedAt: "2026-07-18T00:10:00.000Z" })];
 
     expect(selectRunAfterUpdate("older", ["older", "latest"], runs)).toBe("newest");
+  });
+});
+
+describe("RunHistory selected state", () => {
+  test("uses a subtle yellow highlight", () => {
+    expect(runHistoryComponent).toContain(".run-history-item.selected { background: rgba(243, 201, 105, .06); box-shadow: inset 2px 0 0 rgba(243, 201, 105, .45); }");
+    expect(runHistoryComponent).not.toContain(".run-history-item.selected { background: var(--accent-soft)");
   });
 });

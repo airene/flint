@@ -35,11 +35,13 @@ async function createTask(submission?: ComposerSubmission, confirmDirtyWorkingTr
   try {
     const task = confirmDirtyWorkingTree
       ? await store.retryCreateTaskWithDirtyWorkingTreeConfirmation(projectId)
-      : await store.createTask(projectId, {
-        title: title.value.trim(),
-        originalPrompt: submission.text.trim(),
-        attachmentIds: submission.attachmentIds,
-      });
+      : submission
+        ? await store.createTask(projectId, {
+          title: title.value.trim(),
+          originalPrompt: submission.text.trim(),
+          attachmentIds: submission.attachmentIds,
+        })
+        : null;
     if (task && store.selectionGeneration === selectionGeneration && store.currentProject?.id === projectId
       && String(route.params.projectId) === projectId) await router.push({ path: `/tasks/${task.id}`, query: { start: "1" } });
   } catch { /* dirty/error state is rendered */ }

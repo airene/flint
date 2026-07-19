@@ -229,6 +229,21 @@ test("completes the human-gated Codex and Claude workflow with an exact-session 
   await expect(page.locator(".task-header").getByText("completed", { exact: true })).toBeVisible();
 });
 
+test("completes a ready-for-review task without starting a review", async ({ page }) => {
+  await createTask(page, await createRepository(), "Answer this question without changing files.");
+
+  await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe("Complete this task without review? The completed task will become read-only.");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "Complete without review" }).click();
+
+  await expect(page.locator(".task-header").getByText("completed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Message Codex Developer" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start Claude Code review" })).toHaveCount(0);
+});
+
 test("flushes the current review draft before starting a later review", async ({ page }) => {
   await createTask(page, await createRepository(), "Keep every review draft isolated.");
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();

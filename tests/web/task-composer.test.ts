@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 const composer = await Bun.file(new URL("../../apps/web/src/components/TaskComposer.vue", import.meta.url)).text();
 const strip = await Bun.file(new URL("../../apps/web/src/components/AttachmentStrip.vue", import.meta.url)).text();
+const fileMentionInput = await Bun.file(new URL("../../apps/web/src/components/FileMentionInput.vue", import.meta.url)).text();
 
 describe("TaskComposer", () => {
   test("keeps text paste native while extracting clipboard image files for the injected uploader", () => {
@@ -36,5 +37,11 @@ describe("TaskComposer", () => {
     expect(composer).toContain("{{ imageDisabledReason }}");
     expect(composer).toContain("4 - attachments.value.length");
     expect(composer).toContain("{{ attachments.length }}/4 images");
+    expect(composer).toContain('class="composer-attachment-status"');
+    expect(composer).not.toContain('<p v-if="!imagesEnabled" class="attachment-capability"');
+  });
+
+  test("lets the rows prop control the multiline editor height", () => {
+    expect(fileMentionInput).toContain('.file-mention-input.multiline .file-mention-control{min-height:0}');
   });
 });

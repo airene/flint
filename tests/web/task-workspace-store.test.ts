@@ -173,6 +173,25 @@ function completionEvent(runId = "developer-followup-1"): AgentEvent {
   };
 }
 
+function sessionStartedEvent(): AgentEvent {
+  return {
+    sequence: 1,
+    timestamp: LIVE_COMPLETION_TIMESTAMP,
+    projectId: "project-1",
+    taskId: "task-1",
+    runId: "developer-initial-1",
+    source: "claude",
+    type: "session_started",
+    payload: {
+      parsed: {
+        type: "system",
+        subtype: "init",
+        session_id: "claude-session-exact",
+      },
+    },
+  };
+}
+
 function stubWorkspaceLoad(listRuns: () => Promise<AgentRun[]>): void {
   Object.assign(apiEndpoints, {
     getTask: async () => task(),
@@ -408,6 +427,43 @@ describe("task workspace message delivery", () => {
 
     expect(await sending).toBeUndefined();
     expect(workspace.attachments).toEqual([]);
+  });
+});
+
+describe("task workspace live session refresh", () => {
+  test("loads the persisted Developer session while the initial Run is still active", async () => {
+    let taskReads = 0;
+    const runningTask: Task = {
+      ...task(),
+      status: "developing",
+      developerProvider: "claude",
+      developerSessionId: null,
+      completedAt: null,
+    };
+    const sessionTask: Task = { ...runningTask, developerSessionId: "claude-session-exact" };
+    Object.assign(apiEndpoints, {
+      getTask: async () => (++taskReads === 1 ? runningTask : sessionTask),
+      listRuns: async () => [],
+      listFindings: async () => [],
+      listMessages: async () => [],
+      listAttachments: async () => [],
+      listApprovals: async () => [],
+      getGitStatus: async () => ({ clean: true, snapshotHash: "snapshot", files: [] }),
+    });
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: CapturingWebSocket });
+    const workspace = useTaskWorkspaceStore(createPinia());
+    await workspace.load("task-1");
+    const socket = CapturingWebSocket.latest!;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ action: "subscribed", taskId: "task-1", afterSequence: 0 }) });
+
+    socket.onmessage?.({ data: JSON.stringify({ action: "event", event: sessionStartedEvent() }) });
+    for (let attempt = 0; attempt < 20 && taskReads < 2; attempt += 1) await Bun.sleep(10);
+
+    expect(taskReads).toBe(2);
+    expect(workspace.task?.status).toBe("developing");
+    expect(workspace.task?.developerSessionId).toBe("claude-session-exact");
+    workspace.dispose();
   });
 });
 

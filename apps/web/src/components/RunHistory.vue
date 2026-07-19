@@ -46,7 +46,7 @@ function timestampLabel(timestamp: string): string {
 .run-history { min-width: 0; overflow: hidden; }
 .run-history-list { display: grid; margin: 0; padding: 0; list-style: none; }
 .run-history-item { width: 100%; display: grid; gap: 7px; padding: 11px 12px; border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; color: inherit; cursor: pointer; text-align: left; transition: .15s ease; }
-.run-history-item:hover { background: var(--surface-hover); }.run-history-item.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.run-history-item:hover { background: var(--surface-hover); }.run-history-item.selected { background: rgba(243, 201, 105, .06); box-shadow: inset 2px 0 0 rgba(243, 201, 105, .45); }
 .run-history-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .run-history-main { min-width: 0; display: grid; gap: 6px; }.run-history-heading { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .run-history-role { color: var(--text-body); font-size: 11px; font-weight: 750; }.run-history-prompt { overflow: hidden; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }

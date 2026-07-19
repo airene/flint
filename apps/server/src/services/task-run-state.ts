@@ -16,7 +16,7 @@ export class InvalidTaskTransitionError extends Error {
 const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
   draft: ["developing"],
   developing: ["ready_for_review"],
-  ready_for_review: ["reviewing", "fixing"],
+  ready_for_review: ["reviewing", "fixing", "completed"],
   reviewing: ["waiting_for_human"],
   waiting_for_human: ["fixing", "reviewing", "completed"],
   fixing: ["ready_for_review"],
