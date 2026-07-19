@@ -11,6 +11,7 @@ import type {
   GitFileStatus,
   ReviewFinding,
   Task,
+  TaskAttachmentMetadata,
   TaskMessage,
   UpdateFindingRequest,
 } from "@local-pair-review/shared";
@@ -47,6 +48,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const runs = ref<AgentRun[]>([]);
   const findings = ref<ReviewFinding[]>([]);
   const messages = ref<TaskMessage[]>([]);
+  const attachments = ref<TaskAttachmentMetadata[]>([]);
   const approvals = ref<ApprovalRequest[]>([]);
   const approvalErrors = ref<Record<string, string>>({});
   const files = ref<GitFileStatus[]>([]);
@@ -330,15 +332,17 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     runs.value = [];
     findings.value = [];
     messages.value = [];
+    attachments.value = [];
     approvals.value = [];
     approvalErrors.value = {};
     files.value = [];
     selectedPath.value = null;
     selectedDiff.value = null;
     try {
-      const [loadedTask, loadedRuns, loadedFindings, loadedMessages, loadedApprovals] = await Promise.all([
+      const [loadedTask, loadedRuns, loadedFindings, loadedMessages, loadedAttachments, loadedApprovals] = await Promise.all([
         apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId),
         (apiEndpoints.listMessages?.(taskId) ?? Promise.resolve([])).catch(() => []),
+        (apiEndpoints.listAttachments?.(taskId) ?? Promise.resolve([])).catch(() => []),
         (apiEndpoints.listApprovals?.(taskId) ?? Promise.resolve([])).catch(() => []),
       ]);
       if (loadGeneration !== generation) return;
@@ -347,6 +351,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       runs.value = loadedRuns;
       findings.value = loadedFindings;
       messages.value = loadedMessages;
+      attachments.value = loadedAttachments;
       approvals.value = loadedApprovals;
       feedbackDraftRunId.value = reviewRun?.id ?? null;
       connect(taskId, loadGeneration);
@@ -375,9 +380,10 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const refreshGeneration = generation;
     const taskId = task.value.id;
     try {
-      const [loadedTask, loadedRuns, loadedFindings, loadedMessages, loadedApprovals] = await Promise.all([
+      const [loadedTask, loadedRuns, loadedFindings, loadedMessages, loadedAttachments, loadedApprovals] = await Promise.all([
         apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId),
         (apiEndpoints.listMessages?.(taskId) ?? Promise.resolve([])).catch(() => []),
+        (apiEndpoints.listAttachments?.(taskId) ?? Promise.resolve([])).catch(() => []),
         (apiEndpoints.listApprovals?.(taskId) ?? Promise.resolve([])).catch(() => []),
       ]);
       const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
@@ -391,6 +397,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       runs.value = loadedRuns;
       findings.value = loadedFindings;
       messages.value = loadedMessages;
+      attachments.value = loadedAttachments;
       approvals.value = loadedApprovals;
       if (draftChanged) {
         clearFeedbackDraftTimer();
@@ -609,6 +616,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = null;
     task.value = null;
+    attachments.value = [];
     loading.value = false;
     repositoryLoading.value = false;
     sendingMessage.value = false;
@@ -617,7 +625,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   }
 
   return {
-    task, runs, findings, messages, approvals, approvalErrors, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, sendingMessage, connected,
+    task, runs, findings, messages, attachments, approvals, approvalErrors, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, sendingMessage, connected,
     error, repositoryError, diffError, staleFeedback, reviewSnapshotStale,
     activeRun, feedbackReviewRun, selectedFindings,
     load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, updateFeedbackText, sendFeedback,

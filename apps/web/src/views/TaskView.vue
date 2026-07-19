@@ -76,6 +76,16 @@ const composerDisabledReason = computed(() => {
   return null;
 });
 const composerKey = computed(() => `${composerTargetRole.value}:${selectedFormalReview.value?.id ?? "developer"}:${composerGeneration.value}`);
+const initialAttachments = computed(() => workspace.attachments.filter((attachment) => attachment.messageId === null));
+
+function attachmentSummary(messageId: string): string | null {
+  const attached = workspace.attachments.filter((attachment) => attachment.messageId === messageId);
+  if (!attached.length) return null;
+  return attached.map((attachment) => {
+    const format = attachment.mediaType.slice("image/".length).toUpperCase();
+    return `${format} · ${Math.max(1, Math.ceil(attachment.sizeBytes / 1024))} KB`;
+  }).join(" · ");
+}
 
 async function sendMessage(submission: ComposerSubmission): Promise<void> {
   const sent = await workspace.sendMessage({
@@ -231,10 +241,15 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
             </select>
           </label>
         </header>
-        <div v-if="workspace.messages.length" class="message-list">
+        <div v-if="initialAttachments.length || workspace.messages.length" class="message-list">
+          <article v-if="initialAttachments.length" class="task-message attachment-history-entry">
+            <div><strong>Initial Task</strong><span>{{ initialAttachments.length }} {{ initialAttachments.length === 1 ? 'image' : 'images' }}</span></div>
+            <p>{{ initialAttachments.map((attachment) => `${attachment.mediaType.slice(6).toUpperCase()} · ${Math.max(1, Math.ceil(attachment.sizeBytes / 1024))} KB`).join(' · ') }}</p>
+          </article>
           <article v-for="message in workspace.messages" :key="message.id" :class="['task-message', message.status]">
             <div><strong>{{ message.targetRole === 'reviewer' ? 'Reviewer' : 'Developer' }}</strong><span>{{ message.status }}</span></div>
             <p>{{ message.text }}</p>
+            <small v-if="attachmentSummary(message.id)" class="task-message-attachments">Images · {{ attachmentSummary(message.id) }}</small>
             <small v-if="message.errorMessage">{{ message.errorMessage }}</small>
           </article>
         </div>
@@ -279,7 +294,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 .task-page{max-width:none;padding-bottom:calc(48px + var(--task-action-bar-h, 0px))}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:var(--text-body);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
 .runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:var(--yellow-ink);font-size:11px}.runtime-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
 .repository-warning{display:grid;gap:4px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.repository-warning strong{color:var(--yellow-ink);font-size:11px}.repository-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
-.conversation-panel{margin-top:14px;padding-bottom:14px}.conversation-panel>.panel-header{align-items:flex-start}.conversation-panel small{display:block;margin-top:4px;color:var(--faint);font-size:9px}.delivery-mode{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px}.delivery-mode select{padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:var(--input-bg);color:var(--text)}.message-list{display:grid;gap:6px;max-height:210px;overflow:auto;padding:10px 14px;border-bottom:1px solid var(--border)}.task-message{padding:8px 10px;border:1px solid var(--border-soft);border-radius:5px;background:var(--block-bg)}.task-message>div{display:flex;justify-content:space-between;gap:8px}.task-message strong{font-size:10px}.task-message span{color:var(--faint);font-size:9px;text-transform:capitalize}.task-message p{margin:5px 0 0;color:var(--text-body);font-size:10px;white-space:pre-wrap}.task-message small{color:var(--red-ink)}.task-message.failed{border-color:rgba(255,100,100,.35)}.composer-note{margin:10px 14px 0;color:var(--yellow-ink);font-size:10px}.conversation-panel>.task-composer{padding:12px 14px 0}
+.conversation-panel{margin-top:14px;padding-bottom:14px}.conversation-panel>.panel-header{align-items:flex-start}.conversation-panel small{display:block;margin-top:4px;color:var(--faint);font-size:9px}.delivery-mode{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px}.delivery-mode select{padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:var(--input-bg);color:var(--text)}.message-list{display:grid;gap:6px;max-height:210px;overflow:auto;padding:10px 14px;border-bottom:1px solid var(--border)}.task-message{padding:8px 10px;border:1px solid var(--border-soft);border-radius:5px;background:var(--block-bg)}.task-message>div{display:flex;justify-content:space-between;gap:8px}.task-message strong{font-size:10px}.task-message span{color:var(--faint);font-size:9px;text-transform:capitalize}.task-message p{margin:5px 0 0;color:var(--text-body);font-size:10px;white-space:pre-wrap}.task-message small{color:var(--red-ink)}.task-message .task-message-attachments{color:var(--faint)}.task-message.failed{border-color:rgba(255,100,100,.35)}.attachment-history-entry{border-style:dashed}.composer-note{margin:10px 14px 0;color:var(--yellow-ink);font-size:10px}.conversation-panel>.task-composer{padding:12px 14px 0}
 @media(max-width:900px){.run-workspace{grid-template-columns:1fr}.context-strip{grid-template-columns:repeat(2,1fr);gap:10px}.context-strip>div{border:0;padding:0}}
 
 .diff-drawer-root{position:fixed;inset:0;z-index:60;visibility:hidden;pointer-events:none;transition:visibility 0s .26s}

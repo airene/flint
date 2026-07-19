@@ -40,7 +40,10 @@ describe("completed interactive leaf integration", () => {
     expect(taskView).toContain('workspace.sendMessage');
     expect(taskView).toContain('workspace.decideApproval');
     expect(workspace).toContain('apiEndpoints.listMessages');
+    expect(workspace).toContain('apiEndpoints.listAttachments');
     expect(workspace).toContain('apiEndpoints.listApprovals');
+    expect(taskView).toContain('initialAttachments');
+    expect(taskView).toContain('attachmentSummary(message.id)');
     expect(activityPanel).toContain('import ApprovalCard');
     expect(activityPanel).toContain('approvalErrors[approval.id]');
     expect(taskHeader).not.toContain('continuationPrompt');
