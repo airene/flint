@@ -56,6 +56,86 @@ describe("CLI argument arrays", () => {
     ]);
   });
 
+  test("places controlled absolute image paths correctly for all Codex role and phase combinations", () => {
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "developer_initial",
+      undefined,
+      undefined,
+      ["/tmp/input-one.png", "/tmp/input-two.jpg"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "--json",
+      "--sandbox",
+      "workspace-write",
+      "--image",
+      "/tmp/input-one.png",
+      "--image",
+      "/tmp/input-two.jpg",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "developer_followup",
+      "developer-session",
+      undefined,
+      ["/tmp/developer-followup.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "resume",
+      "developer-session",
+      "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "--image",
+      "/tmp/developer-followup.png",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "reviewer",
+      undefined,
+      "/tmp/review-schema.json",
+      ["/tmp/review-initial.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "--json",
+      "--sandbox",
+      "read-only",
+      "--output-schema",
+      "/tmp/review-schema.json",
+      "--image",
+      "/tmp/review-initial.png",
+      "-",
+    ]);
+
+    expect(buildCodexArgs(
+      "/opt/codex",
+      "reviewer_followup",
+      "review-session",
+      "/tmp/review-schema.json",
+      ["/tmp/review.png"],
+    )).toEqual([
+      "/opt/codex",
+      "exec",
+      "resume",
+      "review-session",
+      "--json",
+      "-c",
+      'sandbox_mode="read-only"',
+      "--output-schema",
+      "/tmp/review-schema.json",
+      "--image",
+      "/tmp/review.png",
+      "-",
+    ]);
+  });
+
   test("builds Codex reviewer invocation with read-only schema output", () => {
     expect(buildCodexArgs("/opt/codex", "reviewer", undefined, "/tmp/review-schema.json")).toEqual([
       "/opt/codex",

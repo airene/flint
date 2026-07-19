@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentEvent, AgentStartRequest } from "@local-pair-review/shared";
+import type { AgentEvent } from "@local-pair-review/shared";
+import {
+  InvalidAgentControlRequestError,
+  UnsupportedProviderCapabilityError,
+  type AgentControlStartRequest,
+} from "../../apps/server/src/drivers/agent-control";
 import { checkCodexAvailability, checkGitAvailability } from "../../apps/server/src/drivers/cli-availability";
 import { resolveCodexModel } from "../../apps/server/src/drivers/cli-model";
 import { ClaudeCliDriver } from "../../apps/server/src/drivers/claude-cli.driver";
@@ -23,7 +28,7 @@ async function workspace(): Promise<string> {
   return directory;
 }
 
-function request(workingDirectory: string, overrides: Partial<AgentStartRequest> = {}): AgentStartRequest {
+function request(workingDirectory: string, overrides: Partial<AgentControlStartRequest> = {}): AgentControlStartRequest {
   return {
     runId: "run-fake-1",
     taskId: "task-fake-1",
@@ -396,6 +401,54 @@ describe("Codex driver", () => {
     expect(invocation.prompt).toBe("Perform the fake task without contacting a model.");
   });
 
+  test("passes controlled images to initial and resumed Codex invocations", async () => {
+    const directory = await workspace();
+    const imageOne = join(directory, "one.png");
+    const imageTwo = join(directory, "two.jpg");
+    const initialLog = join(directory, "initial.json");
+    const resumeLog = join(directory, "resume.json");
+    await Bun.write(imageOne, "fake image one");
+    await Bun.write(imageTwo, "fake image two");
+
+    const initial = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: initialLog }),
+    });
+    await initial.start(request(directory, { imagePaths: [imageOne, imageTwo] }), async () => {});
+
+    const resumed = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("resume", { FAKE_CLI_INVOCATION_LOG: resumeLog }),
+    });
+    await resumed.start(request(directory, {
+      runType: "reviewer_followup",
+      sessionId: "thread-exact-resume",
+      imagePaths: [imageOne],
+    }), async () => {});
+
+    expect(JSON.parse(await readFile(initialLog, "utf8")).args).toEqual([
+      "exec", "--json", "--sandbox", "workspace-write",
+      "--image", imageOne, "--image", imageTwo, "-",
+    ]);
+    expect(JSON.parse(await readFile(resumeLog, "utf8")).args).toEqual([
+      "exec", "resume", "thread-exact-resume", "--json", "-c", 'sandbox_mode="read-only"',
+      "--image", imageOne, "-",
+    ]);
+  });
+
+  test("rejects non-absolute Codex image paths before process start", async () => {
+    const directory = await workspace();
+    const invocationLog = join(directory, "must-not-exist.json");
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: invocationLog }),
+    });
+
+    await expect(driver.start(request(directory, { imagePaths: ["relative.png"] }), async () => {}))
+      .rejects.toBeInstanceOf(InvalidAgentControlRequestError);
+    expect(await Bun.file(invocationLog).exists()).toBe(false);
+  });
+
   test("continues after invalid and unknown lines and keeps stderr noise out of the event stream", async () => {
     const directory = await workspace();
     const invalidEvents: AgentEvent[] = [];
@@ -445,6 +498,31 @@ describe("Codex driver", () => {
     await driver.cancel("run-slow");
 
     expect(await settled).toMatchObject({ kind: "cancelled" });
+  });
+
+  test("acknowledges interruption only after the process reaches a terminal state", async () => {
+    const directory = await workspace();
+    const events: AgentEvent[] = [];
+    const driver = new CodexCliDriver({
+      executablePath: codexFixture,
+      environment: environment("slow"),
+      cancellationGraceMs: 25,
+    });
+    const running = driver.start(request(directory, { runId: "run-interrupt" }), async (event) => {
+      events.push(event);
+    });
+    const settled = running.then(() => undefined, (error: unknown) => error);
+    while (!events.some((event) => event.type === "session_started")) await Bun.sleep(5);
+
+    expect(await driver.interrupt("run-interrupt")).toEqual({
+      runId: "run-interrupt",
+      status: "terminated",
+    });
+    expect(await settled).toMatchObject({ kind: "cancelled" });
+    expect(await driver.interrupt("missing-run")).toEqual({
+      runId: "missing-run",
+      status: "not_running",
+    });
   });
 
   test("terminates descendants when cancelling a process tree", async () => {
@@ -538,6 +616,29 @@ describe("Codex driver", () => {
 });
 
 describe("Claude driver", () => {
+  test("rejects every image-bearing non-interactive invocation before process start", async () => {
+    const directory = await workspace();
+    const image = join(directory, "input.png");
+    await Bun.write(image, "fake image");
+
+    for (const [runType, sessionId] of [
+      ["developer_initial", undefined],
+      ["developer_followup", "developer-session"],
+      ["reviewer", undefined],
+      ["reviewer_followup", "reviewer-session"],
+    ] as const) {
+      const invocationLog = join(directory, `${runType}-${sessionId ?? "initial"}.json`);
+      const driver = new ClaudeCliDriver({
+        executablePath: claudeFixture,
+        environment: environment("normal", { FAKE_CLI_INVOCATION_LOG: invocationLog }),
+      });
+
+      await expect(driver.start(request(directory, { runType, sessionId, imagePaths: [image] }), async () => {}))
+        .rejects.toBeInstanceOf(UnsupportedProviderCapabilityError);
+      expect(await Bun.file(invocationLog).exists()).toBe(false);
+    }
+  });
+
   test("the E2E Fake Claude scenario returns its structured finding", async () => {
     const directory = await workspace();
     const driver = new ClaudeCliDriver({ executablePath: claudeFixture, environment: environment("e2e") });

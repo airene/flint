@@ -3,6 +3,16 @@ import { createCliEnvironment } from "../utils/process-environment";
 import { createAgentEvent } from "../utils/agent-event";
 import { AgentProcessError, ProcessSupervisor } from "../utils/process-supervisor";
 import type { ParsedAgentLine } from "./parser-types";
+import {
+  UnsupportedProviderCapabilityError,
+  imageCapability,
+  validateAgentControlStart,
+  type AgentControl,
+  type AgentControlStartRequest,
+  type InterruptAcknowledgement,
+  type ProviderCapability,
+} from "./agent-control";
+import type { ApprovalDecision, Provider, ProviderCapabilities } from "@local-pair-review/shared";
 
 export interface StreamingDriverOptions {
   executablePath: string;
@@ -38,7 +48,10 @@ async function readLines(
   if (buffered) await onLine(buffered.endsWith("\r") ? buffered.slice(0, -1) : buffered);
 }
 
-export abstract class StreamingCliDriver {
+export abstract class StreamingCliDriver implements AgentControl {
+  abstract readonly provider: Provider;
+  abstract readonly capabilities: ProviderCapabilities;
+
   protected executablePath: string;
   protected readonly environment: Readonly<Record<string, string | undefined>>;
   protected readonly availabilityWorkingDirectory: string;
@@ -55,16 +68,17 @@ export abstract class StreamingCliDriver {
     this.executablePath = executablePath;
   }
 
-  protected abstract arguments(request: AgentStartRequest): string[];
+  protected abstract arguments(request: AgentControlStartRequest): string[];
   protected abstract parse(line: string, request: AgentStartRequest): ParsedAgentLine;
 
   async run(
-    request: AgentStartRequest,
+    request: AgentControlStartRequest,
     emit: (event: AgentEvent) => Promise<void>,
   ): Promise<AgentStartResult> {
     if (request.signal?.aborted) {
       throw new AgentProcessError("cancelled", "Agent run was cancelled before process start.");
     }
+    validateAgentControlStart(this.provider, this.capabilities, request);
     const args = this.arguments(request);
     let process: Bun.PipedSubprocess;
     try {
@@ -150,6 +164,27 @@ export abstract class StreamingCliDriver {
 
   async cancel(runId: string): Promise<void> {
     await this.supervisor.cancel(runId);
+  }
+
+  imageCapability(request: AgentStartRequest): ProviderCapability {
+    return imageCapability(request);
+  }
+
+  async interrupt(runId: string): Promise<InterruptAcknowledgement> {
+    if (!this.capabilities.interrupt) {
+      throw new UnsupportedProviderCapabilityError(this.provider, "interrupt");
+    }
+    const wasRunning = this.supervisor.isActive(runId);
+    await this.cancel(runId);
+    return { runId, status: wasRunning ? "terminated" : "not_running" };
+  }
+
+  async sendLiveMessage(_runId: string, _message: string): Promise<void> {
+    throw new UnsupportedProviderCapabilityError(this.provider, "liveMessages");
+  }
+
+  async resolveApproval(_runId: string, _approvalId: string, _decision: ApprovalDecision): Promise<void> {
+    throw new UnsupportedProviderCapabilityError(this.provider, "approvals");
   }
 
   protected abstract providerSource(): "codex" | "claude";

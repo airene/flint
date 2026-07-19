@@ -4,9 +4,19 @@ import { checkCodexAvailability } from "./cli-availability";
 import { parseCodexEventLine } from "./codex-event.parser";
 import { StreamingCliDriver } from "./streaming-cli.driver";
 import type { StreamingDriverOptions } from "./streaming-cli.driver";
+import type { AgentControlStartRequest } from "./agent-control";
 
 export class CodexCliDriver extends StreamingCliDriver implements AgentDriver {
   readonly provider = "codex" as const;
+  readonly capabilities = {
+    developerInitialImage: true,
+    developerResumeImage: true,
+    reviewerInitialImage: true,
+    reviewerResumeImage: true,
+    liveMessages: false,
+    interrupt: true,
+    approvals: false,
+  } as const;
 
   private readonly reviewSchemaPath?: string;
 
@@ -19,12 +29,18 @@ export class CodexCliDriver extends StreamingCliDriver implements AgentDriver {
     return checkCodexAvailability(this.executablePath, this.environment, this.availabilityWorkingDirectory);
   }
 
-  start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
+  start(request: AgentControlStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
     return this.run(request, emit);
   }
 
-  protected arguments(request: AgentStartRequest): string[] {
-    return buildCodexArgs(this.executablePath, request.runType, request.sessionId, this.reviewSchemaPath);
+  protected arguments(request: AgentControlStartRequest): string[] {
+    return buildCodexArgs(
+      this.executablePath,
+      request.runType,
+      request.sessionId,
+      this.reviewSchemaPath,
+      request.imagePaths,
+    );
   }
 
   protected parse(line: string, request: AgentStartRequest) {
