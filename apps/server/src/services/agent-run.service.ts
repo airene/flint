@@ -8,6 +8,7 @@ import type {
   Provider,
   ReviewParseStatus,
   Task,
+  TaskStatus,
 } from "@local-pair-review/shared";
 import { AgentProcessError } from "../utils/process-supervisor";
 import { redactSensitive } from "../utils/redact";
@@ -37,12 +38,17 @@ export interface TaskRunStatePort {
   /** Must atomically insert the queued Run, check locks, and transition Task. */
   queue(run: AgentRun, options?: { snapshotHash?: string }): Promise<AgentRun>;
   /** Must atomically finish the Run and transition Task to its success state. */
-  succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun>;
+  succeed(input: FinishRunInput & {
+    taskId: string;
+    runType: AgentRunType;
+    taskStatusAtStart: TaskStatus;
+  }): Promise<AgentRun>;
   /** Must atomically finish the Run and apply the spec's Task fallback. */
   fail(input: FinishRunInput & {
     taskId: string;
     runType: AgentRunType;
     sessionId: string | null;
+    taskStatusAtStart: TaskStatus;
   }): Promise<AgentRun>;
 }
 
@@ -71,7 +77,13 @@ interface AgentRunServiceOptions {
 }
 
 function providerFor(task: Task, runType: AgentRunType): Provider {
-  return runType === "reviewer" ? task.reviewerProvider : task.developerProvider;
+  return runType === "reviewer" || runType === "reviewer_followup"
+    ? task.reviewerProvider
+    : task.developerProvider;
+}
+
+function isFollowup(runType: AgentRunType): boolean {
+  return runType === "developer_followup" || runType === "reviewer_followup";
 }
 
 function sessionFromEvent(event: AgentEvent): string | undefined {
@@ -93,6 +105,7 @@ export class AgentRunService {
   private readonly createId: () => string;
   private readonly now: () => string;
   private readonly activeDrivers = new Map<string, AgentDriver>();
+  private readonly activeCompletions = new Map<string, Promise<AgentRun>>();
   private readonly interrupting = new Set<string>();
 
   constructor(options: AgentRunServiceOptions) {
@@ -105,6 +118,9 @@ export class AgentRunService {
   }
 
   async start(input: StartAgentRunInput): Promise<StartedAgentRun> {
+    if (isFollowup(input.runType) && !input.sessionId) {
+      throw new Error(`${input.runType} requires an exact session`);
+    }
     const provider = providerFor(input.task, input.runType);
     const run: AgentRun = {
       id: this.createId(),
@@ -128,7 +144,12 @@ export class AgentRunService {
     const persisted = await this.taskState.queue(run, input.snapshotHash ? { snapshotHash: input.snapshotHash } : {});
     const driver = this.drivers[provider];
     this.activeDrivers.set(run.id, driver);
-    const completion = this.execute(persisted, input, driver);
+    const completion = Promise.resolve().then(() => this.execute(persisted, input, driver));
+    this.activeCompletions.set(run.id, completion);
+    const cleanup = () => {
+      queueMicrotask(() => this.activeCompletions.delete(run.id));
+    };
+    void completion.then(cleanup, cleanup);
     return { run: persisted, completion };
   }
 
@@ -136,10 +157,16 @@ export class AgentRunService {
     await this.activeDrivers.get(runId)?.cancel(runId);
   }
 
-  async interrupt(runId: string): Promise<void> {
-    if (!this.activeDrivers.has(runId)) return;
+  async interrupt(runId: string): Promise<AgentRun | null> {
+    const completion = this.activeCompletions.get(runId);
+    if (!this.activeDrivers.has(runId) || !completion) return null;
     this.interrupting.add(runId);
     await this.activeDrivers.get(runId)?.cancel(runId);
+    return await completion;
+  }
+
+  async waitForTerminal(runId: string): Promise<AgentRun | null> {
+    return await (this.activeCompletions.get(runId) ?? Promise.resolve(null));
   }
 
   private async execute(run: AgentRun, input: StartAgentRunInput, driver: AgentDriver): Promise<AgentRun> {
@@ -177,6 +204,7 @@ export class AgentRunService {
         runId: run.id,
         taskId: run.taskId,
         runType: run.runType,
+        taskStatusAtStart: input.task.status,
         patch,
       });
       try {
@@ -194,6 +222,7 @@ export class AgentRunService {
         taskId: run.taskId,
         runType: run.runType,
         sessionId: capturedSession,
+        taskStatusAtStart: input.task.status,
         patch: {
           status,
           reviewParseStatus: run.reviewParseStatus,
@@ -226,7 +255,9 @@ export class AgentRunService {
       reviewParseStatus: run.reviewParseStatus,
       exitCode: 0,
       finalMessage: redactSensitive(result.finalMessage),
-      structuredOutput: redactSensitive(result.structuredOutput),
+      structuredOutput: run.runType === "reviewer_followup"
+        ? null
+        : redactSensitive(result.structuredOutput),
       errorMessage: null,
       finishedAt: this.now(),
     };

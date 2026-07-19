@@ -22,23 +22,33 @@ export function assertTaskTransition(from: TaskStatus, to: TaskStatus): void {
 }
 
 export function taskStatusForRunStart(status: TaskStatus, runType: AgentRunType): TaskStatus {
+  if (runType === "reviewer_followup") return status;
   const target = runType === "developer_initial"
     ? "developing"
-    : runType === "developer_feedback"
+    : runType === "developer_feedback" || runType === "developer_followup"
       ? "fixing"
       : "reviewing";
   assertTaskTransition(status, target);
   return target;
 }
 
-export function taskStatusForRunSuccess(runType: AgentRunType): TaskStatus {
+export function taskStatusForRunSuccess(
+  runType: AgentRunType,
+  taskStatusAtStart?: TaskStatus,
+): TaskStatus {
+  if (runType === "reviewer_followup") return taskStatusAtStart ?? "waiting_for_human";
   return runType === "reviewer" ? "waiting_for_human" : "ready_for_review";
 }
 
 export function taskStatusForRunFailure(
   runType: AgentRunType,
-  context: { hasDeveloperSession: boolean; workingTreeChanged: boolean },
+  context: {
+    hasDeveloperSession: boolean;
+    workingTreeChanged: boolean;
+    taskStatusAtStart?: TaskStatus;
+  },
 ): TaskStatus {
+  if (runType === "reviewer_followup") return context.taskStatusAtStart ?? "waiting_for_human";
   if (runType !== "developer_initial") return "ready_for_review";
   return context.hasDeveloperSession || context.workingTreeChanged ? "ready_for_review" : "draft";
 }
