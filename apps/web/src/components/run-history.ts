@@ -13,7 +13,9 @@ export interface RunHistoryEntry {
 type ProviderLabel = (provider: Provider) => string;
 
 function roleLabel(run: AgentRun): RunHistoryEntry["roleLabel"] {
-  return run.runType === "reviewer" ? "Reviewer" : "Developer";
+  return run.runType === "reviewer" || run.runType === "reviewer_followup"
+    ? "Reviewer"
+    : "Developer";
 }
 
 function promptSummary(prompt: string): string {

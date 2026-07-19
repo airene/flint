@@ -39,8 +39,12 @@ const DENIED_REVIEW_TOOLS = [
   "NotebookEdit",
 ] as const;
 
-function isReviewer(runType: AgentRunType): boolean {
+function isReviewerRole(runType: AgentRunType): boolean {
   return runType === "reviewer" || runType === "reviewer_followup";
+}
+
+function requiresFormalReviewOutput(runType: AgentRunType): boolean {
+  return runType === "reviewer";
 }
 
 export function buildCodexArgs(
@@ -50,8 +54,8 @@ export function buildCodexArgs(
   reviewSchemaPath?: string,
   imagePaths: readonly string[] = [],
 ): string[] {
-  const sandbox = isReviewer(runType) ? "read-only" : "workspace-write";
-  const schemaArguments = isReviewer(runType) && reviewSchemaPath
+  const sandbox = isReviewerRole(runType) ? "read-only" : "workspace-write";
+  const schemaArguments = requiresFormalReviewOutput(runType) && reviewSchemaPath
     ? ["--output-schema", reviewSchemaPath]
     : [];
   const imageArguments = imagePaths.flatMap((path) => ["--image", path]);
@@ -61,7 +65,7 @@ export function buildCodexArgs(
 }
 
 export function buildClaudeArgs(executable: string, runType: AgentRunType, sessionId?: string): string[] {
-  if (!isReviewer(runType)) {
+  if (!isReviewerRole(runType)) {
     const developerArgs = [
       executable,
       "-p",
@@ -74,6 +78,9 @@ export function buildClaudeArgs(executable: string, runType: AgentRunType, sessi
     if (sessionId) developerArgs.push("--resume", sessionId);
     return developerArgs;
   }
+  const schemaArguments = requiresFormalReviewOutput(runType)
+    ? ["--json-schema", JSON.stringify(reviewJsonSchema)]
+    : [];
   const args = [
     executable,
     "-p",
@@ -83,8 +90,7 @@ export function buildClaudeArgs(executable: string, runType: AgentRunType, sessi
     "--safe-mode",
     "--permission-mode",
     "plan",
-    "--json-schema",
-    JSON.stringify(reviewJsonSchema),
+    ...schemaArguments,
     "--tools",
     ...ALLOWED_REVIEW_TOOLS,
     "--allowedTools",
