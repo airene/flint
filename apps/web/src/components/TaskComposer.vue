@@ -26,6 +26,7 @@ const props = withDefaults(defineProps<{
   uploadImage: UploadImage;
   multiline?: boolean;
   disabled?: boolean;
+  submitting?: boolean;
   imagesEnabled?: boolean;
   imageDisabledReason?: string;
   placeholder?: string;
@@ -34,6 +35,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   multiline: true,
   disabled: false,
+  submitting: false,
   imagesEnabled: true,
   imageDisabledReason: "This provider does not support image attachments for this action.",
   placeholder: undefined,
@@ -47,11 +49,17 @@ const emit = defineEmits<{
 }>();
 
 const attachments = ref<ComposerAttachment[]>([]);
+const submissionLocked = ref(false);
 let nextLocalId = 0;
 
 const readyAttachmentIds = computed(() => attachments.value
   .filter((attachment) => attachment.status === "ready" && attachment.attachmentId)
   .map((attachment) => attachment.attachmentId!));
+const hasBlockedAttachment = computed(() => attachments.value.some((attachment) => attachment.status !== "ready"));
+const interactionDisabled = computed(() => props.disabled || props.submitting || submissionLocked.value);
+const submitDisabled = computed(() => (
+  props.disabled || props.submitting || submissionLocked.value || hasBlockedAttachment.value
+));
 
 function revokePreview(attachment: ComposerAttachment): void {
   if (attachment.previewUrl.startsWith("blob:")) URL.revokeObjectURL(attachment.previewUrl);
@@ -83,7 +91,7 @@ async function upload(attachment: ComposerAttachment, file: File): Promise<void>
 }
 
 function addImages(files: File[]): void {
-  if (!props.imagesEnabled || props.disabled) return;
+  if (!props.imagesEnabled || interactionDisabled.value) return;
   const slots = Math.max(0, 4 - attachments.value.length);
   for (const file of files.slice(0, slots)) {
     if (!file.type.startsWith("image/")) continue;
@@ -111,18 +119,27 @@ function onPaste(event: ClipboardEvent): void {
 
 function retry(localId: string): void {
   const attachment = attachments.value.find((candidate) => candidate.localId === localId);
-  if (!attachment?.file || props.disabled || !props.imagesEnabled) return;
+  if (!attachment?.file || interactionDisabled.value || !props.imagesEnabled) return;
   void upload(attachment, attachment.file);
 }
 
 function submit(): void {
-  if (props.disabled || attachments.value.some((attachment) => attachment.status === "uploading")) return;
+  if (submitDisabled.value) return;
+  submissionLocked.value = true;
   emit("submit", { text: props.modelValue, attachmentIds: readyAttachmentIds.value });
+  queueMicrotask(() => {
+    // Consumers without a persistent submitting prop still receive a same-tick
+    // duplicate-click fence. TaskView holds the lock for the full request.
+    if (!props.submitting) submissionLocked.value = false;
+  });
 }
 
 watch(() => props.projectId, () => {
   for (const attachment of attachments.value) revokePreview(attachment);
   attachments.value = [];
+});
+watch(() => props.submitting, (submitting, wasSubmitting) => {
+  if (wasSubmitting && !submitting) submissionLocked.value = false;
 });
 onBeforeUnmount(() => { for (const attachment of attachments.value) revokePreview(attachment); });
 </script>
@@ -131,14 +148,14 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
   <section class="task-composer">
     <FileMentionInput
       :model-value="modelValue" :project-id="projectId" :multiline="multiline" :rows="rows"
-      :disabled="disabled" :placeholder="placeholder" :aria-label="ariaLabel" @update:model-value="emit('update:modelValue', $event)"
+      :disabled="interactionDisabled" :placeholder="placeholder" :aria-label="ariaLabel" @update:model-value="emit('update:modelValue', $event)"
       @paste="onPaste" @submit="submit"
     />
     <p v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason }}</p>
-    <AttachmentStrip :attachments="attachments" :disabled="disabled" @remove="remove" @retry="retry" />
+    <AttachmentStrip :attachments="attachments" :disabled="interactionDisabled" @remove="remove" @retry="retry" />
     <div class="composer-actions">
       <span class="attachment-count">{{ attachments.length }}/4 images</span>
-      <button type="button" class="button-primary" :disabled="disabled || attachments.some((attachment) => attachment.status === 'uploading')" @click="submit">Send</button>
+      <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? 'Sending…' : 'Send' }}</button>
     </div>
   </section>
 </template>

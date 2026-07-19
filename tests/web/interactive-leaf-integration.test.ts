@@ -46,4 +46,9 @@ describe("completed interactive leaf integration", () => {
     expect(taskHeader).not.toContain('continuationPrompt');
     expect(taskHeader).not.toContain('import FileMentionInput');
   });
+
+  test("reflects the guarded message action in the Task composer", () => {
+    expect(taskView).toContain(':submitting="workspace.sendingMessage"');
+    expect(workspace).toContain("sendingMessage");
+  });
 });
