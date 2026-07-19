@@ -114,6 +114,9 @@ dist
 # TernJS port file
 .tern-port
 
+# JetBrains IDE project files
+.idea/
+
 # Local subagent-driven development ledger
 .superpowers/
 
