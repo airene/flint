@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { activeFileMention, replaceFileMention } from "../../apps/web/src/components/file-mention";
 
+const fileMentionInput = await Bun.file(new URL("../../apps/web/src/components/FileMentionInput.vue", import.meta.url)).text();
+
 describe("file mention helper", () => {
   test("finds triggers only at text boundaries and uses text before the caret as the query", () => {
     expect(activeFileMention("@src/app", 0)).toBeNull();
@@ -39,5 +41,11 @@ describe("file mention helper", () => {
       value: 'Read @"docs/design notes.md" next',
       caret: 29,
     });
+  });
+
+  test("forwards native paste events so a parent composer can process images without changing text paste", () => {
+    expect(fileMentionInput).toContain("paste: [event: ClipboardEvent];");
+    expect(fileMentionInput).toContain('emit("paste", event);');
+    expect(fileMentionInput.match(/@paste="onPaste"/g)).toHaveLength(2);
   });
 });

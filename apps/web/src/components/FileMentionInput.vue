@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   submit: [];
+  paste: [event: ClipboardEvent];
 }>();
 
 const control = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
@@ -100,6 +101,10 @@ function onInput(event: Event): void {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement;
   emit("update:modelValue", target.value);
   if (!composing) refreshMention(target.value, target.selectionStart ?? target.value.length);
+}
+
+function onPaste(event: ClipboardEvent): void {
+  emit("paste", event);
 }
 
 function selectFile(path: string): void {
@@ -187,7 +192,7 @@ onBeforeUnmount(() => {
       :rows="rows" :disabled="disabled" :placeholder="placeholder" :aria-label="ariaLabel"
       aria-autocomplete="list" :aria-expanded="open" :aria-controls="open ? listboxId : undefined"
       :aria-activedescendant="open && files.length ? `${listboxId}-${selectedIndex}` : undefined"
-      @input="onInput" @keydown="onKeydown" @keyup="onCaretKeyup" @click="refreshMention()" @blur="onBlur"
+      @input="onInput" @paste="onPaste" @keydown="onKeydown" @keyup="onCaretKeyup" @click="refreshMention()" @blur="onBlur"
       @compositionstart="onCompositionStart" @compositionend="onCompositionEnd"
     />
     <input
@@ -196,7 +201,7 @@ onBeforeUnmount(() => {
       :disabled="disabled" :placeholder="placeholder" :aria-label="ariaLabel"
       aria-autocomplete="list" :aria-expanded="open" :aria-controls="open ? listboxId : undefined"
       :aria-activedescendant="open && files.length ? `${listboxId}-${selectedIndex}` : undefined"
-      @input="onInput" @keydown="onKeydown" @keyup="onCaretKeyup" @click="refreshMention()" @blur="onBlur"
+      @input="onInput" @paste="onPaste" @keydown="onKeydown" @keyup="onCaretKeyup" @click="refreshMention()" @blur="onBlur"
       @compositionstart="onCompositionStart" @compositionend="onCompositionEnd"
     >
     <div v-if="open" :id="listboxId" class="file-mention-menu" role="listbox" aria-label="Repository files">
