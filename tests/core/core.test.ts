@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { AgentRun, AgentRunType, Task } from "@local-pair-review/shared";
-import { DatabasePorts } from "../../apps/server/src/api/database-ports";
+import { DatabasePorts, StaleRunOwnershipError } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
 import { ProjectService, ConfirmationRequiredError, DuplicateProjectError } from "../../apps/server/src/services/project.service";
 import { AppSettingsService } from "../../apps/server/src/services/app-settings.service";
@@ -135,6 +135,74 @@ describe("projects", () => {
     } finally {
       primary.close();
       concurrent.close();
+    }
+  });
+});
+
+describe("run ownership", () => {
+  test("fences an expired owner, terminates its process group, and rejects its late terminal write", async () => {
+    const root = repository();
+    const databasePath = join(temporaryDirectory(), "run-owner.db");
+    const primary = createDatabase(databasePath);
+    const takeover = createDatabase(databasePath);
+    const projects = new ProjectService(primary);
+    const taskService = new TaskService(primary);
+    const project = await projects.add(root);
+    const task = await taskService.create(project.id, { title: "Lease", originalPrompt: "Lease" });
+    let clock = "2026-07-19T00:00:00.000Z";
+    const oldOwner = new DatabasePorts(primary, undefined, {
+      instanceId: "instance-old",
+      leaseDurationMs: 5_000,
+      now: () => clock,
+    });
+    const newOwner = new DatabasePorts(takeover, undefined, {
+      instanceId: "instance-new",
+      leaseDurationMs: 5_000,
+      now: () => clock,
+    });
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1_000)"], {
+      detached: true,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+
+    try {
+      oldOwner.acquireApplicationLease(101);
+      await oldOwner.queue(queuedRun(task, "developer_initial", "run-owned"));
+      await oldOwner.markRunning("run-owned", child.pid);
+
+      clock = "2026-07-19T00:00:06.000Z";
+      newOwner.acquireApplicationLease(202);
+      const recovered = await newOwner.recoverInterrupted();
+
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]).toMatchObject({ id: "run-owned", status: "interrupted", processId: null });
+      expect(await Promise.race([
+        child.exited.then(() => true),
+        Bun.sleep(1_000).then(() => false),
+      ])).toBe(true);
+      await expect(oldOwner.succeed({
+        runId: "run-owned",
+        taskId: task.id,
+        runType: "developer_initial",
+        patch: {
+          status: "completed",
+          reviewParseStatus: null,
+          exitCode: 0,
+          finalMessage: "late result",
+          structuredOutput: null,
+          errorMessage: null,
+          finishedAt: clock,
+        },
+      })).rejects.toBeInstanceOf(StaleRunOwnershipError);
+      expect(await newOwner.getRun("run-owned")).toMatchObject({ status: "interrupted", finalMessage: null });
+      expect((await taskService.get(task.id))?.status).toBe("draft");
+    } finally {
+      try { child.kill("SIGKILL"); } catch { /* already stopped */ }
+      newOwner.releaseApplicationLease();
+      takeover.close();
+      primary.close();
     }
   });
 });

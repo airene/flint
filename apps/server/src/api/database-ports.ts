@@ -15,10 +15,12 @@ import type { AppDatabase } from "../db/database";
 import {
   agentEvents,
   agentRuns,
+  applicationLeases,
   feedbackDeliveries,
   feedbackDrafts,
   reviewFindings,
   reviewRunSnapshots,
+  runLeases,
   tasks,
 } from "../db/schema";
 import type { AgentRunPersistencePort, FinishRunInput, TaskRunStatePort } from "../services/agent-run.service";
@@ -33,8 +35,30 @@ import {
   taskStatusForRunStart,
   taskStatusForRunSuccess,
 } from "../services/task-run-state";
+import { stopProcessTreeByPid } from "../utils/process-supervisor";
 
 const activeStatuses = ["queued", "running"] as const;
+const applicationLeaseSlot = 1;
+
+export class ApplicationAlreadyRunningError extends Error {
+  constructor(readonly ownerProcessId: number) {
+    super(`Another Flint instance (PID ${ownerProcessId}) owns this database.`);
+    this.name = "ApplicationAlreadyRunningError";
+  }
+}
+
+export class StaleRunOwnershipError extends Error {
+  constructor(readonly runId: string) {
+    super(`Run ${runId} is no longer owned by this Flint instance.`);
+    this.name = "StaleRunOwnershipError";
+  }
+}
+
+export interface DatabasePortsOptions {
+  instanceId?: string;
+  leaseDurationMs?: number;
+  now?: () => string;
+}
 
 function rowEvent(row: typeof agentEvents.$inferSelect): AgentEvent {
   const normalized = row.normalizedJson ? JSON.parse(row.normalizedJson) as AgentEvent : null;
@@ -57,16 +81,97 @@ export class DatabasePorts implements
   ReviewPersistencePort,
   FeedbackDeliveryPersistencePort {
   private readonly feedbackLeases = new Map<string, string>();
+  private readonly instanceId: string;
+  private readonly managed: boolean;
+  private readonly leaseDurationMs: number;
+  private readonly now: () => string;
 
   constructor(
     readonly database: AppDatabase,
     private readonly git = new GitService(),
-    private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
+    options: DatabasePortsOptions = {},
+  ) {
+    this.instanceId = options.instanceId ?? randomUUID();
+    this.managed = options.instanceId !== undefined;
+    this.leaseDurationMs = options.leaseDurationMs ?? 5_000;
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  private leaseExpiresAt(now = this.now()): string {
+    return new Date(Date.parse(now) + this.leaseDurationMs).toISOString();
+  }
+
+  private assertApplicationOwner(): void {
+    if (!this.managed) return;
+    const lease = this.database.sqlite.query(
+      "select owner_instance_id as ownerInstanceId from application_leases where slot = 1",
+    ).get() as { ownerInstanceId: string } | null;
+    if (lease?.ownerInstanceId !== this.instanceId) throw new StaleRunOwnershipError("application");
+  }
+
+  private assertRunOwner(runId: string): void {
+    const lease = this.database.sqlite.query(
+      "select owner_instance_id as ownerInstanceId from run_leases where run_id = ?",
+    ).get(runId) as { ownerInstanceId: string } | null;
+    if (lease?.ownerInstanceId === this.instanceId) return;
+    if (!lease && !this.managed) return;
+    throw new StaleRunOwnershipError(runId);
+  }
+
+  acquireApplicationLease(processId = process.pid): void {
+    const now = this.now();
+    this.database.db.transaction((transaction) => {
+      const current = transaction.select().from(applicationLeases)
+        .where(eq(applicationLeases.slot, applicationLeaseSlot)).get();
+      if (current && current.ownerInstanceId !== this.instanceId && current.leaseExpiresAt > now) {
+        throw new ApplicationAlreadyRunningError(current.processId);
+      }
+      if (current) {
+        transaction.update(applicationLeases).set({
+          ownerInstanceId: this.instanceId,
+          processId,
+          leaseExpiresAt: this.leaseExpiresAt(now),
+        }).where(eq(applicationLeases.slot, applicationLeaseSlot)).run();
+      } else {
+        transaction.insert(applicationLeases).values({
+          slot: applicationLeaseSlot,
+          ownerInstanceId: this.instanceId,
+          processId,
+          leaseExpiresAt: this.leaseExpiresAt(now),
+        }).run();
+      }
+    }, { behavior: "immediate" });
+  }
+
+  heartbeatApplicationLease(): boolean {
+    const now = this.now();
+    return this.database.db.transaction((transaction) => {
+      const current = transaction.select().from(applicationLeases)
+        .where(eq(applicationLeases.slot, applicationLeaseSlot)).get();
+      if (current?.ownerInstanceId !== this.instanceId) return false;
+      const leaseExpiresAt = this.leaseExpiresAt(now);
+      transaction.update(applicationLeases).set({ leaseExpiresAt })
+        .where(and(
+          eq(applicationLeases.slot, applicationLeaseSlot),
+          eq(applicationLeases.ownerInstanceId, this.instanceId),
+        )).run();
+      transaction.update(runLeases).set({ leaseExpiresAt })
+        .where(eq(runLeases.ownerInstanceId, this.instanceId)).run();
+      return true;
+    }, { behavior: "immediate" });
+  }
+
+  releaseApplicationLease(): void {
+    this.database.db.delete(applicationLeases).where(and(
+      eq(applicationLeases.slot, applicationLeaseSlot),
+      eq(applicationLeases.ownerInstanceId, this.instanceId),
+    )).run();
+  }
 
   async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
     try {
       return this.database.db.transaction((transaction) => {
+        this.assertApplicationOwner();
         const task = transaction.select().from(tasks).where(eq(tasks.id, run.taskId)).get() as Task | undefined;
         if (!task) throw new NotFoundError("Task");
         if (run.runType === "reviewer" && !options.snapshotHash) {
@@ -81,6 +186,11 @@ export class DatabasePorts implements
         )).get();
         if (activeConflict) throw new ProjectWriteRunConflictError(run.projectId);
         transaction.insert(agentRuns).values(run).run();
+        transaction.insert(runLeases).values({
+          runId: run.id,
+          ownerInstanceId: this.instanceId,
+          leaseExpiresAt: this.leaseExpiresAt(),
+        }).run();
         if (run.runType === "reviewer" && options.snapshotHash) {
           transaction.insert(reviewRunSnapshots).values({
             runId: run.id,
@@ -105,13 +215,30 @@ export class DatabasePorts implements
   }
 
   async markRunning(runId: string, processId: number): Promise<void> {
-    await this.database.db.update(agentRuns).set({ status: "running", processId, startedAt: this.now() })
-      .where(and(eq(agentRuns.id, runId), eq(agentRuns.status, "queued"))).run();
+    this.database.db.transaction((transaction) => {
+      this.assertApplicationOwner();
+      this.assertRunOwner(runId);
+      const run = transaction.select({ status: agentRuns.status }).from(agentRuns)
+        .where(eq(agentRuns.id, runId)).get();
+      if (run?.status !== "queued") throw new StaleRunOwnershipError(runId);
+      transaction.update(agentRuns).set({ status: "running", processId, startedAt: this.now() })
+        .where(and(eq(agentRuns.id, runId), eq(agentRuns.status, "queued"))).run();
+    }, { behavior: "immediate" });
   }
 
   async recordSession(runId: string, taskId: string, runType: AgentRunType, sessionId: string): Promise<void> {
     this.database.db.transaction((transaction) => {
-      transaction.update(agentRuns).set({ externalSessionId: sessionId }).where(eq(agentRuns.id, runId)).run();
+      this.assertApplicationOwner();
+      this.assertRunOwner(runId);
+      const run = transaction.select({ status: agentRuns.status }).from(agentRuns)
+        .where(eq(agentRuns.id, runId)).get();
+      if (!run || !activeStatuses.includes(run.status as typeof activeStatuses[number])) {
+        throw new StaleRunOwnershipError(runId);
+      }
+      transaction.update(agentRuns).set({ externalSessionId: sessionId }).where(and(
+        eq(agentRuns.id, runId),
+        inArray(agentRuns.status, [...activeStatuses]),
+      )).run();
       transaction.update(tasks).set({
         ...(runType === "reviewer" ? { reviewerSessionId: sessionId } : { developerSessionId: sessionId }),
         updatedAt: this.now(),
@@ -143,8 +270,22 @@ export class DatabasePorts implements
 
   private finish(input: FinishRunInput & { taskId: string }, taskStatus: TaskStatus): AgentRun {
     return this.database.db.transaction((transaction) => {
-      transaction.update(agentRuns).set({ ...input.patch, processId: null }).where(eq(agentRuns.id, input.runId)).run();
+      this.assertApplicationOwner();
+      this.assertRunOwner(input.runId);
+      const current = transaction.select({ status: agentRuns.status }).from(agentRuns)
+        .where(eq(agentRuns.id, input.runId)).get();
+      if (!current || !activeStatuses.includes(current.status as typeof activeStatuses[number])) {
+        throw new StaleRunOwnershipError(input.runId);
+      }
+      transaction.update(agentRuns).set({ ...input.patch, processId: null }).where(and(
+        eq(agentRuns.id, input.runId),
+        inArray(agentRuns.status, [...activeStatuses]),
+      )).run();
       transaction.update(tasks).set({ status: taskStatus, updatedAt: this.now() }).where(eq(tasks.id, input.taskId)).run();
+      transaction.delete(runLeases).where(and(
+        eq(runLeases.runId, input.runId),
+        eq(runLeases.ownerInstanceId, this.instanceId),
+      )).run();
       const run = transaction.select().from(agentRuns).where(eq(agentRuns.id, input.runId)).get();
       if (!run) throw new NotFoundError("Run");
       return run as AgentRun;
@@ -353,6 +494,9 @@ export class DatabasePorts implements
       : activeStatuses.includes(run.status as typeof activeStatuses[number]));
     const recovered: AgentRun[] = [];
     for (const run of candidates) {
+      const expectedLease = await this.database.db.select().from(runLeases)
+        .where(eq(runLeases.runId, run.id)).get();
+      if (run.processId) await stopProcessTreeByPid(run.processId);
       const task = await this.getTask(run.taskId);
       if (!task) continue;
       const hasDeveloperSession = Boolean(run.externalSessionId || task.developerSessionId);
@@ -367,12 +511,21 @@ export class DatabasePorts implements
       const target = taskStatusForRunFailure(run.runType, { hasDeveloperSession, workingTreeChanged });
       const finishedAt = this.now();
       const interrupted = this.database.db.transaction((transaction) => {
+        this.assertApplicationOwner();
+        const currentRun = transaction.select().from(agentRuns).where(eq(agentRuns.id, run.id)).get();
+        if (!currentRun || !["queued", "running", "cancelled"].includes(currentRun.status)) return null;
+        const currentLease = transaction.select().from(runLeases).where(eq(runLeases.runId, run.id)).get();
+        if (currentLease?.ownerInstanceId !== expectedLease?.ownerInstanceId) return null;
         transaction.update(agentRuns).set({ status: "interrupted", processId: null, finishedAt })
-          .where(eq(agentRuns.id, run.id)).run();
+          .where(and(
+            eq(agentRuns.id, run.id),
+            inArray(agentRuns.status, ["queued", "running", "cancelled"]),
+          )).run();
+        transaction.delete(runLeases).where(eq(runLeases.runId, run.id)).run();
         transaction.update(tasks).set({ status: target, updatedAt: finishedAt }).where(eq(tasks.id, run.taskId)).run();
-        return { ...run, status: "interrupted" as const, processId: null, finishedAt };
+        return { ...currentRun, status: "interrupted" as const, processId: null, finishedAt } as AgentRun;
       }, { behavior: "immediate" });
-      recovered.push(interrupted);
+      if (interrupted) recovered.push(interrupted);
     }
     return recovered;
   }

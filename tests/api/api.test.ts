@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentEvent, AgentRun, ReviewFinding, Task } from "@local-pair-review/shared";
 import { createApplication } from "../../apps/server/src/api/application";
+import { ApplicationAlreadyRunningError } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
 import { agentEvents, agentRuns, projects, tasks } from "../../apps/server/src/db/schema";
 import { createServer, type LocalPairReviewServer } from "../../apps/server/src/server";
@@ -79,6 +80,57 @@ afterEach(async () => {
 });
 
 describe("local server API assembly", () => {
+  test("rejects a second application on the same database before it recovers active runs", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-single-instance-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const databasePath = join(dataDirectory, "app.sqlite");
+    const options = {
+      databasePath,
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    };
+    const first = await createApplication(options);
+
+    try {
+      const database = createDatabase(databasePath);
+      const timestamp = "2026-07-19T00:00:00.000Z";
+      const baseCommit = new TextDecoder().decode(
+        Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: rootPath }).stdout,
+      ).trim();
+      database.db.insert(projects).values({
+        id: "project-owned", name: "owned", rootPath,
+        defaultDeveloper: "codex", defaultReviewer: "claude",
+        createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
+      }).run();
+      database.db.insert(tasks).values({
+        id: "task-owned", projectId: "project-owned", title: "owned", originalPrompt: "owned",
+        workingDirectory: rootPath, baseCommit, latestSnapshotHash: null, status: "developing",
+        developerSessionId: null, reviewerSessionId: null,
+        createdAt: timestamp, updatedAt: timestamp, completedAt: null,
+      }).run();
+      database.db.insert(agentRuns).values({
+        id: "run-owned", taskId: "task-owned", projectId: "project-owned", provider: "codex",
+        runType: "developer_initial", status: "running", reviewParseStatus: null,
+        externalSessionId: null, processId: null, exitCode: null, prompt: "owned",
+        finalMessage: null, structuredOutput: null, errorMessage: null, startedAt: timestamp, finishedAt: null,
+      }).run();
+      database.close();
+
+      await expect(createApplication(options)).rejects.toBeInstanceOf(ApplicationAlreadyRunningError);
+      const inspection = createDatabase(databasePath);
+      try {
+        expect(inspection.db.select().from(agentRuns).all().find((run) => run.id === "run-owned")?.status).toBe("running");
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      await first.shutdown();
+    }
+  });
+
   test("persists absolute CLI executable overrides and restores or resets them across restarts", async () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-settings-"));
     cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
