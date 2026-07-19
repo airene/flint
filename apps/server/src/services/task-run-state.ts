@@ -1,5 +1,11 @@
 import type { AgentRunType, TaskStatus } from "@local-pair-review/shared";
 
+export type TaskStatusPolicy = "transition" | "preserve_current";
+
+export function taskStatusPolicyForRun(runType: AgentRunType): TaskStatusPolicy {
+  return runType === "reviewer_followup" ? "preserve_current" : "transition";
+}
+
 export class InvalidTaskTransitionError extends Error {
   constructor(from: TaskStatus, to: TaskStatus) {
     super(`Cannot transition task from ${from} to ${to}`);
@@ -34,9 +40,10 @@ export function taskStatusForRunStart(status: TaskStatus, runType: AgentRunType)
 
 export function taskStatusForRunSuccess(
   runType: AgentRunType,
-  taskStatusAtStart?: TaskStatus,
 ): TaskStatus {
-  if (runType === "reviewer_followup") return taskStatusAtStart ?? "waiting_for_human";
+  if (runType === "reviewer_followup") {
+    throw new Error("Reviewer follow-up terminal persistence must preserve current Task status");
+  }
   return runType === "reviewer" ? "waiting_for_human" : "ready_for_review";
 }
 
@@ -45,10 +52,11 @@ export function taskStatusForRunFailure(
   context: {
     hasDeveloperSession: boolean;
     workingTreeChanged: boolean;
-    taskStatusAtStart?: TaskStatus;
   },
 ): TaskStatus {
-  if (runType === "reviewer_followup") return context.taskStatusAtStart ?? "waiting_for_human";
+  if (runType === "reviewer_followup") {
+    throw new Error("Reviewer follow-up terminal persistence must preserve current Task status");
+  }
   if (runType !== "developer_initial") return "ready_for_review";
   return context.hasDeveloperSession || context.workingTreeChanged ? "ready_for_review" : "draft";
 }

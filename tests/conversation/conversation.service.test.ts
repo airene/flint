@@ -10,9 +10,11 @@ import type {
 import {
   ConversationService,
   type ConversationAgentRunPort,
+  type ConversationDeliveryBatch,
   type ConversationPersistencePort,
-  type MessageTransitionPatch,
   type QueueTaskMessageInput,
+  type ReserveDeliveryBatchInput,
+  type SettleDeliveryBatchInput,
 } from "../../apps/server/src/services/conversation.service";
 import type { StartAgentRunInput, StartedAgentRun } from "../../apps/server/src/services/agent-run.service";
 
@@ -78,8 +80,14 @@ class MemoryConversationPersistence implements ConversationPersistencePort {
   readonly task: Task;
   readonly runs = new Map<string, AgentRun>();
   readonly messages = new Map<string, TaskMessage>();
+  readonly messageSequence = new Map<string, number>();
+  readonly batches = new Map<string, ConversationDeliveryBatch>();
   readonly order: string[] = [];
+  readonly batchStatusSnapshots: string[][] = [];
   readonly discardedFormalRuns: string[] = [];
+  discardFailures = 0;
+  settleFailures = 0;
+  private nextMessageSequence = 0;
 
   constructor(taskValue = task(), runs: AgentRun[] = []) {
     this.task = taskValue;
@@ -88,21 +96,60 @@ class MemoryConversationPersistence implements ConversationPersistencePort {
 
   async createMessage(message: TaskMessage, _attachmentIds?: string[]): Promise<TaskMessage> {
     this.messages.set(message.id, message);
+    this.messageSequence.set(message.id, ++this.nextMessageSequence);
     this.order.push(`message:create:${message.id}`);
     return message;
   }
 
-  async transitionMessage(
-    messageId: string,
-    from: TaskMessage["status"],
-    patch: MessageTransitionPatch,
-  ): Promise<TaskMessage | null> {
-    const current = this.messages.get(messageId);
-    if (!current || current.status !== from) return null;
-    const updated = { ...current, ...patch };
-    this.messages.set(messageId, updated);
-    this.order.push(`message:${updated.status}:${messageId}`);
-    return updated;
+  async reserveDeliveryBatch(input: ReserveDeliveryBatchInput): Promise<ConversationDeliveryBatch | null> {
+    const messages = input.messageIds.map((id) => this.messages.get(id));
+    if (messages.some((message) => message?.status !== "queued")) return null;
+    const batch: ConversationDeliveryBatch = { ...input, runId: null };
+    for (const message of messages as TaskMessage[]) {
+      this.messages.set(message.id, {
+        ...message,
+        status: "delivering",
+        updatedAt: input.updatedAt,
+        deliveredAt: null,
+        errorMessage: null,
+      });
+    }
+    this.batches.set(batch.id, batch);
+    this.order.push(`batch:reserve:${batch.id}:${batch.messageIds.join(",")}`);
+    this.batchStatusSnapshots.push(batch.messageIds.map((id) => this.messages.get(id)!.status));
+    return batch;
+  }
+
+  async settleDeliveryBatch(input: SettleDeliveryBatchInput): Promise<TaskMessage[]> {
+    if (this.settleFailures > 0) {
+      this.settleFailures -= 1;
+      this.order.push(`batch:settle-failed:${input.batchId}`);
+      const failedBatch = this.batches.get(input.batchId)!;
+      this.batchStatusSnapshots.push(failedBatch.messageIds.map((id) => this.messages.get(id)!.status));
+      throw new Error("batch settlement failed");
+    }
+    const batch = this.batches.get(input.batchId);
+    if (!batch) throw new Error("missing delivery batch");
+    const current = batch.messageIds.map((id) => this.messages.get(id));
+    if (current.some((message) => message?.status !== "delivering")) {
+      throw new Error("delivery batch is not atomically delivering");
+    }
+    const settled = (current as TaskMessage[]).map((message) => ({
+      ...message,
+      status: input.status,
+      updatedAt: input.updatedAt,
+      deliveredAt: input.deliveredAt,
+      errorMessage: input.errorMessage,
+    }));
+    for (const message of settled) this.messages.set(message.id, message);
+    this.batches.delete(input.batchId);
+    this.order.push(`batch:settle:${input.status}:${input.batchId}`);
+    this.batchStatusSnapshots.push(settled.map((message) => message.status));
+    return settled;
+  }
+
+  async listOpenDeliveryBatches(taskId: string): Promise<ConversationDeliveryBatch[]> {
+    return [...this.batches.values()].filter((batch) => batch.taskId === taskId);
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -117,13 +164,18 @@ class MemoryConversationPersistence implements ConversationPersistencePort {
     return [...this.runs.values()].filter((item) => item.taskId === taskId);
   }
 
-  async listMessages(taskId: string): Promise<TaskMessage[]> {
+  async listMessagesInFifoOrder(taskId: string): Promise<TaskMessage[]> {
     return [...this.messages.values()]
       .filter((message) => message.taskId === taskId)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+      .sort((left, right) => this.messageSequence.get(left.id)! - this.messageSequence.get(right.id)!);
   }
 
   async discardIncompleteFormalFindings(runId: string): Promise<void> {
+    if (this.discardFailures > 0) {
+      this.discardFailures -= 1;
+      this.order.push(`findings:discard-failed:${runId}`);
+      throw new Error("discard failed");
+    }
     this.discardedFormalRuns.push(runId);
     this.order.push(`findings:discard:${runId}`);
   }
@@ -149,9 +201,15 @@ class ScenarioAgentRuns implements ConversationAgentRunPort {
     this.order.push(`run:start:${input.runType}`);
     const started = run(`followup-${++this.nextRun}`, input.runType, "queued", input.sessionId ?? null);
     this.persistence.runs.set(started.id, started);
+    if (input.deliveryBatchId) {
+      const batch = this.persistence.batches.get(input.deliveryBatchId)!;
+      this.persistence.batches.set(batch.id, { ...batch, runId: started.id, updatedAt: now });
+      this.order.push(`batch:bind:${batch.id}:${started.id}`);
+    }
     const completion = this.autoComplete
       ? Promise.resolve({ ...started, status: "completed" as const, finalMessage: "Delivered", finishedAt: now })
       : this.terminal.promise;
+    void completion.then((terminal) => this.persistence.runs.set(started.id, terminal));
     return { run: started, completion };
   }
 
@@ -220,6 +278,22 @@ async function waitUntil(predicate: () => boolean): Promise<boolean> {
     await Promise.resolve();
   }
   return predicate();
+}
+
+async function persistQueuedMessage(
+  persistence: MemoryConversationPersistence,
+  values: Pick<TaskMessage, "id" | "targetRole" | "sourceReviewRunId" | "text" | "deliveryMode">,
+): Promise<void> {
+  await persistence.createMessage({
+    ...values,
+    projectId: "project-1",
+    taskId: "task-1",
+    status: "queued",
+    createdAt: now,
+    updatedAt: now,
+    deliveredAt: null,
+    errorMessage: null,
+  });
 }
 
 describe("ConversationService scheduling", () => {
@@ -295,6 +369,14 @@ describe("ConversationService scheduling", () => {
         task: task(),
         runs: [run("newer-review", "reviewer", "completed", "review-session-newer")],
       },
+      {
+        role: "reviewer",
+        task: task({ reviewerProvider: "claude" }),
+        runs: [{
+          ...run("formal-review-exact", "reviewer", "completed", "review-session-exact"),
+          provider: "codex",
+        }],
+      },
     ] as const;
 
     for (const [index, scenario] of cases.entries()) {
@@ -321,7 +403,7 @@ describe("ConversationService scheduling", () => {
     const service = new ConversationService({ persistence, agentRuns, createId: () => "message-1", now: () => now });
 
     const accepted = await service.enqueue(input("developer"));
-    await nextTurn();
+    await waitUntil(() => persistence.messages.get("message-1")?.status === "delivering");
 
     expect(accepted.status).toBe("queued");
     expect(persistence.messages.get("message-1")?.status).toBe("delivering");
@@ -357,24 +439,124 @@ describe("ConversationService scheduling", () => {
       .toBeLessThan(persistence.order.indexOf("run:start:developer_followup"));
   });
 
+  test("delivers the forced candidate next instead of reselecting an older cross-role message", async () => {
+    const cases = [
+      {
+        name: "Developer preempts active Reviewer",
+        active: run("active-run", "reviewer", "running", "active-review-session"),
+        queued: [
+          { id: "message-1", targetRole: "reviewer", sourceReviewRunId: "formal-review-exact", text: "older reviewer", deliveryMode: "queue" },
+          { id: "message-2", targetRole: "developer", sourceReviewRunId: null, text: "forced developer", deliveryMode: "queue" },
+        ],
+        expectedFirst: "developer_followup",
+      },
+      {
+        name: "explicit Developer interrupt follows older Reviewer message",
+        active: run("active-run", "developer_followup", "running", "developer-session-exact"),
+        queued: [
+          { id: "message-1", targetRole: "reviewer", sourceReviewRunId: "formal-review-exact", text: "older reviewer", deliveryMode: "queue" },
+          { id: "message-2", targetRole: "developer", sourceReviewRunId: null, text: "forced developer", deliveryMode: "interrupt" },
+        ],
+        expectedFirst: "developer_followup",
+      },
+    ] as const;
+
+    for (const scenario of cases) {
+      const persistence = new MemoryConversationPersistence(task(), [
+        run("formal-review-exact", "reviewer", "completed", "review-session-exact"),
+        scenario.active,
+      ]);
+      for (const message of scenario.queued) await persistQueuedMessage(persistence, message);
+      const agentRuns = new ScenarioAgentRuns(persistence);
+      const service = new ConversationService({ persistence, agentRuns, now: () => now });
+
+      service.resume("task-1");
+      await service.drain("task-1");
+
+      expect(agentRuns.starts[0]?.runType, scenario.name).toBe(scenario.expectedFirst);
+      expect(agentRuns.starts[0]?.prompt, scenario.name).toBe("forced developer");
+    }
+  });
+
+  test("reconciles terminal and persistence races without stranding queued messages", async () => {
+    const cases = [
+      { name: "interrupt returns completed", operation: "interrupt", outcome: "completed" },
+      { name: "interrupt returns null", operation: "interrupt", outcome: "null" },
+      { name: "interrupt rejects", operation: "interrupt", outcome: "reject" },
+      { name: "wait returns null", operation: "wait", outcome: "null" },
+      { name: "wait rejects", operation: "wait", outcome: "reject" },
+      { name: "discard rejects", operation: "discard", outcome: "reject" },
+    ] as const;
+
+    for (const scenario of cases) {
+      const activeRole = scenario.operation === "wait" ? "developer" : "reviewer";
+      const active = run(
+        "active-run",
+        activeRole === "developer" ? "developer_followup" : "reviewer",
+        "running",
+        "active-session",
+      );
+      const persistence = new MemoryConversationPersistence(task(), [active]);
+      if (scenario.operation === "discard") persistence.discardFailures = 1;
+      const base = new ScenarioAgentRuns(persistence);
+      let raced = false;
+      const terminatePersistedRun = () => {
+        const current = persistence.runs.get("active-run")!;
+        persistence.runs.set("active-run", {
+          ...current,
+          status: "completed",
+          processId: null,
+          finishedAt: now,
+        });
+      };
+      const agentRuns: ConversationAgentRunPort = {
+        start: (startInput) => base.start(startInput),
+        async interrupt(runId) {
+          if (scenario.operation !== "interrupt" || raced) return await base.interrupt(runId);
+          raced = true;
+          terminatePersistedRun();
+          if (scenario.outcome === "reject") throw new Error("interrupt race");
+          return scenario.outcome === "null" ? null : persistence.runs.get(runId)!;
+        },
+        async waitForTerminal(runId) {
+          if (scenario.operation !== "wait" || raced) return await base.waitForTerminal(runId);
+          raced = true;
+          terminatePersistedRun();
+          if (scenario.outcome === "reject") throw new Error("wait race");
+          return null;
+        },
+      };
+      const service = new ConversationService({
+        persistence,
+        agentRuns,
+        createId: () => `message-${scenario.name}`,
+        now: () => now,
+        retryDelay: async () => {},
+      });
+
+      await service.enqueue(input("developer"));
+      await service.drain("task-1");
+
+      expect(base.starts, scenario.name).toHaveLength(1);
+      expect([...persistence.messages.values()][0], scenario.name).toMatchObject({ status: "delivered" });
+      if (scenario.operation === "discard") {
+        expect(persistence.order.filter((entry) => entry.startsWith("findings:discard")), scenario.name)
+          .toEqual(["findings:discard-failed:active-run", "findings:discard:active-run"]);
+      }
+    }
+  });
+
   test("marks every combined message failed when the resumed turn fails", async () => {
     const persistence = new MemoryConversationPersistence(task());
     const agentRuns = new ScenarioAgentRuns(persistence, false);
     const service = new ConversationService({ persistence, agentRuns, now: () => now });
     for (const [id, text] of [["message-1", "first"], ["message-2", "second"]] as const) {
-      await persistence.createMessage({
+      await persistQueuedMessage(persistence, {
         id,
-        projectId: "project-1",
-        taskId: "task-1",
         targetRole: "developer",
         sourceReviewRunId: null,
         text,
         deliveryMode: "queue",
-        status: "queued",
-        createdAt: now,
-        updatedAt: now,
-        deliveredAt: null,
-        errorMessage: null,
       });
     }
     service.resume("task-1");
@@ -384,5 +566,90 @@ describe("ConversationService scheduling", () => {
 
     expect([...persistence.messages.values()].map((message) => message.status)).toEqual(["failed", "failed"]);
     expect(agentRuns.starts[0]?.prompt).toBe("first\n\n---\n\nsecond");
+  });
+
+  test("resumes durable delivery batches after crashes before and after Run association", async () => {
+    const cases = [
+      { name: "reserved before Run insertion", runStatus: null, expected: "delivered", starts: 1 },
+      { name: "Run completed before batch settlement", runStatus: "completed", expected: "delivered", starts: 0 },
+      { name: "Run failed before batch settlement", runStatus: "failed", expected: "failed", starts: 0 },
+    ] as const;
+
+    for (const scenario of cases) {
+      const persistence = new MemoryConversationPersistence(task());
+      await persistQueuedMessage(persistence, {
+        id: "message-z",
+        targetRole: "developer",
+        sourceReviewRunId: null,
+        text: "recover me",
+        deliveryMode: "queue",
+      });
+      const batch = await persistence.reserveDeliveryBatch({
+        id: "batch-1",
+        projectId: "project-1",
+        taskId: "task-1",
+        messageIds: ["message-z"],
+        targetRole: "developer",
+        sourceReviewRunId: null,
+        deliveryMode: "queue",
+        interruptedReviewRunId: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (scenario.runStatus) {
+        const associated = run("associated-run", "developer_followup", scenario.runStatus, "developer-session-exact");
+        persistence.runs.set(associated.id, associated);
+        persistence.batches.set(batch!.id, { ...batch!, runId: associated.id });
+      }
+      const agentRuns = new ScenarioAgentRuns(persistence);
+      const service = new ConversationService({ persistence, agentRuns, now: () => now });
+
+      service.resume("task-1");
+      await service.drain("task-1");
+
+      expect(agentRuns.starts, scenario.name).toHaveLength(scenario.starts);
+      expect(persistence.messages.get("message-z")?.status, scenario.name).toBe(scenario.expected);
+      expect(persistence.batches.size, scenario.name).toBe(0);
+    }
+  });
+
+  test("recovers atomically when settlement fails after every message became delivering", async () => {
+    const persistence = new MemoryConversationPersistence(task());
+    persistence.settleFailures = 1;
+    await persistQueuedMessage(persistence, {
+      id: "message-z",
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: "first by sequence",
+      deliveryMode: "queue",
+    });
+    await persistQueuedMessage(persistence, {
+      id: "message-a",
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: "second by sequence",
+      deliveryMode: "queue",
+    });
+    const agentRuns = new ScenarioAgentRuns(persistence);
+    const service = new ConversationService({
+      persistence,
+      agentRuns,
+      createDeliveryBatchId: () => "batch-1",
+      now: () => now,
+      retryDelay: async () => {},
+    });
+
+    service.resume("task-1");
+    await service.drain("task-1");
+
+    expect(agentRuns.starts).toHaveLength(1);
+    expect(agentRuns.starts[0]?.prompt).toBe("first by sequence\n\n---\n\nsecond by sequence");
+    expect(persistence.batchStatusSnapshots).toEqual([
+      ["delivering", "delivering"],
+      ["delivering", "delivering"],
+      ["delivered", "delivered"],
+    ]);
+    expect([...persistence.messages.values()].map((message) => message.status))
+      .toEqual(["delivered", "delivered"]);
   });
 });
