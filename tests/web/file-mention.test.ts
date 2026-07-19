@@ -3,6 +3,7 @@ import { activeFileMention, replaceFileMention } from "../../apps/web/src/compon
 
 describe("file mention helper", () => {
   test("finds triggers only at text boundaries and uses text before the caret as the query", () => {
+    expect(activeFileMention("@src/app", 0)).toBeNull();
     expect(activeFileMention("@src/app", 8)).toMatchObject({ start: 0, end: 8, query: "src/app", quoted: false });
     expect(activeFileMention("See (@src/app.ts)", 13)).toMatchObject({ start: 5, end: 16, query: "src/app", quoted: false });
     expect(activeFileMention("mail@example.com", 16)).toBeNull();

@@ -272,6 +272,7 @@ export class GitService {
 
   setExecutablePath(executable: string): void {
     this.executable = executable;
+    this.projectFilesCache.clear();
   }
 
   async head(rootPath: string): Promise<string> {
@@ -371,9 +372,9 @@ export class GitService {
       });
     }
 
-    const normalizedQuery = query.toLocaleLowerCase();
+    const normalizedQuery = query.toLowerCase();
     const ranked = files.flatMap((path) => {
-      const normalizedPath = path.toLocaleLowerCase();
+      const normalizedPath = path.toLowerCase();
       if (!normalizedQuery) return [{ path, rank: 0 }];
       const segments = normalizedPath.split("/");
       const filename = segments.at(-1) ?? normalizedPath;

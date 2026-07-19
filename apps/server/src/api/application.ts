@@ -346,6 +346,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "GET") {
         const project = await requireProject(parameters[0]!);
         const input = projectFilesRequestSchema.parse(Object.fromEntries(url.searchParams.entries()));
+        await requireGit();
         return json(await git.projectFiles(project.id, project.rootPath, input.q ?? "", input.limit ?? 50));
       }
 

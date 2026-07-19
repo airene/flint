@@ -22,7 +22,11 @@ function plainEnd(value: string, start: number): number {
 
 export function activeFileMention(value: string, caret: number): ActiveFileMention | null {
   if (!Number.isInteger(caret) || caret < 0 || caret > value.length) return null;
-  for (let start = value.lastIndexOf("@", Math.max(0, caret - 1)); start >= 0; start = value.lastIndexOf("@", start - 1)) {
+  let searchFrom = caret - 1;
+  while (searchFrom >= 0) {
+    const start = value.lastIndexOf("@", searchFrom);
+    if (start < 0) return null;
+    searchFrom = start - 1;
     if (!validTrigger(value, start)) continue;
     const quoted = value[start + 1] === '"';
     const contentStart = start + (quoted ? 2 : 1);

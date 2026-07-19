@@ -642,6 +642,10 @@ describe("local server API assembly", () => {
       application,
       `/api/tasks/${task.body.id}/git/status`,
     );
+    const projectFiles = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/projects/${project.body.id}/files?q=src`,
+    );
     const feedback = await applicationRequest<{ code: string; details?: { provider?: string } }>(
       application,
       `/api/tasks/${task.body.id}/feedback`,
@@ -655,7 +659,7 @@ describe("local server API assembly", () => {
       },
     );
 
-    for (const response of [createTask, review, gitStatus, feedback]) {
+    for (const response of [createTask, review, gitStatus, projectFiles, feedback]) {
       expect(response).toMatchObject({
         status: 422,
         body: { code: "CLI_UNAVAILABLE", details: { provider: "git" } },
