@@ -342,7 +342,7 @@ test("recovers persisted task state after a browser reload", async ({ page }) =>
   await page.reload();
   await expect(page.getByRole("heading", { name: "E2E workflow task" })).toBeVisible();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
-  await expect(page.getByText("codex-session-fake-123", { exact: false })).toBeVisible();
+  await expect(page.getByText("codex-session-fake-123", { exact: true })).toBeVisible();
 });
 
 test("surfaces a Fake Codex developer failure in the task activity", async ({ page }) => {
@@ -351,5 +351,10 @@ test("surfaces a Fake Codex developer failure in the task activity", async ({ pa
   const codexPanel = page.locator(".agent-panel").filter({ has: page.getByRole("heading", { name: "Codex Developer" }) });
   await expect(codexPanel.getByText("failed", { exact: true })).toBeVisible();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue Codex" })).toBeVisible();
+  const followup = page.getByLabel("Codex developer follow-up message");
+  await expect(followup).toBeEnabled();
+  await followup.fill("Retry the failed change in the established session.");
+  await page.locator(".conversation-panel").getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Select Developer run 2" })).toBeVisible();
+  await expect(page.locator(".message-list")).toContainText("delivered");
 });

@@ -70,7 +70,7 @@ function cancelDirtyConfirmation(): void {
       <header class="panel-header"><h2 class="panel-title">New task</h2><span class="badge">base = current HEAD</span></header>
       <div class="panel-body task-form">
         <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
-        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><TaskComposer id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" :upload-image="uploadAttachmentDraft" :disabled="Boolean(store.pendingDirtyTask)" :images-enabled="developerInitialImagesEnabled" :image-disabled-reason="developerImageDisabledReason" placeholder="Describe the change and acceptance criteria…" @submit="createTask($event, false)" /></div>
+        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><TaskComposer id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" :upload-image="uploadAttachmentDraft" :disabled="Boolean(store.pendingDirtyTask)" :images-enabled="developerInitialImagesEnabled" :image-disabled-reason="developerImageDisabledReason" :submit-label="`Create & start ${developerLabel}`" placeholder="Describe the change and acceptance criteria…" @submit="createTask($event, false)" /></div>
         <div class="create-row"><p class="help">Sending creates the task and immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p></div>
       </div>
     </section>

@@ -21,6 +21,7 @@ export interface ComposerSubmission {
 }
 
 const props = withDefaults(defineProps<{
+  id?: string;
   modelValue: string;
   projectId: string;
   uploadImage: UploadImage;
@@ -29,6 +30,7 @@ const props = withDefaults(defineProps<{
   submitting?: boolean;
   imagesEnabled?: boolean;
   imageDisabledReason?: string;
+  submitLabel?: string;
   placeholder?: string;
   ariaLabel?: string;
   rows?: number;
@@ -38,6 +40,7 @@ const props = withDefaults(defineProps<{
   submitting: false,
   imagesEnabled: true,
   imageDisabledReason: "This provider does not support image attachments for this action.",
+  submitLabel: "Send",
   placeholder: undefined,
   ariaLabel: undefined,
   rows: 3,
@@ -147,7 +150,7 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
 <template>
   <section class="task-composer">
     <FileMentionInput
-      :model-value="modelValue" :project-id="projectId" :multiline="multiline" :rows="rows"
+      :id="id" :model-value="modelValue" :project-id="projectId" :multiline="multiline" :rows="rows"
       :disabled="interactionDisabled" :placeholder="placeholder" :aria-label="ariaLabel" @update:model-value="emit('update:modelValue', $event)"
       @paste="onPaste" @submit="submit"
     />
@@ -155,7 +158,7 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
     <AttachmentStrip :attachments="attachments" :disabled="interactionDisabled" @remove="remove" @retry="retry" />
     <div class="composer-actions">
       <span class="attachment-count">{{ attachments.length }}/4 images</span>
-      <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? 'Sending…' : 'Send' }}</button>
+      <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? 'Sending…' : submitLabel }}</button>
     </div>
   </section>
 </template>
