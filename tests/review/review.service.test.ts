@@ -176,6 +176,56 @@ describe("ReviewService", () => {
     expect(emitted.at(-1)?.type).toBe("review_parse_failed");
   });
 
+  test("redacts review outputs before returning them, persisting findings, and emitting parse failures", async () => {
+    const { service, persistence, emitted } = setup({
+      summary: "Bearer bearer-summary-secret",
+      verdict: "changes_suggested",
+      findings: [{
+        severity: "P1",
+        title: "Bearer bearer-title-secret",
+        description: "The leaked token is sk-live-description-secret",
+        suggestion: "Replace apiKey=plain-suggestion-secret with a safe value",
+        file: "src/example.ts",
+        startLine: 1,
+        endLine: 1,
+      }],
+    });
+
+    const outcome = await (await service.start(task())).completion;
+    const serialized = JSON.stringify({
+      run: outcome.run,
+      result: outcome.result,
+      findings: outcome.findings,
+      persisted: persistence.findings,
+      event: emitted.at(-1)?.payload,
+    });
+    for (const rawSecret of [
+      "bearer-summary-secret",
+      "bearer-title-secret",
+      "sk-live-description-secret",
+      "plain-suggestion-secret",
+    ]) expect(serialized).not.toContain(rawSecret);
+    expect(persistence.findings[0]).toMatchObject({
+      title: "Bearer [REDACTED]",
+      description: "The leaked token is [REDACTED]",
+      suggestion: "Replace apiKey=[REDACTED] with a safe value",
+    });
+
+    const invalid = setup({
+      summary: "Bearer bearer-invalid-summary",
+      verdict: "invalid",
+      findings: [{
+        apiKey: "plain-invalid-api-key",
+        nested: { authToken: "plain-invalid-auth-token" },
+      }],
+    });
+    const invalidOutcome = await (await invalid.service.start(task())).completion;
+    const parseFailurePayload = JSON.stringify({ run: invalidOutcome.run, event: invalid.emitted.at(-1)?.payload });
+    expect(parseFailurePayload).not.toContain("bearer-invalid-summary");
+    expect(parseFailurePayload).not.toContain("plain-invalid-api-key");
+    expect(parseFailurePayload).not.toContain("plain-invalid-auth-token");
+  });
+
   test("marks review output stale when the ending snapshot differs", async () => {
     const { service, emitted } = setup({ summary: "Pass", verdict: "pass", findings: [] }, ["snapshot-start", "snapshot-end"]);
 

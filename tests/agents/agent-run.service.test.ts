@@ -170,9 +170,11 @@ function service(
 ) {
   const persistence = new MemoryRunPersistence(order);
   const taskState = new RecordingTaskState(order, persistence, behavior.failSucceed);
+  const emitted: AgentEvent[] = [];
   let sequence = 0;
   const events = new EventService({
     async append(input) {
+      emitted.push(input.event);
       order.push(`event:persist:${input.event.type}`);
       if (input.event.type === behavior.failEventType) throw new Error(`cannot persist ${input.event.type}`);
       return { ...input.event, sequence: ++sequence };
@@ -194,6 +196,7 @@ function service(
       now: () => "2026-07-18T00:00:01.000Z",
     }),
     taskState,
+    emitted,
   };
 }
 
@@ -290,6 +293,49 @@ describe("AgentRunService", () => {
     expect(terminal.errorMessage).toContain("[REDACTED]");
     expect(terminal.errorMessage).not.toContain("plain-api-secret");
     expect(terminal.errorMessage).not.toContain("bearer-secret");
+  });
+
+  test("redacts successful output before run and lifecycle-event persistence", async () => {
+    const order: string[] = [];
+    const { agentRuns, persistence, emitted } = service(order, {
+      sessionId: "codex-session-exact",
+      finalMessage: "Bearer bearer-final-secret completed with sk-live-final-secret",
+      structuredOutput: {
+        summary: "Bearer bearer-summary-secret",
+        nested: {
+          apiKey: "plain-nested-api-key",
+          child: { authToken: "plain-nested-auth-token", message: "sk-live-nested-secret" },
+        },
+      },
+    }, new AgentProcessError("failed", "unused"));
+
+    const terminal = await (await agentRuns.start({
+      task: task(),
+      runType: "developer_initial",
+      prompt: "Build it",
+    })).completion;
+
+    const persisted = JSON.stringify(persistence.finishes[0]?.patch);
+    const lifecycle = JSON.stringify(emitted.find((event) => event.type === "run_completed")?.payload);
+    for (const rawSecret of [
+      "bearer-final-secret",
+      "sk-live-final-secret",
+      "bearer-summary-secret",
+      "plain-nested-api-key",
+      "plain-nested-auth-token",
+      "sk-live-nested-secret",
+    ]) {
+      expect(JSON.stringify(terminal)).not.toContain(rawSecret);
+      expect(persisted).not.toContain(rawSecret);
+      expect(lifecycle).not.toContain(rawSecret);
+    }
+    expect(terminal.structuredOutput).toEqual({
+      summary: "Bearer [REDACTED]",
+      nested: {
+        apiKey: "[REDACTED]",
+        child: { authToken: "[REDACTED]", message: "[REDACTED]" },
+      },
+    });
   });
 
   test("selects the task's reviewer provider and persists its session by run type", async () => {
