@@ -4,24 +4,34 @@ import type {
   AgentEvent,
   AgentRun,
   AgentRunType,
+  ApprovalDecision,
+  ApprovalRequest,
   FeedbackDelivery,
   FeedbackDraft,
   FindingSelectionMode,
+  Provider,
   ReviewFinding,
   Task,
+  TaskAttachment,
+  TaskMessage,
   TaskStatus,
+  UnfinishedTaskSummary,
 } from "@local-pair-review/shared";
 import type { AppDatabase } from "../db/database";
 import {
   agentEvents,
   agentRuns,
+  approvalRequests,
   applicationLeases,
   feedbackDeliveries,
   feedbackDrafts,
   reviewFindings,
   reviewRunSnapshots,
   runLeases,
+  taskAttachments,
+  taskMessages,
   tasks,
+  projects,
 } from "../db/schema";
 import type { AgentRunPersistencePort, FinishRunInput, TaskRunStatePort } from "../services/agent-run.service";
 import type { EventPersistencePort, PersistAgentEventInput } from "../services/event.service";
@@ -51,6 +61,20 @@ export class StaleRunOwnershipError extends Error {
   constructor(readonly runId: string) {
     super(`Run ${runId} is no longer owned by this Flint instance.`);
     this.name = "StaleRunOwnershipError";
+  }
+}
+
+export class PersistenceOwnershipError extends Error {
+  constructor(entity: string) {
+    super(`${entity} does not belong to the requested Project and Task.`);
+    this.name = "PersistenceOwnershipError";
+  }
+}
+
+export class AttachmentClaimConflictError extends Error {
+  constructor(readonly attachmentId: string) {
+    super(`Attachment ${attachmentId} is expired or already claimed.`);
+    this.name = "AttachmentClaimConflictError";
   }
 }
 
@@ -174,14 +198,21 @@ export class DatabasePorts implements
         this.assertApplicationOwner();
         const task = transaction.select().from(tasks).where(eq(tasks.id, run.taskId)).get() as Task | undefined;
         if (!task) throw new NotFoundError("Task");
+        if (task.projectId !== run.projectId) throw new PersistenceOwnershipError("Run");
         if (run.runType === "reviewer" && !options.snapshotHash) {
           throw new Error("Reviewer runs require a captured snapshot");
         }
         const target = taskStatusForRunStart(task.status, run.runType);
-        const writerRun = run.runType === "developer_initial" || run.runType === "developer_feedback";
+        const writerRun = run.runType === "developer_initial"
+          || run.runType === "developer_feedback"
+          || run.runType === "developer_followup";
         const activeConflict = transaction.select({ id: agentRuns.id }).from(agentRuns).where(and(
           eq(agentRuns.projectId, run.projectId),
-          ...(writerRun ? [] : [inArray(agentRuns.runType, ["developer_initial", "developer_feedback"])]),
+          ...(writerRun ? [] : [inArray(agentRuns.runType, [
+            "developer_initial",
+            "developer_feedback",
+            "developer_followup",
+          ])]),
           inArray(agentRuns.status, [...activeStatuses]),
         )).get();
         if (activeConflict) throw new ProjectWriteRunConflictError(run.projectId);
@@ -239,7 +270,7 @@ export class DatabasePorts implements
         eq(agentRuns.id, runId),
         inArray(agentRuns.status, [...activeStatuses]),
       )).run();
-      if (runType !== "reviewer") {
+      if (runType !== "reviewer" && runType !== "reviewer_followup") {
         transaction.update(tasks).set({ developerSessionId: sessionId, updatedAt: this.now() })
           .where(eq(tasks.id, taskId)).run();
       }
@@ -318,6 +349,264 @@ export class DatabasePorts implements
       gt(agentEvents.sequence, afterSequence),
     )).orderBy(asc(agentEvents.sequence)).all();
     return rows.map(rowEvent);
+  }
+
+  async createAttachmentDraft(attachment: TaskAttachment): Promise<TaskAttachment> {
+    return this.database.db.transaction((transaction) => {
+      const project = transaction.select({ id: projects.id }).from(projects)
+        .where(eq(projects.id, attachment.projectId)).get();
+      if (!project) throw new NotFoundError("Project");
+      if (attachment.state !== "draft" || attachment.taskId || attachment.messageId || attachment.claimedAt) {
+        throw new AttachmentClaimConflictError(attachment.id);
+      }
+      transaction.insert(taskAttachments).values(attachment).run();
+      return attachment;
+    }, { behavior: "immediate" });
+  }
+
+  async getAttachment(attachmentId: string): Promise<TaskAttachment | null> {
+    return (await this.database.db.select().from(taskAttachments)
+      .where(eq(taskAttachments.id, attachmentId)).get() as TaskAttachment | undefined) ?? null;
+  }
+
+  async claimAttachments(
+    projectId: string,
+    taskId: string,
+    attachmentIds: string[],
+    messageId: string | null = null,
+  ): Promise<TaskAttachment[]> {
+    if (attachmentIds.length > 4 || new Set(attachmentIds).size !== attachmentIds.length) {
+      throw new AttachmentClaimConflictError(attachmentIds[0] ?? "unknown");
+    }
+    return this.database.db.transaction((transaction) => {
+      const claimedAt = this.now();
+      const task = transaction.select({ projectId: tasks.projectId }).from(tasks).where(eq(tasks.id, taskId)).get();
+      if (!task) throw new NotFoundError("Task");
+      if (task.projectId !== projectId) throw new PersistenceOwnershipError("Attachment claim");
+      if (messageId) {
+        const message = transaction.select({ projectId: taskMessages.projectId, taskId: taskMessages.taskId })
+          .from(taskMessages).where(eq(taskMessages.id, messageId)).get();
+        if (!message || message.projectId !== projectId || message.taskId !== taskId) {
+          throw new PersistenceOwnershipError("Attachment message");
+        }
+      }
+      for (const attachmentId of attachmentIds) {
+        const attachment = transaction.select().from(taskAttachments)
+          .where(eq(taskAttachments.id, attachmentId)).get();
+        const sameClaim = attachment?.state === "claimed"
+          && attachment.projectId === projectId
+          && attachment.taskId === taskId
+          && attachment.messageId === messageId;
+        if (sameClaim) continue;
+        if (!attachment
+          || attachment.projectId !== projectId
+          || attachment.state !== "draft"
+          || attachment.expiresAt <= claimedAt) {
+          throw new AttachmentClaimConflictError(attachmentId);
+        }
+        transaction.update(taskAttachments).set({
+          taskId,
+          messageId,
+          state: "claimed",
+          claimedAt,
+        }).where(and(
+          eq(taskAttachments.id, attachmentId),
+          eq(taskAttachments.state, "draft"),
+        )).run();
+      }
+      if (attachmentIds.length === 0) return [];
+      return transaction.select().from(taskAttachments)
+        .where(inArray(taskAttachments.id, attachmentIds)).all() as TaskAttachment[];
+    }, { behavior: "immediate" });
+  }
+
+  async createMessage(message: TaskMessage, attachmentIds: string[] = []): Promise<TaskMessage> {
+    if (attachmentIds.length > 4 || new Set(attachmentIds).size !== attachmentIds.length) {
+      throw new AttachmentClaimConflictError(attachmentIds[0] ?? "unknown");
+    }
+    return this.database.db.transaction((transaction) => {
+      const claimedAt = this.now();
+      const task = transaction.select({ projectId: tasks.projectId }).from(tasks)
+        .where(eq(tasks.id, message.taskId)).get();
+      if (!task) throw new NotFoundError("Task");
+      if (task.projectId !== message.projectId) throw new PersistenceOwnershipError("Message");
+      if (message.sourceReviewRunId) {
+        const source = transaction.select({
+          projectId: agentRuns.projectId,
+          taskId: agentRuns.taskId,
+          runType: agentRuns.runType,
+        }).from(agentRuns).where(eq(agentRuns.id, message.sourceReviewRunId)).get();
+        if (!source
+          || source.projectId !== message.projectId
+          || source.taskId !== message.taskId
+          || source.runType !== "reviewer") {
+          throw new PersistenceOwnershipError("Source Review Run");
+        }
+      }
+      transaction.insert(taskMessages).values(message).run();
+      for (const attachmentId of attachmentIds) {
+        const attachment = transaction.select().from(taskAttachments)
+          .where(eq(taskAttachments.id, attachmentId)).get();
+        if (!attachment
+          || attachment.projectId !== message.projectId
+          || attachment.state !== "draft"
+          || attachment.expiresAt <= claimedAt) {
+          throw new AttachmentClaimConflictError(attachmentId);
+        }
+        transaction.update(taskAttachments).set({
+          taskId: message.taskId,
+          messageId: message.id,
+          state: "claimed",
+          claimedAt,
+        }).where(and(
+          eq(taskAttachments.id, attachmentId),
+          eq(taskAttachments.state, "draft"),
+        )).run();
+      }
+      return message;
+    }, { behavior: "immediate" });
+  }
+
+  async listMessages(taskId: string): Promise<TaskMessage[]> {
+    return await this.database.db.select().from(taskMessages).where(eq(taskMessages.taskId, taskId))
+      .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+  }
+
+  async createApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
+    return this.database.db.transaction((transaction) => {
+      const run = transaction.select({ projectId: agentRuns.projectId, taskId: agentRuns.taskId })
+        .from(agentRuns).where(eq(agentRuns.id, request.runId)).get();
+      if (!run) throw new NotFoundError("Run");
+      if (run.projectId !== request.projectId || run.taskId !== request.taskId) {
+        throw new PersistenceOwnershipError("Approval request");
+      }
+      const existing = transaction.select().from(approvalRequests).where(and(
+        eq(approvalRequests.runId, request.runId),
+        eq(approvalRequests.providerRequestId, request.providerRequestId),
+      )).get();
+      if (existing) return existing as ApprovalRequest;
+      transaction.insert(approvalRequests).values(request).run();
+      return request;
+    }, { behavior: "immediate" });
+  }
+
+  async decideApproval(
+    approvalId: string,
+    decision: ApprovalDecision,
+    reason: string | null,
+    resolvedAt: string,
+  ): Promise<ApprovalRequest> {
+    return this.database.db.transaction((transaction) => {
+      const existing = transaction.select().from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalId)).get();
+      if (!existing) throw new NotFoundError("Approval request");
+      if (existing.status === "pending") {
+        transaction.update(approvalRequests).set({
+          status: "resolved",
+          decision,
+          reason,
+          resolvedAt,
+        }).where(and(
+          eq(approvalRequests.id, approvalId),
+          eq(approvalRequests.status, "pending"),
+        )).run();
+      }
+      return transaction.select().from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalId)).get() as ApprovalRequest;
+    }, { behavior: "immediate" });
+  }
+
+  async expireApprovals(runId: string, expiredAt: string): Promise<ApprovalRequest[]> {
+    return this.database.db.transaction((transaction) => {
+      transaction.update(approvalRequests).set({ status: "expired", resolvedAt: expiredAt }).where(and(
+        eq(approvalRequests.runId, runId),
+        eq(approvalRequests.status, "pending"),
+      )).run();
+      return transaction.select().from(approvalRequests)
+        .where(eq(approvalRequests.runId, runId)).orderBy(asc(approvalRequests.createdAt)).all() as ApprovalRequest[];
+    }, { behavior: "immediate" });
+  }
+
+  async listPendingApprovals(taskId: string): Promise<ApprovalRequest[]> {
+    return await this.database.db.select().from(approvalRequests).where(and(
+      eq(approvalRequests.taskId, taskId),
+      eq(approvalRequests.status, "pending"),
+    )).orderBy(asc(approvalRequests.createdAt), asc(approvalRequests.id)).all() as ApprovalRequest[];
+  }
+
+  async findRunBySession(taskId: string, provider: Provider, externalSessionId: string): Promise<AgentRun | null> {
+    return (await this.database.db.select().from(agentRuns).where(and(
+      eq(agentRuns.taskId, taskId),
+      eq(agentRuns.provider, provider),
+      eq(agentRuns.externalSessionId, externalSessionId),
+    )).orderBy(desc(sql`rowid`)).get() as AgentRun | undefined) ?? null;
+  }
+
+  async listUnfinishedTasks(): Promise<UnfinishedTaskSummary[]> {
+    const rows = this.database.sqlite.query(`
+      SELECT
+        t.id,
+        t.project_id AS projectId,
+        p.name AS projectName,
+        t.title,
+        t.status,
+        t.updated_at AS updatedAt,
+        (
+          SELECT ar.status FROM agent_runs ar
+          WHERE ar.task_id = t.id
+          ORDER BY ar.rowid DESC LIMIT 1
+        ) AS latestRunStatus,
+        (
+          SELECT COUNT(*) FROM approval_requests approval
+          WHERE approval.task_id = t.id AND approval.status = 'pending'
+        ) AS pendingApprovalCount,
+        EXISTS (
+          SELECT 1 FROM agent_runs active
+          WHERE active.task_id = t.id AND active.status IN ('queued', 'running')
+        ) AS hasActiveRun
+      FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.status <> 'completed'
+    `).all() as Array<{
+      id: string;
+      projectId: string;
+      projectName: string;
+      title: string;
+      status: TaskStatus;
+      updatedAt: string;
+      latestRunStatus: AgentRun["status"] | null;
+      pendingApprovalCount: number;
+      hasActiveRun: number;
+    }>;
+    const priority: Record<UnfinishedTaskSummary["attention"], number> = {
+      pending_approval: 0,
+      needs_attention: 1,
+      running: 2,
+      waiting_for_human: 3,
+      ready_for_review: 4,
+      pending_start: 5,
+      other: 6,
+    };
+    return rows.map(({ hasActiveRun, ...row }) => ({
+      ...row,
+      attention: row.pendingApprovalCount > 0
+        ? "pending_approval" as const
+        : row.latestRunStatus && ["failed", "cancelled", "interrupted"].includes(row.latestRunStatus)
+          ? "needs_attention" as const
+          : hasActiveRun
+            ? "running" as const
+            : row.status === "waiting_for_human"
+              ? "waiting_for_human" as const
+              : row.status === "ready_for_review"
+                ? "ready_for_review" as const
+                : row.status === "draft"
+                  ? "pending_start" as const
+                  : "other" as const,
+    })).sort((left, right) => (
+      priority[left.attention] - priority[right.attention]
+      || right.updatedAt.localeCompare(left.updatedAt)
+      || left.id.localeCompare(right.id)
+    ));
   }
 
   async reviewSnapshotHash(runId: string): Promise<string | null> {

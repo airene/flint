@@ -38,7 +38,47 @@ const initialSchema = `
   CREATE UNIQUE INDEX IF NOT EXISTS active_agent_run_per_task_unique ON agent_runs(task_id)
     WHERE status IN ('queued', 'running');
   CREATE UNIQUE INDEX IF NOT EXISTS active_write_run_per_project_unique ON agent_runs(project_id)
-    WHERE run_type IN ('developer_initial', 'developer_feedback') AND status IN ('queued', 'running');
+    WHERE run_type IN ('developer_initial', 'developer_feedback', 'developer_followup') AND status IN ('queued', 'running');
+  CREATE TABLE IF NOT EXISTS task_messages (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    target_role TEXT NOT NULL, source_review_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    text TEXT NOT NULL, delivery_mode TEXT NOT NULL, status TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, delivered_at TEXT, error_message TEXT
+  );
+  CREATE INDEX IF NOT EXISTS task_messages_task_id_index ON task_messages(task_id);
+  CREATE INDEX IF NOT EXISTS task_messages_source_review_run_id_index ON task_messages(source_review_run_id);
+  CREATE TABLE IF NOT EXISTS task_attachments (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+    message_id TEXT REFERENCES task_messages(id) ON DELETE CASCADE,
+    state TEXT NOT NULL, storage_path TEXT NOT NULL UNIQUE, media_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 10485760),
+    checksum TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT,
+    CHECK (
+      (state = 'draft' AND task_id IS NULL AND message_id IS NULL AND claimed_at IS NULL)
+      OR (state = 'claimed' AND task_id IS NOT NULL AND claimed_at IS NOT NULL)
+    )
+  );
+  CREATE INDEX IF NOT EXISTS task_attachments_project_state_index ON task_attachments(project_id, state);
+  CREATE INDEX IF NOT EXISTS task_attachments_task_id_index ON task_attachments(task_id);
+  CREATE INDEX IF NOT EXISTS task_attachments_message_id_index ON task_attachments(message_id);
+  CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    provider_request_id TEXT NOT NULL, tool_name TEXT NOT NULL, action_summary TEXT NOT NULL,
+    working_directory TEXT NOT NULL, status TEXT NOT NULL, decision TEXT, reason TEXT,
+    created_at TEXT NOT NULL, resolved_at TEXT,
+    CHECK (
+      (status = 'resolved' AND decision IN ('allow_once', 'deny') AND resolved_at IS NOT NULL)
+      OR (status = 'pending' AND decision IS NULL AND resolved_at IS NULL)
+      OR (status = 'expired' AND decision IS NULL AND resolved_at IS NOT NULL)
+    )
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS approval_requests_run_provider_request_unique
+    ON approval_requests(run_id, provider_request_id);
+  CREATE INDEX IF NOT EXISTS approval_requests_task_status_index ON approval_requests(task_id, status);
   CREATE TABLE IF NOT EXISTS application_leases (
     slot INTEGER PRIMARY KEY CHECK (slot = 1), owner_instance_id TEXT NOT NULL,
     process_id INTEGER NOT NULL, lease_expires_at TEXT NOT NULL
@@ -104,11 +144,21 @@ function migrateTaskProviderColumns(sqlite: Database): void {
   `);
 }
 
+function migrateActiveWriteRunIndex(sqlite: Database): void {
+  sqlite.exec(`
+    DROP INDEX IF EXISTS active_write_run_per_project_unique;
+    CREATE UNIQUE INDEX active_write_run_per_project_unique ON agent_runs(project_id)
+      WHERE run_type IN ('developer_initial', 'developer_feedback', 'developer_followup')
+        AND status IN ('queued', 'running');
+  `);
+}
+
 export function createDatabase(path = ":memory:"): AppDatabase {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path);
   sqlite.exec("PRAGMA foreign_keys = ON");
   sqlite.exec(initialSchema);
   migrateTaskProviderColumns(sqlite);
+  migrateActiveWriteRunIndex(sqlite);
   return { db: drizzle(sqlite, { schema }), sqlite, close: () => sqlite.close() };
 }

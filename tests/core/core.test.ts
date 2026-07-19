@@ -3,8 +3,18 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import type { AgentRun, AgentRunType, Task } from "@local-pair-review/shared";
-import { DatabasePorts, StaleRunOwnershipError } from "../../apps/server/src/api/database-ports";
+import type {
+  AgentRun,
+  AgentRunType,
+  ApprovalRequest,
+  Task,
+  TaskAttachment,
+  TaskMessage,
+} from "@local-pair-review/shared";
+import {
+  DatabasePorts,
+  StaleRunOwnershipError,
+} from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
 import { projects as projectRows, tasks as taskRows } from "../../apps/server/src/db/schema";
 import { ProjectService, ConfirmationRequiredError, DuplicateProjectError } from "../../apps/server/src/services/project.service";
@@ -226,6 +236,165 @@ describe("run ownership", () => {
       takeover.close();
       primary.close();
     }
+  });
+});
+
+describe("interactive workflow persistence", () => {
+  test("claims project-scoped attachment drafts once with their owning task message", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const otherProject = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Attachments", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database, undefined, { now: () => "2026-07-19T00:00:01.000Z" });
+    const attachment: TaskAttachment = {
+      id: "attachment-1",
+      projectId: project.id,
+      taskId: null,
+      messageId: null,
+      state: "draft",
+      storagePath: "/data/drafts/attachment-1.png",
+      mediaType: "image/png",
+      sizeBytes: 128,
+      checksum: "sha256:attachment-1",
+      createdAt: "2026-07-19T00:00:00.000Z",
+      expiresAt: "2026-07-20T00:00:00.000Z",
+      claimedAt: null,
+    };
+    const message: TaskMessage = {
+      id: "message-1",
+      projectId: project.id,
+      taskId: task.id,
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: "Use this image",
+      deliveryMode: "queue",
+      status: "queued",
+      createdAt: "2026-07-19T00:00:01.000Z",
+      updatedAt: "2026-07-19T00:00:01.000Z",
+      deliveredAt: null,
+      errorMessage: null,
+    };
+
+    await ports.createAttachmentDraft(attachment);
+    await ports.createMessage(message, [attachment.id]);
+    expect(await ports.listMessages(task.id)).toEqual([message]);
+    expect(await ports.getAttachment(attachment.id)).toMatchObject({
+      state: "claimed",
+      taskId: task.id,
+      messageId: message.id,
+      claimedAt: "2026-07-19T00:00:01.000Z",
+    });
+
+    const secondMessage = { ...message, id: "message-2", text: "Claim it again" };
+    await expect(ports.createMessage(secondMessage, [attachment.id]))
+      .rejects.toThrow("already claimed");
+    expect(await ports.listMessages(task.id)).toEqual([message]);
+    await expect(ports.createMessage({ ...message, id: "message-cross-project", projectId: otherProject.id }))
+      .rejects.toThrow("does not belong");
+
+    const expired = {
+      ...attachment,
+      id: "attachment-expired",
+      storagePath: "/data/drafts/attachment-expired.png",
+      checksum: "sha256:attachment-expired",
+      expiresAt: "2026-07-19T00:00:00.500Z",
+    };
+    await ports.createAttachmentDraft(expired);
+    await expect(ports.createMessage({
+      ...message,
+      id: "message-expired",
+      createdAt: "2026-07-18T00:00:00.000Z",
+    }, [expired.id])).rejects.toThrow("expired");
+  });
+
+  test("resolves an approval decision once and returns the original result on duplicate decisions", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Approval", originalPrompt: "Prompt" });
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'codex', 'developer_initial', 'running', 'run')",
+      ["run-approval", task.id, project.id],
+    );
+    const ports = new DatabasePorts(database);
+    const request: ApprovalRequest = {
+      id: "approval-1",
+      projectId: project.id,
+      taskId: task.id,
+      runId: "run-approval",
+      providerRequestId: "provider-request-1",
+      toolName: "shell",
+      actionSummary: "Run tests",
+      workingDirectory: task.workingDirectory,
+      status: "pending",
+      decision: null,
+      reason: null,
+      createdAt: "2026-07-19T00:00:00.000Z",
+      resolvedAt: null,
+    };
+
+    expect(await ports.createApprovalRequest(request)).toEqual(request);
+    const first = await ports.decideApproval(
+      request.id,
+      "allow_once",
+      null,
+      "2026-07-19T00:00:01.000Z",
+    );
+    const duplicate = await ports.decideApproval(
+      request.id,
+      "deny",
+      "too late",
+      "2026-07-19T00:00:02.000Z",
+    );
+    expect(first).toMatchObject({ status: "resolved", decision: "allow_once", reason: null });
+    expect(duplicate).toEqual(first);
+    expect(await ports.listPendingApprovals(task.id)).toEqual([]);
+  });
+
+  test("lists unfinished summaries and finds only the exact task provider session", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Attention", originalPrompt: "Prompt" });
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, external_session_id, prompt, finished_at) values (?, ?, ?, 'claude', 'reviewer', 'failed', ?, 'review', ?)",
+      ["run-exact", task.id, project.id, "session-exact", "2026-07-19T00:00:02.000Z"],
+    );
+    database.sqlite.run(
+      "insert into approval_requests (id, project_id, task_id, run_id, provider_request_id, tool_name, action_summary, working_directory, status, created_at) values (?, ?, ?, ?, ?, 'shell', 'Run tests', ?, 'pending', ?)",
+      ["approval-pending", project.id, task.id, "run-exact", "provider-request", task.workingDirectory, "2026-07-19T00:00:03.000Z"],
+    );
+    const ports = new DatabasePorts(database);
+
+    expect(await ports.findRunBySession(task.id, "claude", "session-exact")).toMatchObject({ id: "run-exact" });
+    expect(await ports.findRunBySession(task.id, "codex", "session-exact")).toBeNull();
+    expect(await ports.findRunBySession("missing-task", "claude", "session-exact")).toBeNull();
+    expect(await ports.listUnfinishedTasks()).toEqual([expect.objectContaining({
+      id: task.id,
+      projectId: project.id,
+      projectName: project.name,
+      title: task.title,
+      latestRunStatus: "failed",
+      pendingApprovalCount: 1,
+      attention: "pending_approval",
+    })]);
+  });
+
+  test("enforces task project ownership and one active run per task at the database boundary", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const otherProject = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Invariant", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database);
+
+    await expect(ports.queue({ ...queuedRun(task, "developer_initial", "run-wrong-project"), projectId: otherProject.id }))
+      .rejects.toThrow("does not belong");
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'codex', 'developer_initial', 'queued', 'one')",
+      ["run-one", task.id, project.id],
+    );
+    expect(() => database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'claude', 'reviewer', 'running', 'two')",
+      ["run-two", task.id, project.id],
+    )).toThrow();
   });
 });
 

@@ -20,7 +20,9 @@ export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export const agentRunTypeSchema = z.enum([
   "developer_initial",
   "developer_feedback",
+  "developer_followup",
   "reviewer",
+  "reviewer_followup",
 ]);
 export type AgentRunType = z.infer<typeof agentRunTypeSchema>;
 
@@ -33,6 +35,32 @@ export const agentRunStatusSchema = z.enum([
   "interrupted",
 ]);
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>;
+
+export const messageDeliveryModeSchema = z.enum(["queue", "interrupt"]);
+export type MessageDeliveryMode = z.infer<typeof messageDeliveryModeSchema>;
+
+export const taskMessageStatusSchema = z.enum(["queued", "delivering", "delivered", "failed"]);
+export type TaskMessageStatus = z.infer<typeof taskMessageStatusSchema>;
+
+export const attachmentStateSchema = z.enum(["draft", "claimed"]);
+export type AttachmentState = z.infer<typeof attachmentStateSchema>;
+
+export const approvalStatusSchema = z.enum(["pending", "resolved", "expired"]);
+export type ApprovalStatus = z.infer<typeof approvalStatusSchema>;
+
+export const approvalDecisionSchema = z.enum(["allow_once", "deny"]);
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
+export const taskAttentionSchema = z.enum([
+  "pending_approval",
+  "needs_attention",
+  "running",
+  "waiting_for_human",
+  "ready_for_review",
+  "pending_start",
+  "other",
+]);
+export type TaskAttention = z.infer<typeof taskAttentionSchema>;
 
 export const reviewParseStatusSchema = z.enum(["pending", "succeeded", "failed"]);
 export type ReviewParseStatus = z.infer<typeof reviewParseStatusSchema>;
@@ -87,6 +115,85 @@ export const agentRunSchema = z.object({
   finishedAt: z.string().nullable(),
 }).strict();
 export type AgentRun = z.infer<typeof agentRunSchema>;
+
+export const taskMessageSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  taskId: z.string().min(1),
+  targetRole: agentRoleSchema,
+  sourceReviewRunId: z.string().min(1).nullable(),
+  text: z.string().min(1),
+  deliveryMode: messageDeliveryModeSchema,
+  status: taskMessageStatusSchema,
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+  deliveredAt: z.string().min(1).nullable(),
+  errorMessage: z.string().nullable(),
+}).strict();
+export type TaskMessage = z.infer<typeof taskMessageSchema>;
+
+export const taskAttachmentSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  taskId: z.string().min(1).nullable(),
+  messageId: z.string().min(1).nullable(),
+  state: attachmentStateSchema,
+  storagePath: z.string().min(1),
+  mediaType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+  sizeBytes: z.number().int().positive().max(10 * 1024 * 1024),
+  checksum: z.string().min(1),
+  createdAt: z.string().min(1),
+  expiresAt: z.string().min(1),
+  claimedAt: z.string().min(1).nullable(),
+}).strict().superRefine((attachment, context) => {
+  if (attachment.state === "draft" && (attachment.taskId || attachment.messageId || attachment.claimedAt)) {
+    context.addIssue({ code: "custom", message: "Draft attachments cannot have a claimed owner" });
+  }
+  if (attachment.state === "claimed" && (!attachment.taskId || !attachment.claimedAt)) {
+    context.addIssue({ code: "custom", message: "Claimed attachments require a Task owner and claim time" });
+  }
+});
+export type TaskAttachment = z.infer<typeof taskAttachmentSchema>;
+
+export const approvalRequestSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  taskId: z.string().min(1),
+  runId: z.string().min(1),
+  providerRequestId: z.string().min(1),
+  toolName: z.string().min(1),
+  actionSummary: z.string().min(1),
+  workingDirectory: z.string().min(1),
+  status: approvalStatusSchema,
+  decision: approvalDecisionSchema.nullable(),
+  reason: z.string().nullable(),
+  createdAt: z.string().min(1),
+  resolvedAt: z.string().min(1).nullable(),
+}).strict().superRefine((approval, context) => {
+  if (approval.status === "resolved" && (!approval.decision || !approval.resolvedAt)) {
+    context.addIssue({ code: "custom", message: "Resolved approvals require a decision and resolution time" });
+  }
+  if (approval.status === "pending" && (approval.decision || approval.resolvedAt)) {
+    context.addIssue({ code: "custom", message: "Pending approvals cannot have a decision" });
+  }
+  if (approval.status === "expired" && (approval.decision || !approval.resolvedAt)) {
+    context.addIssue({ code: "custom", message: "Expired approvals require an expiry time and no decision" });
+  }
+});
+export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
+
+export const unfinishedTaskSummarySchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  projectName: z.string().min(1),
+  title: z.string().min(1),
+  status: taskStatusSchema,
+  latestRunStatus: agentRunStatusSchema.nullable(),
+  pendingApprovalCount: z.number().int().nonnegative(),
+  attention: taskAttentionSchema,
+  updatedAt: z.string().min(1),
+}).strict();
+export type UnfinishedTaskSummary = z.infer<typeof unfinishedTaskSummarySchema>;
 
 const reviewFindingInputSchema = z.object({
   id: z.string(),
@@ -165,6 +272,11 @@ export const agentEventTypeSchema = z.enum([
   "file_changed",
   "review_parsed",
   "review_parse_failed",
+  "message_queued",
+  "message_delivered",
+  "message_failed",
+  "approval_requested",
+  "approval_resolved",
   "raw",
 ]);
 export type AgentEventType = z.infer<typeof agentEventTypeSchema>;
@@ -209,9 +321,39 @@ export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>;
 export const createTaskRequestSchema = z.object({
   title: z.string().min(1),
   originalPrompt: z.string().min(1),
+  attachmentIds: z.array(z.string().min(1)).max(4).refine(
+    (ids) => new Set(ids).size === ids.length,
+    { message: "Attachment IDs must be unique" },
+  ).optional(),
   confirmDirtyWorkingTree: z.boolean().optional(),
 }).strict();
 export type CreateTaskRequest = z.infer<typeof createTaskRequestSchema>;
+
+export const createTaskMessageRequestSchema = z.object({
+  targetRole: agentRoleSchema,
+  sourceReviewRunId: z.string().min(1).nullable(),
+  text: z.string().min(1),
+  deliveryMode: messageDeliveryModeSchema,
+  attachmentIds: z.array(z.string().min(1)).max(4).refine(
+    (ids) => new Set(ids).size === ids.length,
+    { message: "Attachment IDs must be unique" },
+  ),
+}).strict().superRefine((message, context) => {
+  if (message.targetRole === "reviewer" && !message.sourceReviewRunId) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceReviewRunId"],
+      message: "Reviewer messages require an exact source Review Run",
+    });
+  }
+});
+export type CreateTaskMessageRequest = z.infer<typeof createTaskMessageRequestSchema>;
+
+export const approvalDecisionRequestSchema = z.object({
+  decision: approvalDecisionSchema,
+  reason: z.string().min(1).nullable().optional(),
+}).strict();
+export type ApprovalDecisionRequest = z.infer<typeof approvalDecisionRequestSchema>;
 
 export const projectResponseSchema = projectSchema;
 export type ProjectResponse = z.infer<typeof projectResponseSchema>;
@@ -236,6 +378,14 @@ export const taskListResponseSchema = z.array(taskSchema);
 export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
 export const createTaskResponseSchema = taskResponseSchema;
 export type CreateTaskResponse = z.infer<typeof createTaskResponseSchema>;
+export const taskMessageResponseSchema = taskMessageSchema;
+export type TaskMessageResponse = z.infer<typeof taskMessageResponseSchema>;
+export const taskMessageListResponseSchema = z.array(taskMessageSchema);
+export type TaskMessageListResponse = z.infer<typeof taskMessageListResponseSchema>;
+export const approvalResponseSchema = approvalRequestSchema;
+export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
+export const unfinishedTaskListResponseSchema = z.array(unfinishedTaskSummarySchema);
+export type UnfinishedTaskListResponse = z.infer<typeof unfinishedTaskListResponseSchema>;
 
 export const completeTaskRequestSchema = z.object({}).strict();
 export type CompleteTaskRequest = z.infer<typeof completeTaskRequestSchema>;
@@ -394,11 +544,23 @@ export type AgentAvailability = z.infer<typeof agentAvailabilitySchema>;
 export const cliExecutableSettingSchema = z.enum(["codexExecutable", "claudeExecutable"]);
 export type CliExecutableSetting = z.infer<typeof cliExecutableSettingSchema>;
 
+export const providerCapabilitiesSchema = z.object({
+  developerInitialImage: z.boolean(),
+  developerResumeImage: z.boolean(),
+  reviewerInitialImage: z.boolean(),
+  reviewerResumeImage: z.boolean(),
+  liveMessages: z.boolean(),
+  interrupt: z.boolean(),
+  approvals: z.boolean(),
+}).strict();
+export type ProviderCapabilities = z.infer<typeof providerCapabilitiesSchema>;
+
 export const providerDescriptorSchema = z.object({
   id: providerSchema,
   label: z.string().min(1),
   executableSetting: cliExecutableSettingSchema,
   roles: z.array(agentRoleSchema).min(1),
+  capabilities: providerCapabilitiesSchema.optional(),
   availability: agentAvailabilitySchema,
 }).strict();
 export type ProviderDescriptor = z.infer<typeof providerDescriptorSchema>;

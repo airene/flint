@@ -32,7 +32,13 @@ export const agentRuns = sqliteTable("agent_runs", {
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   provider: text("provider", { enum: ["codex", "claude"] }).notNull(),
-  runType: text("run_type", { enum: ["developer_initial", "developer_feedback", "reviewer"] }).notNull(),
+  runType: text("run_type", { enum: [
+    "developer_initial",
+    "developer_feedback",
+    "developer_followup",
+    "reviewer",
+    "reviewer_followup",
+  ] }).notNull(),
   status: text("status", { enum: ["queued", "running", "completed", "failed", "cancelled", "interrupted"] }).notNull(),
   reviewParseStatus: text("review_parse_status", { enum: ["pending", "succeeded", "failed"] }),
   externalSessionId: text("external_session_id"),
@@ -52,7 +58,63 @@ export const agentRuns = sqliteTable("agent_runs", {
     .where(sql`${table.status} in ('queued', 'running')`),
   uniqueIndex("active_write_run_per_project_unique")
     .on(table.projectId)
-    .where(sql`${table.runType} in ('developer_initial', 'developer_feedback') and ${table.status} in ('queued', 'running')`),
+    .where(sql`${table.runType} in ('developer_initial', 'developer_feedback', 'developer_followup') and ${table.status} in ('queued', 'running')`),
+]);
+
+export const taskMessages = sqliteTable("task_messages", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  targetRole: text("target_role", { enum: ["developer", "reviewer"] }).notNull(),
+  sourceReviewRunId: text("source_review_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  text: text("text").notNull(),
+  deliveryMode: text("delivery_mode", { enum: ["queue", "interrupt"] }).notNull(),
+  status: text("status", { enum: ["queued", "delivering", "delivered", "failed"] }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deliveredAt: text("delivered_at"),
+  errorMessage: text("error_message"),
+}, (table) => [
+  index("task_messages_task_id_index").on(table.taskId),
+  index("task_messages_source_review_run_id_index").on(table.sourceReviewRunId),
+]);
+
+export const taskAttachments = sqliteTable("task_attachments", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
+  messageId: text("message_id").references(() => taskMessages.id, { onDelete: "cascade" }),
+  state: text("state", { enum: ["draft", "claimed"] }).notNull(),
+  storagePath: text("storage_path").notNull().unique(),
+  mediaType: text("media_type", { enum: ["image/png", "image/jpeg", "image/webp", "image/gif"] }).notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  claimedAt: text("claimed_at"),
+}, (table) => [
+  index("task_attachments_project_state_index").on(table.projectId, table.state),
+  index("task_attachments_task_id_index").on(table.taskId),
+  index("task_attachments_message_id_index").on(table.messageId),
+]);
+
+export const approvalRequests = sqliteTable("approval_requests", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  providerRequestId: text("provider_request_id").notNull(),
+  toolName: text("tool_name").notNull(),
+  actionSummary: text("action_summary").notNull(),
+  workingDirectory: text("working_directory").notNull(),
+  status: text("status", { enum: ["pending", "resolved", "expired"] }).notNull(),
+  decision: text("decision", { enum: ["allow_once", "deny"] }),
+  reason: text("reason"),
+  createdAt: text("created_at").notNull(),
+  resolvedAt: text("resolved_at"),
+}, (table) => [
+  uniqueIndex("approval_requests_run_provider_request_unique").on(table.runId, table.providerRequestId),
+  index("approval_requests_task_status_index").on(table.taskId, table.status),
 ]);
 
 export const applicationLeases = sqliteTable("application_leases", {
