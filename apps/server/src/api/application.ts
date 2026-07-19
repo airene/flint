@@ -11,6 +11,7 @@ import {
   feedbackPreviewRequestSchema,
   saveFeedbackDraftRequestSchema,
   feedbackTaskRequestSchema,
+  projectFilesRequestSchema,
   reviewTaskRequestSchema,
   selectFindingsRequestSchema,
   updateFindingRequestSchema,
@@ -330,6 +331,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
           await projects.remove(projectId!, input.confirm);
           return json({ deleted: true });
         }
+      }
+
+      parameters = match(path, /^\/api\/projects\/([^/]+)\/files$/);
+      if (parameters && method === "GET") {
+        const project = await requireProject(parameters[0]!);
+        const input = projectFilesRequestSchema.parse(Object.fromEntries(url.searchParams.entries()));
+        return json(await git.projectFiles(project.id, project.rootPath, input.q ?? "", input.limit ?? 50));
       }
 
       parameters = match(path, /^\/api\/projects\/([^/]+)\/tasks$/);

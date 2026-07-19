@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { GitDiffResponse, GitFileDiffResponse, GitFileStatus, GitFilesResponse, GitStatusResponse } from "@local-pair-review/shared";
+import type { GitDiffResponse, GitFileDiffResponse, GitFileStatus, GitFilesResponse, GitStatusResponse, ProjectFilesResponse } from "@local-pair-review/shared";
 import { validateRepositoryRelativePath } from "../utils/path";
 
 const decoder = new TextDecoder();
 const UNTRACKED_CONCURRENCY_LIMIT = 4;
+const PROJECT_FILES_CACHE_MS = 5_000;
 
 async function command(
   executable: string,
@@ -245,7 +246,9 @@ function mergeBaseRelativeFiles(baseFiles: readonly GitFileStatus[], currentFile
 }
 
 export class GitService {
-  constructor(private executable = "git") {}
+  private readonly projectFilesCache = new Map<string, { rootPath: string; expiresAt: number; files: string[] }>();
+
+  constructor(private executable = "git", private readonly now: () => number = Date.now) {}
 
   setExecutablePath(executable: string): void {
     this.executable = executable;
@@ -321,6 +324,50 @@ export class GitService {
 
   async files(rootPath: string): Promise<GitFilesResponse> {
     return { files: (await this.status(rootPath)).files };
+  }
+
+  async projectFiles(
+    projectId: string,
+    rootPath: string,
+    query = "",
+    limit = 50,
+  ): Promise<ProjectFilesResponse> {
+    const cached = this.projectFilesCache.get(projectId);
+    let files: string[];
+    if (cached && cached.rootPath === rootPath && cached.expiresAt > this.now()) {
+      files = cached.files;
+    } else {
+      files = (await command(this.executable, rootPath, [
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+      ])).split("\0").filter((path) => path.length > 0 && !/\p{Cc}/u.test(path));
+      this.projectFilesCache.set(projectId, {
+        rootPath,
+        expiresAt: this.now() + PROJECT_FILES_CACHE_MS,
+        files,
+      });
+    }
+
+    const normalizedQuery = query.toLocaleLowerCase();
+    const ranked = files.flatMap((path) => {
+      const normalizedPath = path.toLocaleLowerCase();
+      if (!normalizedQuery) return [{ path, rank: 0 }];
+      const segments = normalizedPath.split("/");
+      const filename = segments.at(-1) ?? normalizedPath;
+      if (filename.startsWith(normalizedQuery)) return [{ path, rank: 0 }];
+      if (normalizedPath.startsWith(normalizedQuery) || normalizedPath.includes(`/${normalizedQuery}`)) {
+        return [{ path, rank: 1 }];
+      }
+      if (normalizedPath.includes(normalizedQuery)) return [{ path, rank: 2 }];
+      return [];
+    });
+    ranked.sort((left, right) => left.rank - right.rank
+      || left.path.length - right.path.length
+      || left.path.localeCompare(right.path));
+    return { files: ranked.slice(0, Math.min(limit, 50)).map(({ path }) => path) };
   }
 
   async fileDiff(rootPath: string, baseCommit: string, path: string): Promise<GitFileDiffResponse> {

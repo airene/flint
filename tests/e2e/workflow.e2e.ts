@@ -42,6 +42,35 @@ test.afterEach(async () => {
   await Promise.all(repositories.splice(0).map((repository) => rm(repository, { recursive: true, force: true })));
 });
 
+test("inserts file mentions in new-task and Continue Developer prompts without changing closed-menu Enter behavior", async ({ page }) => {
+  const repository = await createRepository();
+  await page.goto("/projects");
+  await page.locator("#root-path").fill(repository);
+  await page.getByRole("button", { name: "Register repository" }).click();
+  await page.getByLabel("Title").fill("File mention task");
+
+  const initialPrompt = page.getByLabel("Codex prompt");
+  await initialPrompt.fill("Use @inp");
+  await expect(page.getByRole("option", { name: "src/input.ts" })).toBeVisible();
+  await initialPrompt.press("Tab");
+  await expect(initialPrompt).toHaveValue("Use @src/input.ts ");
+  await initialPrompt.press("Enter");
+  await expect(initialPrompt).toHaveValue("Use @src/input.ts \n");
+  await initialPrompt.fill("Use @src/input.ts to implement the change.");
+  await page.getByRole("button", { name: "Create & start Codex" }).click();
+  await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
+
+  const continuation = page.getByLabel("Codex continuation message");
+  await continuation.fill("Recheck @inp");
+  await expect(page.getByRole("option", { name: "src/input.ts" })).toBeVisible();
+  await continuation.press("ArrowDown");
+  await continuation.press("Enter");
+  await expect(continuation).toHaveValue("Recheck @src/input.ts ");
+  await expect(page.getByRole("button", { name: "Select Developer run 2" })).toHaveCount(0);
+  await continuation.press("Enter");
+  await expect(page.getByRole("button", { name: "Select Developer run 2" })).toBeVisible();
+});
+
 test("shows the configured CLI models on Settings", async ({ page }) => {
   await page.goto("/settings");
 

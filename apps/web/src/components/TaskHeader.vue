@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { AgentRun, Task } from "@local-pair-review/shared";
+import FileMentionInput from "./FileMentionInput.vue";
 
 const props = defineProps<{
   task: Task;
@@ -16,7 +17,6 @@ const emit = defineEmits<{ develop: [prompt?: string]; review: []; cancel: [runI
 const continuationPrompt = ref("");
 const continuationPending = ref(false);
 const barEl = ref<HTMLElement | null>(null);
-const textareaEl = ref<HTMLTextAreaElement | null>(null);
 const activeRun = computed(() => props.runs.find((run) => run.status === "queued" || run.status === "running") ?? null);
 const activeRunLabel = computed(() => activeRun.value?.runType === "reviewer" ? props.reviewerLabel : props.developerLabel);
 const statusClass = computed(() => props.task.status === "ready_for_review" || props.task.status === "completed" ? "ready"
@@ -36,15 +36,6 @@ function continueDeveloper(): void {
   continuationPending.value = true;
   emit("develop", prompt);
 }
-
-function autoResize(): void {
-  const el = textareaEl.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-}
-
-watch(continuationPrompt, () => { void nextTick(autoResize); });
 
 watch(() => [props.task.id, props.task.status] as const, ([taskId, status], [previousTaskId]) => {
   if (taskId !== previousTaskId) {
@@ -88,10 +79,10 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <div v-if="hasActions" ref="barEl" class="task-action-bar">
       <div v-if="showComposer" class="continuation-composer">
-        <textarea
-          ref="textareaEl" v-model="continuationPrompt" rows="1" class="input continuation-input"
+        <FileMentionInput
+          v-model="continuationPrompt" class="continuation-input" :project-id="task.projectId"
           :aria-label="`${developerLabel} continuation message`" :placeholder="`Tell ${developerLabel} what to do next…`"
-          @input="autoResize" @keydown.enter.exact.prevent="continueDeveloper"
+          @submit="continueDeveloper"
         />
         <button class="button" :disabled="busy || !task.developerSessionId || !developerReady || !continuationPrompt.trim()" @click="continueDeveloper">Continue {{ developerLabel }}</button>
       </div>
@@ -110,7 +101,7 @@ onBeforeUnmount(() => {
 .diff-chip{display:inline-flex;align-items:center;gap:6px;min-height:21px;padding:0 8px;border:1px solid var(--border-bright);border-radius:99px;color:var(--muted);background:var(--block-bg);cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.02em;transition:.15s ease}.diff-chip:hover{color:var(--text);border-color:var(--border-bright);background:var(--surface-active)}.diff-chip-glyph{color:var(--accent);font-size:11px;transform:rotate(90deg)}.diff-chip-count{display:inline-flex;align-items:center;min-width:16px;height:15px;justify-content:center;padding:0 4px;border-radius:99px;color:var(--text-body);background:var(--border);font-size:9px}.task-header h1{font-size:23px;margin-bottom:7px}
 .task-action-bar{position:fixed;left:248px;right:0;bottom:0;z-index:50;display:flex;align-items:flex-end;gap:12px;margin:0 24px 16px;padding:12px 14px;border:1px solid var(--border-bright);border-radius:var(--radius);background:var(--panel);box-shadow:0 6px 18px rgba(0,0,0,.14)}
 .continuation-composer{flex:1;min-width:0;display:flex;align-items:flex-end;gap:8px}
-.continuation-input{flex:1;min-width:0;min-height:36px;max-height:200px;line-height:1.5;resize:none;overflow-y:auto}
+.continuation-input{flex:1;min-width:0}
 .task-actions{flex:none;justify-content:flex-end}
 @media(max-width:900px){.task-action-bar{left:0}}
 </style>

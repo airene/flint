@@ -379,6 +379,14 @@ export const gitFileDiffResponseSchema = z.object({
 }).strict();
 export type GitFileDiffResponse = z.infer<typeof gitFileDiffResponseSchema>;
 
+export const projectFilesRequestSchema = z.object({
+  q: z.string().max(200).default(""),
+  limit: z.coerce.number<string | number>().int().min(1).max(50).default(50),
+}).strict();
+export type ProjectFilesRequest = z.input<typeof projectFilesRequestSchema>;
+export const projectFilesResponseSchema = z.object({ files: z.array(z.string()) }).strict();
+export type ProjectFilesResponse = z.infer<typeof projectFilesResponseSchema>;
+
 export const agentAvailabilitySchema = z.object({
   installed: z.boolean(),
   executablePath: z.string().nullable(),

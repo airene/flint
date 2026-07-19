@@ -18,6 +18,7 @@ import {
   gitStatusResponseSchema,
   healthResponseSchema,
   projectListResponseSchema,
+  projectFilesResponseSchema,
   projectResponseSchema,
   reviewTaskResponseSchema,
   runListResponseSchema,
@@ -53,6 +54,8 @@ import {
   type GitStatusResponse,
   type HealthResponse,
   type ProjectListResponse,
+  type ProjectFilesRequest,
+  type ProjectFilesResponse,
   type ProjectResponse,
   type ReviewTaskResponse,
   type RunListResponse,
@@ -83,6 +86,7 @@ export interface ApiEndpoints {
   listProjects(): Promise<ProjectListResponse>;
   createProject(input: CreateProjectRequest): Promise<CreateProjectResponse>;
   getProject(projectId: string): Promise<ProjectResponse>;
+  listProjectFiles(projectId: string, input?: ProjectFilesRequest, signal?: AbortSignal): Promise<ProjectFilesResponse>;
   updateProject(projectId: string, input: UpdateProjectRequest): Promise<ProjectResponse>;
   deleteProject(projectId: string, input: DeleteProjectRequest): Promise<DeleteProjectResponse>;
   listTasks(projectId: string): Promise<TaskListResponse>;
@@ -127,6 +131,11 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
       body: input,
     }),
     getProject: (projectId) => client.request(`/api/projects/${id(projectId)}`, projectResponseSchema),
+    listProjectFiles: (projectId, input = {}, signal) => client.request(
+      `/api/projects/${id(projectId)}/files`,
+      projectFilesResponseSchema,
+      { query: input, signal },
+    ),
     updateProject: (projectId, input) => client.request(`/api/projects/${id(projectId)}`, projectResponseSchema, {
       method: "PATCH",
       body: input,
