@@ -8,6 +8,7 @@ const filter = ref("all");
 interface EventView {
   title: string;
   detail?: string;
+  warning?: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -65,6 +66,9 @@ function toolView(parsed: Record<string, unknown> | null, item: Record<string, u
     const content = typeof result.content === "string"
       ? result.content
       : JSON.stringify(result.content ?? "");
+    if (/permission denied|permission required|not allowed|requires approval/i.test(content)) {
+      return { title: "Command blocked by CLI permissions", detail: firstLine(content), warning: true };
+    }
     return { title: "Tool result", detail: firstLine(content) };
   }
   return { title: "Tool call" };
@@ -101,7 +105,6 @@ function view(event: AgentEvent): EventView {
       };
     }
     case "plan": return { title: "Plan", detail: firstLine(item?.text) };
-    case "stderr": return { title: "CLI log", detail: firstLine(payload?.raw) };
     case "review_parsed": {
       const count = typeof parsed?.findingCount === "number" ? `${parsed.findingCount} findings` : undefined;
       const verdict = typeof parsed?.verdict === "string" ? parsed.verdict : undefined;
@@ -112,7 +115,6 @@ function view(event: AgentEvent): EventView {
       title: typeof parsed?.type === "string" ? `Unparsed: ${parsed.type}` : "Unparsed output",
       detail: firstLine(payload?.raw),
     };
-    default: return { title: event.type.replaceAll("_", " ") };
   }
 }
 
@@ -132,7 +134,7 @@ const visible = computed(() => props.events
       </select>
     </header>
     <div v-if="visible.length" class="timeline scroll-area">
-      <div v-for="row in visible" :key="`${row.event.taskId}:${row.event.sequence}`" class="timeline-row">
+      <div v-for="row in visible" :key="`${row.event.taskId}:${row.event.sequence}`" :class="['timeline-row', { warning: row.view.warning }]">
         <span :class="['source-mark', row.event.source]" />
         <div class="timeline-content">
           <strong>{{ row.view.title }}</strong>
@@ -151,6 +153,7 @@ const visible = computed(() => props.events
 .timeline { max-height: 390px; }
 .timeline-row { position:relative; display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; padding:10px 14px; border-bottom:1px solid var(--border-soft); }
 .timeline-row:last-child { border:0; }.timeline-row strong { display:block; color:var(--text-body); font-size:11px; font-weight:600; }.timeline-row small { display:block; color:var(--faint); font-size:9px; margin-top:3px; }
+.timeline-row.warning{background:rgba(243,201,105,.07)}.timeline-row.warning strong{color:var(--yellow-ink)}
 .timeline-content { min-width:0; }
 .detail { display:block; margin-top:2px; color:var(--muted); font-size:10px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .source-mark { width:7px; height:7px; margin-top:3px; border-radius:50%; background:var(--muted); }.source-mark.codex{background:var(--blue)}.source-mark.claude{background:var(--accent)}.source-mark.system{background:var(--green)}

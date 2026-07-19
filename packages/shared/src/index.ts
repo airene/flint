@@ -44,8 +44,6 @@ export const projectSchema = z.object({
   id: z.string(),
   name: z.string(),
   rootPath: z.string(),
-  defaultDeveloper: providerSchema,
-  defaultReviewer: providerSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
   lastOpenedAt: z.string().nullable(),
@@ -64,7 +62,6 @@ export const taskSchema = z.object({
   developerProvider: providerSchema,
   reviewerProvider: providerSchema,
   developerSessionId: z.string().nullable(),
-  reviewerSessionId: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
   completedAt: z.string().nullable(),
@@ -166,8 +163,6 @@ export const agentEventTypeSchema = z.enum([
   "tool",
   "command",
   "file_changed",
-  "usage",
-  "stderr",
   "review_parsed",
   "review_parse_failed",
   "raw",
@@ -225,13 +220,8 @@ export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
 export const createProjectResponseSchema = projectResponseSchema;
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>;
 
-export const updateProjectRequestSchema = z.object({
-  name: z.string().min(1).optional(),
-  lastOpenedAt: z.string().nullable().optional(),
-}).strict().refine((request) => Object.keys(request).length > 0, {
-  message: "At least one project field is required",
-});
-export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>;
+export const markProjectOpenedRequestSchema = z.object({ lastOpenedAt: z.string().min(1) }).strict();
+export type MarkProjectOpenedRequest = z.infer<typeof markProjectOpenedRequestSchema>;
 
 export const deleteProjectRequestSchema = z.object({
   confirm: z.boolean().default(false),
@@ -247,13 +237,6 @@ export type TaskListResponse = z.infer<typeof taskListResponseSchema>;
 export const createTaskResponseSchema = taskResponseSchema;
 export type CreateTaskResponse = z.infer<typeof createTaskResponseSchema>;
 
-export const updateTaskRequestSchema = z.object({
-  title: z.string().min(1).optional(),
-  originalPrompt: z.string().min(1).optional(),
-}).strict().refine((request) => Object.keys(request).length > 0, {
-  message: "At least one task field is required",
-});
-export type UpdateTaskRequest = z.infer<typeof updateTaskRequestSchema>;
 export const completeTaskRequestSchema = z.object({}).strict();
 export type CompleteTaskRequest = z.infer<typeof completeTaskRequestSchema>;
 export const completeTaskResponseSchema = taskResponseSchema;

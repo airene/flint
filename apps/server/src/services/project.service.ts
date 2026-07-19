@@ -48,7 +48,7 @@ export class ProjectService {
     if (existing) throw new DuplicateProjectError(rootPath);
     const timestamp = now();
     const project: Project = {
-      id: randomUUID(), name: basename(rootPath), rootPath, defaultDeveloper: "codex", defaultReviewer: "claude",
+      id: randomUUID(), name: basename(rootPath), rootPath,
       createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
     };
     try {
@@ -69,18 +69,9 @@ export class ProjectService {
     return (await this.database.db.select().from(projects).where(eq(projects.id, projectId)).get()) ?? null;
   }
 
-  async update(projectId: string, changes: Pick<Partial<Project>, "name" | "lastOpenedAt">): Promise<Project | null> {
-    if (Object.keys(changes).length === 0) return this.get(projectId);
-    await this.database.db.update(projects).set({ ...changes, updatedAt: now() }).where(eq(projects.id, projectId)).run();
+  async markOpened(projectId: string, lastOpenedAt: string): Promise<Project | null> {
+    await this.database.db.update(projects).set({ lastOpenedAt, updatedAt: now() }).where(eq(projects.id, projectId)).run();
     return this.get(projectId);
-  }
-
-  async removalInfo(projectId: string): Promise<ProjectRemovalInfo> {
-    const project = await this.get(projectId);
-    if (!project) throw new Error("Project not found");
-    const result = await this.database.db.select({ value: count() }).from(tasks).where(eq(tasks.projectId, projectId)).get();
-    const taskCount = result?.value ?? 0;
-    return { projectId, taskCount, requiresConfirmation: taskCount > 0 };
   }
 
   async remove(projectId: string, confirmed = false): Promise<void> {

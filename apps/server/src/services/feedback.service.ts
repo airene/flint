@@ -56,42 +56,42 @@ interface FeedbackServiceOptions {
 
 function findingBlock(finding: ReviewFinding): string {
   const location = finding.startLine === null
-    ? "未指定"
+    ? "Not specified"
     : finding.endLine === null || finding.endLine === finding.startLine
       ? String(finding.startLine)
       : `${finding.startLine}-${finding.endLine}`;
   return `## ${finding.severity} - ${finding.title}
 
-文件：${finding.file ?? "未指定"}
-行号：${location}
+File: ${finding.file ?? "Not specified"}
+Lines: ${location}
 
-问题：
+Issue:
 ${finding.description}
 
-建议：
+Suggested change:
 ${finding.suggestion}
 
-人工备注：
-${finding.userNote ?? "无"}`;
+Human note:
+${finding.userNote ?? "None"}`;
 }
 
 export function composeFeedback(task: Task, findings: ReviewFinding[]): string {
   const selected = findings.filter((finding) => finding.selected && !finding.dismissed);
-  return `下面是人工确认后需要处理的 Code Review 意见。
+  return `Code review feedback confirmed by a human.
 
-原始任务：
+Original task:
 ${task.originalPrompt}
 
 ${selected.map(findingBlock).join("\n\n")}
 
-请逐项检查并处理。
+Address each accepted finding.
 
-要求：
-1. 对认可的问题进行修复；
-2. 补充必要的测试；
-3. 对不认可的问题说明理由；
-4. 不要修改与这些问题无关的代码；
-5. 完成后总结每个问题的处理结果。`;
+Requirements:
+1. Fix findings you agree with.
+2. Add necessary tests.
+3. Explain why you disagree with any finding you reject.
+4. Do not modify unrelated code.
+5. Summarize the outcome for every finding.`;
 }
 
 export class FeedbackService {

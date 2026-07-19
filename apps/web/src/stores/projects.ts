@@ -3,8 +3,6 @@ import type {
   CreateTaskRequest,
   Project,
   Task,
-  UpdateProjectRequest,
-  UpdateTaskRequest,
 } from "@local-pair-review/shared";
 import { defineStore } from "pinia";
 import { ApiClientError } from "../api/client";
@@ -52,7 +50,6 @@ export const useProjectsStore = defineStore("projects", {
     selectionGeneration: 0,
   }),
   getters: {
-    currentProjectId: (state): string | null => state.currentProject?.id ?? null,
     dirtyWorkingTreeFiles: (state): string[] => state.pendingDirtyTask?.files ?? [],
   },
   actions: {
@@ -85,7 +82,7 @@ export const useProjectsStore = defineStore("projects", {
       this.tasks = [];
       try {
         const [project, tasks] = await Promise.all([
-          apiEndpoints.getProject(projectId),
+          apiEndpoints.markProjectOpened(projectId, { lastOpenedAt: new Date().toISOString() }),
           apiEndpoints.listTasks(projectId),
         ]);
         if (selectionGeneration === this.selectionGeneration) {
@@ -116,18 +113,6 @@ export const useProjectsStore = defineStore("projects", {
         throw this.error;
       } finally {
         this.loading = false;
-      }
-    },
-    async updateProject(projectId: string, input: UpdateProjectRequest): Promise<Project> {
-      this.error = null;
-      try {
-        const project = await apiEndpoints.updateProject(projectId, input);
-        upsert(this.projects, project);
-        if (this.currentProject?.id === project.id) this.currentProject = project;
-        return project;
-      } catch (error) {
-        this.error = clientError(error);
-        throw this.error;
       }
     },
     async deleteProject(projectId: string, confirm = false): Promise<void> {
@@ -167,36 +152,6 @@ export const useProjectsStore = defineStore("projects", {
         this.unfinishedLoading = false;
       }
     },
-    async loadTasks(projectId?: string): Promise<Task[]> {
-      const selectedProjectId = projectId ?? this.currentProject?.id;
-      if (!selectedProjectId) {
-        this.tasks = [];
-        return this.tasks;
-      }
-      this.loading = true;
-      this.error = null;
-      try {
-        const tasks = await apiEndpoints.listTasks(selectedProjectId);
-        if (this.currentProject?.id === selectedProjectId) this.tasks = tasks;
-        return tasks;
-      } catch (error) {
-        this.error = clientError(error);
-        throw this.error;
-      } finally {
-        this.loading = false;
-      }
-    },
-    async loadTask(taskId: string): Promise<Task> {
-      this.error = null;
-      try {
-        const task = await apiEndpoints.getTask(taskId);
-        if (this.currentProject?.id === task.projectId) upsert(this.tasks, task);
-        return task;
-      } catch (error) {
-        this.error = clientError(error);
-        throw this.error;
-      }
-    },
     async createTask(projectId: string, input: CreateTaskRequest): Promise<Task> {
       const selectionGeneration = this.selectionGeneration;
       this.error = null;
@@ -229,28 +184,6 @@ export const useProjectsStore = defineStore("projects", {
         ...pending.input,
         confirmDirtyWorkingTree: true,
       });
-    },
-    async updateTask(taskId: string, input: UpdateTaskRequest): Promise<Task> {
-      this.error = null;
-      try {
-        const task = await apiEndpoints.updateTask(taskId, input);
-        upsert(this.tasks, task);
-        return task;
-      } catch (error) {
-        this.error = clientError(error);
-        throw this.error;
-      }
-    },
-    async completeTask(taskId: string): Promise<Task> {
-      this.error = null;
-      try {
-        const task = await apiEndpoints.completeTask(taskId);
-        upsert(this.tasks, task);
-        return task;
-      } catch (error) {
-        this.error = clientError(error);
-        throw this.error;
-      }
     },
   },
 });

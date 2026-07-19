@@ -147,7 +147,7 @@ export class TaskEventController {
     socket.onerror = (error) => {
       if (this.isCurrent(socket, generation)) this.reportError(error);
     };
-    socket.onclose = (event) => {
+    socket.onclose = () => {
       if (!this.isCurrent(socket, generation)) return;
       this.socket = null;
       this.setConnectionState(false);

@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 
 export class GitRootValidationError extends Error {
   constructor(message: string, readonly cause?: unknown) {
@@ -31,7 +31,14 @@ export async function canonicalGitRoot(path: string, gitExecutable = "git"): Pro
 }
 
 export function validateRepositoryRelativePath(path: string): void {
-  if (!path || path.startsWith("/") || path.split("/").includes("..")) {
+  if (
+    !path
+    || path.startsWith("/")
+    || path.includes("\\")
+    || win32.isAbsolute(path)
+    || /^[A-Za-z]:/.test(path)
+    || path.split("/").includes("..")
+  ) {
     throw new GitRootValidationError("File path must be relative to the project root");
   }
 }

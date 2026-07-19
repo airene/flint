@@ -78,7 +78,7 @@ export class TaskService {
       id: randomUUID(), projectId, title: input.title, originalPrompt: input.originalPrompt,
       workingDirectory: project.rootPath, baseCommit, latestSnapshotHash: null, status: "draft",
       developerProvider: roles.developerProvider, reviewerProvider: roles.reviewerProvider,
-      developerSessionId: null, reviewerSessionId: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null,
+      developerSessionId: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null,
     };
     await this.database.db.insert(tasks).values(task).run();
     return task;
@@ -90,15 +90,6 @@ export class TaskService {
 
   async list(projectId: string): Promise<Task[]> {
     return this.database.db.select().from(tasks).where(eq(tasks.projectId, projectId)).orderBy(tasks.createdAt).all();
-  }
-
-  async update(taskId: string, changes: Pick<Partial<Task>, "title" | "originalPrompt">): Promise<Task | null> {
-    const task = await this.get(taskId);
-    if (!task) return null;
-    if (task.status === "completed") throw new CompletedTaskReadOnlyError(taskId);
-    if (Object.keys(changes).length === 0) return task;
-    await this.database.db.update(tasks).set({ ...changes, updatedAt: now() }).where(eq(tasks.id, taskId)).run();
-    return this.get(taskId);
   }
 
   async transition(taskId: string, target: TaskStatus): Promise<Task> {

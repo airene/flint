@@ -13,6 +13,7 @@ import {
 } from "../services/task.service";
 import { DuplicateFeedbackError, StaleFeedbackLeaseError } from "../services/feedback.service";
 import { GitCliExecutionError } from "../services/git.service";
+import { InvalidAppSettingError } from "../services/app-settings.service";
 import { GitRootValidationError } from "../utils/path";
 
 export class NotFoundError extends Error {
@@ -26,6 +27,13 @@ export class CliUnavailableError extends Error {
   constructor(readonly provider: "codex" | "claude" | "git", message: string) {
     super(message);
     this.name = "CliUnavailableError";
+  }
+}
+
+export class RequestValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RequestValidationError";
   }
 }
 
@@ -57,7 +65,10 @@ function isSqliteConstraintError(error: unknown): error is Error {
 }
 
 export function errorResponse(error: unknown): Response {
-  if (error instanceof ZodError || error instanceof SyntaxError || error instanceof GitRootValidationError) {
+  if (error instanceof RequestValidationError || error instanceof InvalidAppSettingError) {
+    return Response.json({ code: "VALIDATION_ERROR", message: error.message }, { status: 400 });
+  }
+  if (error instanceof ZodError || error instanceof GitRootValidationError) {
     return Response.json({ code: "VALIDATION_ERROR", message: "Invalid request.", details: error instanceof ZodError ? error.issues : undefined }, { status: 400 });
   }
   if (error instanceof NotFoundError) {

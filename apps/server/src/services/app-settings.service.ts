@@ -33,9 +33,16 @@ const agentRoleSettingKeys = {
 type SettingName = keyof typeof settingKeys;
 type AgentRoleSettingName = keyof typeof agentRoleSettingKeys;
 
+export class InvalidAppSettingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAppSettingError";
+  }
+}
+
 function validateOverride(value: string | null | undefined): void {
   if (typeof value === "string" && !isAbsolute(value)) {
-    throw new SyntaxError("Custom executable paths must be absolute.");
+    throw new InvalidAppSettingError("Custom executable paths must be absolute.");
   }
 }
 
@@ -117,16 +124,4 @@ export class AppSettingsService {
     }, { behavior: "immediate" });
   }
 
-  updateAgentRoles(input: AgentRoleSettings): AgentRoleSettings {
-    const roles = agentRoleSettingsSchema.parse(input);
-    return this.updateSettings(roles).roles;
-  }
-
-  updateCliExecutables(input: CliRecheckRequest): CliExecutableSettings {
-    return this.updateSettings({
-      codexExecutable: input.codexExecutable,
-      claudeExecutable: input.claudeExecutable,
-      gitExecutable: input.gitExecutable,
-    }).cliExecutables;
-  }
 }

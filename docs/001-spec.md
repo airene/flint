@@ -133,8 +133,6 @@ export interface Project {
   id: string;
   name: string;
   rootPath: string;
-  defaultDeveloper: "codex";
-  defaultReviewer: "claude";
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string | null;
@@ -164,8 +162,9 @@ export interface Task {
   baseCommit: string;
   latestSnapshotHash: string | null;
   status: TaskStatus;
+  developerProvider: "codex" | "claude";
+  reviewerProvider: "codex" | "claude";
   developerSessionId: string | null;
-  reviewerSessionId: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -176,7 +175,7 @@ Task 状态描述产品工作流。失败、取消和中断属于具体 AgentRun
 
 `workingDirectory` 在 MVP 中等于 Project 的 canonical `rootPath`。`baseCommit` 在创建任务时必须存在，项目无 `HEAD` 时拒绝创建任务并给出说明。
 
-`developerSessionId` 和 `reviewerSessionId` 保存对应 CLI 返回的精确 Session ID。恢复会话必须使用精确 Session ID，禁止依赖 `--last` 或 `--continue`。
+Task 保存开发者 CLI 返回的精确 `developerSessionId`，用于后续 Feedback Run 恢复同一开发会话。Reviewer 每轮严格只读且独立启动，其 Session ID 仅记录在对应 AgentRun 的 `externalSessionId` 中，不跨轮恢复。恢复开发会话必须使用精确 Session ID，禁止依赖 `--last` 或 `--continue`。
 
 ### 5.3 AgentRun
 
@@ -558,7 +557,7 @@ Run 异常后的 Task 回退：
 | reviewer | `ready_for_review` |
 | reviewer 仅解析失败 | `waiting_for_human`，显示原始 Review |
 
-应用启动时把数据库中所有 `queued`、`running` Run 标记为 `interrupted`，清空失效 PID，按上表回退 Task。保留 Session ID，并提供“恢复 Codex Session”或“重新 Review”。
+应用启动时把数据库中所有 `queued`、`running` Run 标记为 `interrupted`，清空失效 PID，按上表回退 Task。保留可恢复的开发者 Session ID，并提供“恢复开发会话”或“重新 Review”。
 
 用户取消 Run 时先发送终止信号，等待有限宽限期，再终止整个子进程树。最终状态为 `cancelled`；服务关闭或进程归属丢失使用 `interrupted`。
 
@@ -580,13 +579,12 @@ POST /api/system/clis/recheck
 GET    /api/projects
 POST   /api/projects
 GET    /api/projects/:projectId
-PATCH  /api/projects/:projectId
+PATCH  /api/projects/:projectId  # 仅记录 lastOpenedAt
 DELETE /api/projects/:projectId
 
 GET   /api/projects/:projectId/tasks
 POST  /api/projects/:projectId/tasks
 GET   /api/tasks/:taskId
-PATCH /api/tasks/:taskId
 POST  /api/tasks/:taskId/complete
 
 POST /api/tasks/:taskId/develop

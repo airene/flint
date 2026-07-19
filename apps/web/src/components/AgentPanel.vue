@@ -11,8 +11,15 @@ const props = defineProps<{
 const messages = computed(() => props.events.filter((event) => (
   event.runId === props.run.id
   && event.source === props.run.provider
-  && ["message", "plan", "command", "tool", "file_changed", "usage", "turn_completed", "stderr"].includes(event.type)
+  && ["message", "plan", "command", "tool", "file_changed", "turn_completed"].includes(event.type)
 )).slice(-24));
+
+const permissionBlocked = computed(() => (
+  props.run.provider === "claude"
+  && props.run.runType !== "reviewer"
+  && typeof props.run.errorMessage === "string"
+  && /permission denied|permission required|not allowed|requires approval/i.test(props.run.errorMessage)
+));
 
 function eventText(event: AgentEvent): string {
   const payload = event.payload as Record<string, unknown> | null;
@@ -48,11 +55,12 @@ function eventText(event: AgentEvent): string {
       <div v-if="run.errorMessage" class="message-block error-text">
         <span class="mini-label">Error · exit {{ run.exitCode ?? "?" }}</span>
         <p>{{ run.errorMessage }}</p>
+        <p v-if="permissionBlocked" class="permission-help">Claude developer runs use acceptEdits, which does not automatically authorize Bash. Run the blocked command manually or adjust the task instructions.</p>
       </div>
       <details v-if="messages.length" class="event-details">
         <summary>{{ messages.length }} recent stream events</summary>
         <div class="event-lines mono">
-          <div v-for="event in messages" :key="`${event.taskId}:${event.sequence}`" :class="['event-line', { stderr: event.type === 'stderr' }]">
+          <div v-for="event in messages" :key="`${event.taskId}:${event.sequence}`" class="event-line">
             <span>{{ event.sequence }}</span><span>{{ event.type }}</span><code>{{ eventText(event) }}</code>
           </div>
         </div>
@@ -72,9 +80,9 @@ function eventText(event: AgentEvent): string {
 .prompt-block, .message-block { min-width: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--block-bg); }
 .mini-label { display: block; color: var(--faint); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
 p { margin: 0; color: var(--text-body); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
-.error-text { border-color: rgba(255,107,117,.25); }.error-text p { color: var(--red-ink); }
+.error-text { border-color: rgba(255,107,117,.25); }.error-text p { color: var(--red-ink); }.error-text .permission-help{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,107,117,.2);color:var(--yellow-ink);font-size:10px}
 .event-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 .event-lines { max-height: 220px; margin-top: 8px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
 .event-line { display: grid; grid-template-columns: 30px 90px minmax(0,1fr); gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); color: var(--faint); font-size: 9px; }
-.event-line:last-child { border: 0; }.event-line code { color: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.event-line.stderr code { color: var(--red-ink); }
+.event-line:last-child { border: 0; }.event-line code { color: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

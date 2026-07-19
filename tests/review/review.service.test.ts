@@ -22,7 +22,6 @@ function task(): Task {
     developerProvider: "codex",
     reviewerProvider: "claude",
     developerSessionId: "codex-session-1",
-    reviewerSessionId: null,
     createdAt: "2026-07-18T00:00:00.000Z",
     updatedAt: "2026-07-18T00:00:00.000Z",
     completedAt: null,
@@ -126,12 +125,13 @@ describe("Review prompt", () => {
     expect(prompt).toContain("1 file changed");
     expect(prompt).toContain("diff --git a/src/input.ts b/src/input.ts");
     expect(prompt).toContain("diff --git a/new.txt b/new.txt");
-    expect(prompt).not.toContain("请先用允许的只读命令");
-    expect(prompt).toContain("功能正确性");
+    expect(prompt).toContain("independent code reviewer");
+    expect(prompt).toContain("Functional correctness");
     expect(prompt).toContain("P0");
     expect(prompt).toContain("P1");
     expect(prompt).toContain("P2");
-    expect(prompt).toContain("不要修改文件");
+    expect(prompt).toContain("Do not modify files");
+    expect(prompt).not.toMatch(/[\u4e00-\u9fff]/);
   });
 });
 

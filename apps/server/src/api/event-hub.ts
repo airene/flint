@@ -63,17 +63,17 @@ export class EventHub implements EventBroadcastPort {
   }
 
   private send(socket: EventSocket, event: AgentEvent): boolean {
-      if (socket.getBufferedAmount() > 1_000_000) {
-        socket.close(1013, "Client is too slow; reconnect to replay events");
-        this.sockets.delete(socket);
-        return false;
-      }
-      try {
-        socket.send(JSON.stringify({ action: "event", event }));
-        return true;
-      } catch {
-        this.sockets.delete(socket);
-        return false;
-      }
+    if (socket.getBufferedAmount() > 1_000_000) {
+      socket.close(1013, "Client is too slow; reconnect to replay events");
+      this.sockets.delete(socket);
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify({ action: "event", event }));
+      return true;
+    } catch {
+      this.sockets.delete(socket);
+      return false;
+    }
   }
 }

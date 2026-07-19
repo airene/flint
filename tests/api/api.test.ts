@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentEvent, AgentRun, ReviewFinding, Task } from "@local-pair-review/shared";
@@ -177,13 +177,12 @@ describe("local server API assembly", () => {
       ).trim();
       database.db.insert(projects).values({
         id: "project-owned", name: "owned", rootPath,
-        defaultDeveloper: "codex", defaultReviewer: "claude",
         createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
       }).run();
       database.db.insert(tasks).values({
         id: "task-owned", projectId: "project-owned", title: "owned", originalPrompt: "owned",
         workingDirectory: rootPath, baseCommit, latestSnapshotHash: null, status: "developing",
-        developerSessionId: null, reviewerSessionId: null,
+        developerSessionId: null,
         createdAt: timestamp, updatedAt: timestamp, completedAt: null,
       }).run();
       database.db.insert(agentRuns).values({
@@ -544,6 +543,10 @@ describe("local server API assembly", () => {
       method: "POST", headers: { "content-type": "text/plain" }, body: JSON.stringify({ rootPath }),
     });
     expect(wrongContentType.status).toBe(400);
+    expect(await wrongContentType.json()).toMatchObject({
+      code: "VALIDATION_ERROR",
+      message: "Write requests require application/json.",
+    });
     const missing = await request<{ code: string }>(baseUrl, "/api/tasks/missing");
     expect(missing).toMatchObject({ status: 404, body: { code: "NOT_FOUND" } });
 
@@ -565,6 +568,37 @@ describe("local server API assembly", () => {
       method: "DELETE", body: JSON.stringify({ confirm: true }),
     });
     expect(deleteConflict).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+  });
+
+  test("rechecks provider availability before starting a run", async () => {
+    const rootPath = await repository();
+    const executableDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-cli-refresh-"));
+    cleanups.push(() => rm(executableDirectory, { recursive: true, force: true }));
+    const temporaryCodex = join(executableDirectory, "codex");
+    await copyFile(codexFixture, temporaryCodex);
+    await chmod(temporaryCodex, 0o755);
+    const application = await createApplication({
+      databasePath: ":memory:", codexExecutable: temporaryCodex, claudeExecutable: claudeFixture,
+      gitExecutable: "git", environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    cleanups.push(() => application.shutdown());
+    const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+      method: "POST", body: JSON.stringify({ rootPath }),
+    });
+    const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+      method: "POST", body: JSON.stringify({ title: "fresh CLI", originalPrompt: "fresh CLI" }),
+    });
+    await rm(temporaryCodex);
+
+    const started = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/tasks/${task.body.id}/develop`,
+      { method: "POST", body: "{}" },
+    );
+    expect(started).toMatchObject({
+      status: 422,
+      body: { code: "CLI_UNAVAILABLE", details: { provider: "codex" } },
+    });
   });
 
   test("keeps persisted task history readable when its repository is deleted", async () => {
@@ -715,10 +749,6 @@ describe("local server API assembly", () => {
       userNote: null,
     });
 
-    const patched = await request<{ code: string }>(baseUrl, `/api/tasks/${task.body.id}`, {
-      method: "PATCH", body: JSON.stringify({ originalPrompt: "mutated" }),
-    });
-    expect(patched).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
     expect((await request<Task>(baseUrl, `/api/tasks/${task.body.id}`)).body.originalPrompt).toBe("history");
   });
 
@@ -732,13 +762,12 @@ describe("local server API assembly", () => {
     const timestamp = "2026-07-18T00:00:00.000Z";
     database.db.insert(projects).values({
       id: "project-recovery", name: "recovery", rootPath,
-      defaultDeveloper: "codex", defaultReviewer: "claude",
       createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
     }).run();
     database.db.insert(tasks).values({
       id: "task-recovery", projectId: "project-recovery", title: "recover", originalPrompt: "recover",
       workingDirectory: rootPath, baseCommit, latestSnapshotHash: null, status: "developing",
-      developerSessionId: null, reviewerSessionId: null,
+      developerSessionId: null,
       createdAt: timestamp, updatedAt: timestamp, completedAt: null,
     }).run();
     database.db.insert(agentRuns).values({

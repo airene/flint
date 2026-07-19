@@ -7,7 +7,7 @@ import { checkCodexAvailability, checkGitAvailability } from "../../apps/server/
 import { resolveCodexModel } from "../../apps/server/src/drivers/cli-model";
 import { ClaudeCliDriver } from "../../apps/server/src/drivers/claude-cli.driver";
 import { CodexCliDriver } from "../../apps/server/src/drivers/codex-cli.driver";
-import { AgentProcessError } from "../../apps/server/src/utils/process-supervisor";
+import { AgentProcessError, ProcessSupervisor } from "../../apps/server/src/utils/process-supervisor";
 
 const codexFixture = join(import.meta.dir, "../fixtures/bin/codex");
 const claudeFixture = join(import.meta.dir, "../fixtures/bin/claude");
@@ -51,6 +51,29 @@ async function waitForFile(path: string, timeoutMs = 500): Promise<void> {
   }
   throw new Error(`Timed out waiting for ${path}`);
 }
+
+describe("ProcessSupervisor", () => {
+  test("returns as soon as a process tree exits during graceful cancellation", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1_000)"], {
+      detached: true,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const supervisor = new ProcessSupervisor(1_000);
+    supervisor.track("run-fast-exit", child);
+    void child.exited.finally(() => supervisor.release("run-fast-exit"));
+
+    const startedAt = performance.now();
+    try {
+      await supervisor.cancel("run-fast-exit");
+      expect(performance.now() - startedAt).toBeLessThan(800);
+    } finally {
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      await child.exited;
+    }
+  });
+});
 
 describe("CLI availability", () => {
   test("reports Codex and Claude subscription authentication when status is clear", async () => {
@@ -390,7 +413,7 @@ describe("Codex driver", () => {
     await stderrDriver.start(request(directory, { runId: "run-stderr" }), async (event) => { stderrEvents.push(event); });
 
     expect(invalidEvents.filter((event) => event.type === "raw")).toHaveLength(2);
-    expect(stderrEvents.filter((event) => event.type === "stderr")).toHaveLength(0);
+    expect(stderrEvents.map((event) => String(event.type))).not.toContain("stderr");
     expect(stderrEvents.map((event) => event.type)).toContain("turn_completed");
   });
 

@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type { ReviewFinding, UpdateFindingRequest } from "@local-pair-review/shared";
 import ActivityPanel from "../components/ActivityPanel.vue";
 import AgentPanel from "../components/AgentPanel.vue";
-import DiffPanel from "../components/DiffPanel.vue";
 import ErrorBanner from "../components/ErrorBanner.vue";
 import FeedbackEditor from "../components/FeedbackEditor.vue";
 import ReviewPanel from "../components/ReviewPanel.vue";
@@ -13,6 +12,8 @@ import TaskHeader from "../components/TaskHeader.vue";
 import { buildRunHistory, selectRunAfterUpdate } from "../components/run-history";
 import { useSystemStore } from "../stores/system";
 import { useTaskWorkspaceStore } from "../stores/task-workspace";
+
+const DiffPanel = defineAsyncComponent(() => import("../components/DiffPanel.vue"));
 
 const route = useRoute();
 const router = useRouter();
@@ -69,8 +70,10 @@ const runtimeWarnings = computed(() => {
 });
 
 const diffOpen = ref(false);
+const diffLoaded = ref(false);
 function onKeydown(event: KeyboardEvent): void { if (event.key === "Escape") diffOpen.value = false; }
 watch(diffOpen, (open) => {
+  if (open) diffLoaded.value = true;
   document.body.style.overflow = open ? "hidden" : "";
   if (open) window.addEventListener("keydown", onKeydown);
   else window.removeEventListener("keydown", onKeydown);
@@ -80,6 +83,7 @@ watch(() => workspace.runs.map((run) => run.id), (_runIds, previousIds) => {
 }, { immediate: true });
 watch(() => route.params.taskId, () => {
   diffOpen.value = false;
+  diffLoaded.value = false;
   selectedRunId.value = null;
 });
 
@@ -183,6 +187,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
           </div>
           <div class="diff-drawer-body">
             <DiffPanel
+              v-if="diffLoaded"
               :files="workspace.files" :selected-path="workspace.selectedPath" :diff="workspace.selectedDiff"
               :findings="selectedReviewFindings" :loading="workspace.repositoryLoading"
               :repository-error="workspace.repositoryError" :diff-error="workspace.diffError"

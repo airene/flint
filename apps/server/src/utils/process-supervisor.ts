@@ -63,8 +63,14 @@ export async function processExitedWithin(process: ManagedProcess, timeoutMs: nu
 }
 
 export async function stopProcessTree(managedProcess: ManagedProcess, graceMs = 100): Promise<void> {
+  if (process.platform === "win32") {
+    await terminateProcessTree(managedProcess.pid, "SIGTERM").catch(() => undefined);
+    if (await processExitedWithin(managedProcess, graceMs)) return;
+    await terminateProcessTree(managedProcess.pid, "SIGKILL").catch(() => undefined);
+    await processExitedWithin(managedProcess, graceMs);
+    return;
+  }
   await stopProcessTreeByPid(managedProcess.pid, graceMs);
-  if (process.platform === "win32") await processExitedWithin(managedProcess, graceMs);
 }
 
 export async function stopProcessTreeByPid(pid: number, graceMs = 100): Promise<void> {
@@ -94,9 +100,7 @@ export class ProcessSupervisor {
     const child = this.active.get(runId);
     if (!child) return;
     this.cancellationRequested.add(runId);
-    await terminateProcessTree(child.pid, "SIGTERM");
-    await Bun.sleep(this.graceMs);
-    if (this.active.has(runId)) await terminateProcessTree(child.pid, "SIGKILL");
+    await stopProcessTree(child, this.graceMs);
   }
 
   release(runId: string): boolean {

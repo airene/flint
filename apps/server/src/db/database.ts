@@ -15,7 +15,6 @@ export interface AppDatabase {
 const initialSchema = `
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE,
-    default_developer TEXT NOT NULL DEFAULT 'codex', default_reviewer TEXT NOT NULL DEFAULT 'claude',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_opened_at TEXT
   );
   CREATE TABLE IF NOT EXISTS tasks (
@@ -23,7 +22,7 @@ const initialSchema = `
     title TEXT NOT NULL, original_prompt TEXT NOT NULL, working_directory TEXT NOT NULL,
     base_commit TEXT NOT NULL, latest_snapshot_hash TEXT,
     status TEXT NOT NULL, developer_provider TEXT NOT NULL DEFAULT 'codex', reviewer_provider TEXT NOT NULL DEFAULT 'claude',
-    developer_session_id TEXT, reviewer_session_id TEXT,
+    developer_session_id TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
   );
   CREATE INDEX IF NOT EXISTS tasks_project_id_index ON tasks(project_id);

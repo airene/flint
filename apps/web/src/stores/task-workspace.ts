@@ -65,7 +65,6 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const refreshGuard = new WorkspaceRefreshGuard();
 
   const activeRun = computed(() => runs.value.find((run) => run.status === "queued" || run.status === "running") ?? null);
-  const latestReviewRun = computed(() => runs.value.filter((run) => run.runType === "reviewer").at(-1) ?? null);
   const feedbackReviewRun = computed(() => latestFeedbackReviewRun(runs.value, findings.value));
   const selectedFindings = computed(() => {
     const runId = feedbackReviewRun.value?.id;
@@ -510,7 +509,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   return {
     task, runs, findings, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, connected,
     error, repositoryError, diffError, staleFeedback, reviewSnapshotStale,
-    activeRun, latestReviewRun, feedbackReviewRun, selectedFindings,
+    activeRun, feedbackReviewRun, selectedFindings,
     load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, updateFeedbackText, sendFeedback, selectFile, dispose,
   };
 });

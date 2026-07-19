@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import type { AgentRun, AgentRunType, Task } from "@local-pair-review/shared";
 import { DatabasePorts, StaleRunOwnershipError } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
+import { projects as projectRows, tasks as taskRows } from "../../apps/server/src/db/schema";
 import { ProjectService, ConfirmationRequiredError, DuplicateProjectError } from "../../apps/server/src/services/project.service";
 import { AppSettingsService } from "../../apps/server/src/services/app-settings.service";
 import {
@@ -93,8 +94,9 @@ describe("projects", () => {
     const project = await projects.add(root);
     await tasks.create(project.id, { title: "Task", originalPrompt: "Do work" });
 
-    await expect(projects.remove(project.id)).rejects.toBeInstanceOf(ConfirmationRequiredError);
-    expect((await projects.removalInfo(project.id)).taskCount).toBe(1);
+    const unconfirmed = await projects.remove(project.id).then(() => null, (error: unknown) => error);
+    expect(unconfirmed).toBeInstanceOf(ConfirmationRequiredError);
+    expect((unconfirmed as ConfirmationRequiredError).data.taskCount).toBe(1);
     await projects.remove(project.id, true);
     expect(await Bun.file(join(root, ".git", "HEAD")).exists()).toBe(true);
     expect(await projects.get(project.id)).toBeNull();
@@ -140,6 +142,26 @@ describe("projects", () => {
 });
 
 describe("run ownership", () => {
+  test("does not rewrite a cancelled run during targeted recovery", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Cancelled", originalPrompt: "Cancelled" });
+    const owner = new DatabasePorts(database, undefined, { instanceId: "instance-current" });
+    owner.acquireApplicationLease(101);
+    try {
+      await owner.queue(queuedRun(task, "developer_initial", "run-cancelled"));
+      const finishedAt = "2026-07-19T00:00:05.000Z";
+      database.sqlite.query("update agent_runs set status = 'cancelled', finished_at = ? where id = ?")
+        .run(finishedAt, "run-cancelled");
+
+      expect(await owner.recoverInterrupted(["run-cancelled"])).toEqual([]);
+      expect(await owner.getRun("run-cancelled")).toMatchObject({ status: "cancelled", finishedAt });
+    } finally {
+      owner.releaseApplicationLease();
+      database.close();
+    }
+  });
+
   test("fences an expired owner, terminates its process group, and rejects its late terminal write", async () => {
     const root = repository();
     const databasePath = join(temporaryDirectory(), "run-owner.db");
@@ -208,7 +230,7 @@ describe("run ownership", () => {
 });
 
 describe("tasks", () => {
-  test("migrates legacy tasks with the original Codex developer and Claude reviewer defaults", () => {
+  test("migrates legacy tasks with the original Codex developer and Claude reviewer defaults", async () => {
     const databasePath = join(temporaryDirectory(), "legacy.db");
     const legacy = new Database(databasePath);
     legacy.exec(`
@@ -232,6 +254,46 @@ describe("tasks", () => {
     try {
       expect(migrated.sqlite.query("select developer_provider, reviewer_provider from tasks where id = 'task_legacy'").get())
         .toEqual({ developer_provider: "codex", reviewer_provider: "claude" });
+
+      const timestamp = "2026-07-19T00:00:00.000Z";
+      await migrated.db.insert(projectRows).values({
+        id: "project_current",
+        name: "Current",
+        rootPath: "/tmp/current",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastOpenedAt: null,
+      }).run();
+      await migrated.db.insert(taskRows).values({
+        id: "task_current",
+        projectId: "project_current",
+        title: "Current task",
+        originalPrompt: "Prompt",
+        workingDirectory: "/tmp/current",
+        baseCommit: "def456",
+        latestSnapshotHash: null,
+        status: "draft",
+        developerProvider: "codex",
+        reviewerProvider: "claude",
+        developerSessionId: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null,
+      }).run();
+      expect(await new ProjectService(migrated).get("project_current")).toEqual({
+        id: "project_current",
+        name: "Current",
+        rootPath: "/tmp/current",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastOpenedAt: null,
+      });
+      expect(await new TaskService(migrated).get("task_current")).toMatchObject({
+        id: "task_current",
+        developerProvider: "codex",
+        reviewerProvider: "claude",
+        developerSessionId: null,
+      });
       createDatabase(databasePath).close();
     } finally {
       migrated.close();
@@ -247,13 +309,13 @@ describe("tasks", () => {
       claudeExecutable: "claude",
       gitExecutable: "git",
     });
-    settings.updateAgentRoles({ developerProvider: "claude", reviewerProvider: "codex" });
+    settings.updateSettings({ developerProvider: "claude", reviewerProvider: "codex" });
     const taskService = new TaskService(database, undefined, settings);
     const project = await projects.add(root);
 
     const first = await taskService.create(project.id, { title: "First", originalPrompt: "Do work" });
     expect(first).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
-    settings.updateAgentRoles({ developerProvider: "codex", reviewerProvider: "claude" });
+    settings.updateSettings({ developerProvider: "codex", reviewerProvider: "claude" });
     expect(settings.loadAgentRoles()).toEqual({ developerProvider: "codex", reviewerProvider: "claude" });
     expect(await taskService.get(first.id)).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
 

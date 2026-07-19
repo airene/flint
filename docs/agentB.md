@@ -4,7 +4,7 @@
 - 评审基线:`main` @ `251b3eb`(chore project refactor),工作区 clean
 - 评审方式:全量通读 `apps/server`、`apps/web`、`packages/shared`、`tests`、`scripts` 与工程配置(约 7,700 行源码 + 4,700 行测试),并实际运行验证命令、比对真实 CLI 行为
 - 验证环境:Bun 1.3.14 / TypeScript 7.0.2(tsgo)/ codex-cli 0.144.5 / Claude Code(均已本机安装并登录)/ macOS
-- 更新(2026-07-19):原 2.1 / 2.2 / 2.3、3.1 与 3.4 中已修复的内容已从本文移除,其余章节编号保持原状(故存在空缺);TypeScript 锁定 5.9.3
+- 更新(2026-07-19):原 2.1 / 2.2 / 2.3、3.1、3.4、3.6 与第 4 节中已修复的内容已从本文移除,其余章节编号保持原状(故存在空缺);TypeScript 锁定 5.9.3
 
 ---
 
@@ -20,10 +20,10 @@
 
 | 命令 | 结果(2026-07-19 修复后) | 说明 |
 | --- | --- | --- |
-| `bun test` | ✅ 148 pass / 0 fail | 单元与集成测试质量高 |
+| `bun test` | ✅ 172 pass / 0 fail | 含 3.6 清理与 P3 回归覆盖 |
 | `bun run typecheck` | ✅ | shared 补 bun types;TypeScript 锁定 5.9.3;`scripts/**` 已纳入检查 |
 | `bun run build` | ✅ | shared 显式 `rootDir`;TS 5.9.3 下 vue-tsc 恢复兼容 |
-| `bun run test:e2e` | ✅ 9 passed | 覆盖 Create & start 与逐 Review draft 隔离/恢复语义 |
+| `bun run test:e2e` | ✅ 11 passed | 覆盖 Create & start、最近打开时间与逐 Review draft 隔离/恢复语义 |
 | `smoke:codex` / `smoke:claude` | 未执行(需授权) | 脚本传参已修复,待人工授权后运行 |
 
 真实 CLI 参数核对(本机实测,均与代码假设一致,**这部分没有问题**):
@@ -56,19 +56,6 @@
 
 `apps/server/src/api/security.ts` 的 loopback + Origin + `body()` 强制 `application/json`(挡掉了表单类 CSRF)组合对**浏览器**攻击面防得不错,这点值得表扬。但任意本地进程(如某个恶意 npm postinstall)都能直接 POST `/api/tasks/:id/develop`,以你的订阅身份驱动一个**可写**的 developer CLI 去改已注册仓库。虽然"本地进程本来就能干坏事",但 Flint 把"已登录的 agent CLI + 已注册仓库清单"打包成了一个免认证的 HTTP 面。建议:启动时生成随机 token,注入前端(dev 模式经 Vite env,prod 模式随 index.html 下发),API/WS 校验之;成本低,纵深收益明显。
 
-### 3.6 写而不读的字段/死代码(半成品特性的痕迹)
-
-| 位置 | 问题 |
-| --- | --- |
-| `db/schema.ts:8-9` + `project.service.ts:51` | `projects.defaultDeveloper/defaultReviewer` 建了列、写死默认值,但建任务时读的是全局设置(`task.service.ts:75`),列从未被读 → "按项目配置角色"半途而废 |
-| `database-ports.ts:114` | `task.reviewerSessionId` 持久化了但全项目零读取(review 永远新开 session) |
-| `shared/index.ts` + `ProjectsView.vue:37` | `Project.lastOpenedAt` 有 schema、有 PATCH API,但前端从未更新它,列表永远显示 "Not opened yet" |
-| `task-workspace.ts:57` | `latestReviewRun` computed 无消费者 |
-| `shared/index.ts:160-161` | 事件类型 `usage`、`stderr` 定义了但服务端从不发出(stderr 仅失败时进 errorMessage,`streaming-cli.driver.ts:114-118`) |
-| `api/endpoints.ts` | `updateTask`/`getGitDiff`/`getGitFiles`/`getRun`/`health` 等端点 UI 未使用;其中 `updateTask` 意味着**任务标题/prompt 创建后没有任何编辑入口**,而服务端和契约都支持 |
-
-这些不是 bug,但每一个都在增加"读代码的人以为有这功能"的成本。建议要么接线(多数只差几行 UI,见 5.A),要么删。
-
 ### 3.7 状态机与展示的两个边角
 
 - reviewer run 失败/取消时 `reviewParseStatus` 永远停在 `"pending"`(`agent-run.service.ts:198` 原样保留),`ReviewPanel.vue:62` 的 else 分支会对一个 **failed** 的 review run 显示 "Review in progress",文案误导;
@@ -85,31 +72,12 @@
 
 ---
 
-## 4. P3:记录在案的小问题
-
-1. `utils/path.ts:33` `validateRepositoryRelativePath` 不拦 Windows 形态(`C:\...`、反斜杠 `..\`);当前调用点因先经 git status 文件名匹配而实际可达性低,属纵深防御补强。
-2. `utils/process-supervisor.ts:89-96` `cancel()` 固定 `sleep(graceMs)`(默认 1s)再判断,即使进程瞬间退出,取消请求也至少挂 1 秒;同文件的 `stopProcessTree` 已有轮询式等待,可复用。
-3. `application.ts:143-153` CLI 可用性缓存永不过期(只有设置变更才失效);CLI 中途登出后 `requireCli` 仍放行,直到用户手动 recheck。可加 TTL 或在 run 启动失败时刷新。
-4. `application.ts:70-76` `body()` 抛的 SyntaxError 带有具体原因(如 "Write requests require application/json."),但 `errors.ts:60` 统一替换成 "Invalid request.",调试体验受损。
-5. `database-ports.ts:315` `recoverInterrupted` 全表加载 agent_runs 再 JS 过滤,应下推 WHERE。
-6. Claude developer 以 `acceptEdits` 无头运行时,Bash 默认被拒(README 有说明),但 UI 不会提示"agent 因权限无法跑命令"——任务要求跑测试时用户只会看到奇怪的结果。可在 activity 里高亮 permission-denied 类事件。
-7. `event-hub.ts:65-78` `send()` 缩进异常(8 空格),纯格式。
-8. shutdown 时 `recoverInterrupted(activeIds)` 会把已经终态 `cancelled` 的 run 改写为 `interrupted` 并覆盖 finishedAt(`application.ts:502` + `database-ports.ts:318`),边角一致性问题。
-9. `apps/web` 全量引入 monaco(编辑器 + worker),产物体积大;本地工具可接受,若在意可换 diff-only 轻量方案或按需加载。
-10. Reviewer prompt、continue 默认语 `"继续处理当前任务，并总结本轮变更。"`(`application.ts:342`)、feedback 模板(`feedback.service.ts:78-95`)均硬编码中文,而 UI 全英文——英文用户会得到中文 findings。建议 prompt 语言可配置或跟随任务语言(见 5.B)。
-
----
-
 ## 5. 功能增强建议
 
 ### 5.A 顺水推舟(数据/契约已就绪,只差接线)
 
-1. **按项目配置 Developer/Reviewer**:列已存在(3.6),创建任务时 `project.defaultX ?? 全局设置` 即可。
-2. **Reviewer 追问**:`reviewerSessionId` 已持久化,加一个 "Ask reviewer" 输入框 resume reviewer session(read-only 约束不变),让用户对某条 finding 要求澄清/举证——这比直接把 finding 发给 developer 更贴近真实结对。
-3. **任务编辑**:`updateTask` API 已存在,补 UI 即可(至少允许改 title)。
-4. **Token 用量统计**:codex `turn.completed` 事件里已有 usage(ActivityPanel 已经在展示单条),聚合到 run/task 维度显示成本感知。
-5. **最近打开排序**:接线 `lastOpenedAt`(进入 ProjectView 时 PATCH 一下),Projects 列表按最近使用排。
-6. **多轮 review 对比**:findings、人工备注和 feedback draft 现已按 Review Run 永久保留；下一步可在 Run History 对比两轮结果,并显示"上轮 N 条已修复"。
+1. **Token 用量统计**:codex `turn.completed` 事件里已有 usage(ActivityPanel 已经在展示单条),聚合到 run/task 维度显示成本感知。
+2. **多轮 review 对比**:findings、人工备注和 feedback draft 现已按 Review Run 永久保留；下一步可在 Run History 对比两轮结果,并显示"上轮 N 条已修复"。
 
 ### 5.B 产品向(中期)
 
@@ -117,7 +85,7 @@
 2. **人工 Finding**:允许用户在 DiffPanel 选中行手动添加 finding(severity/描述),与 reviewer findings 一起进 feedback 组稿。目前"人工只能改文本",让人工发现的问题结构化留档更符合"pair review"定位。
 3. **任务级 worktree 并行**(spec 明确列为非目标,但它是最自然的 v2):当前一个项目同时只能有一个写 run,`.worktrees/` 目录名暗示你已经用 worktree 开发过 Flint 自己——把它产品化,每个任务一个 worktree,互不阻塞。
 4. **可选的自动 review**:开发完成自动触发 reviewer(feedback 仍然人工 gate),一个开关即可,不违背"finding 永不自动发送"的底线。
-5. **Prompt 模板配置**:review prompt 与 feedback 模板允许用户级覆盖(存 app_settings),顺带解决语言硬编码问题(4.10)。
+5. **Prompt 模板配置**:review prompt 与 feedback 模板允许用户级覆盖(存 app_settings)。
 6. **导出 patch / 复制 diff**:`gitDiffResponse` 已含 tracked/staged/untracked 三段 patch,加个下载按钮就能把任务成果带走(MVP 不做 commit,这是不越界的替代出口)。
 7. **新 Provider**:driver 抽象(`AgentDriver` + `ProviderRegistry` + parser)是这个代码库最漂亮的部分之一,新增 Gemini CLI / OpenCode 只需 driver+parser+availability 三件套;建议真到那一步时把 `Provider` 枚举从 shared 契约里解耦成注册表驱动,否则每加一家要动全链路类型。
 8. **事件搜索/过滤增强**:长 run 的 Activity 面板加文本过滤和按事件类型筛选,配合 3.4 的虚拟滚动。
@@ -146,7 +114,7 @@
 1. 加最小 CI(typecheck + test + build,e2e 可选)防止质量门再次腐烂;
 2. 人工授权后真正跑一次 `smoke:codex` / `smoke:claude`(脚本已修复),完成 DoD 的最后一项;
 3. 按剩余 3.x 顺序消化(建议先 3.3 WAL,改动小收益大);
-4. 功能层面从 5.A 挑:桌面通知(5.B.1)+ reviewer 追问(5.A.2)+ 用量统计(5.A.4)是我认为性价比最高的三个。
+4. 功能层面优先考虑桌面通知(5.B.1)、用量统计(5.A.1)与多轮 Review 对比(5.A.2)。
 
 ---
 

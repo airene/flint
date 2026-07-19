@@ -78,7 +78,6 @@ function task(): Task {
     developerProvider: "codex",
     reviewerProvider: "claude",
     developerSessionId: "developer-session",
-    reviewerSessionId: "reviewer-session",
     createdAt: "2026-07-18T00:00:00.000Z",
     updatedAt: "2026-07-18T00:00:03.000Z",
     completedAt: "2026-07-18T00:00:03.000Z",

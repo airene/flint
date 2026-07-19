@@ -239,10 +239,10 @@ export class DatabasePorts implements
         eq(agentRuns.id, runId),
         inArray(agentRuns.status, [...activeStatuses]),
       )).run();
-      transaction.update(tasks).set({
-        ...(runType === "reviewer" ? { reviewerSessionId: sessionId } : { developerSessionId: sessionId }),
-        updatedAt: this.now(),
-      }).where(eq(tasks.id, taskId)).run();
+      if (runType !== "reviewer") {
+        transaction.update(tasks).set({ developerSessionId: sessionId, updatedAt: this.now() })
+          .where(eq(tasks.id, taskId)).run();
+      }
     }, { behavior: "immediate" });
   }
 
@@ -447,13 +447,6 @@ export class DatabasePorts implements
       ).all() as AgentRun[];
   }
 
-  async hasActiveProjectRun(projectId: string): Promise<boolean> {
-    return Boolean(await this.database.db.select({ id: agentRuns.id }).from(agentRuns).where(and(
-      eq(agentRuns.projectId, projectId),
-      inArray(agentRuns.status, [...activeStatuses]),
-    )).get());
-  }
-
   async listFindings(taskId: string): Promise<ReviewFinding[]> {
     return await this.database.db.select().from(reviewFindings).where(eq(reviewFindings.taskId, taskId))
       .orderBy(asc(reviewFindings.createdAt), asc(reviewFindings.id)).all() as ReviewFinding[];
@@ -488,10 +481,11 @@ export class DatabasePorts implements
   }
 
   async recoverInterrupted(runIds?: string[]): Promise<AgentRun[]> {
-    const all = await this.database.db.select().from(agentRuns).all() as AgentRun[];
-    const candidates = all.filter((run) => runIds
-      ? runIds.includes(run.id) && ["queued", "running", "cancelled"].includes(run.status)
-      : activeStatuses.includes(run.status as typeof activeStatuses[number]));
+    if (runIds?.length === 0) return [];
+    const scope = runIds
+      ? and(inArray(agentRuns.status, [...activeStatuses]), inArray(agentRuns.id, runIds))
+      : inArray(agentRuns.status, [...activeStatuses]);
+    const candidates = await this.database.db.select().from(agentRuns).where(scope).all() as AgentRun[];
     const recovered: AgentRun[] = [];
     for (const run of candidates) {
       const expectedLease = await this.database.db.select().from(runLeases)
@@ -513,13 +507,13 @@ export class DatabasePorts implements
       const interrupted = this.database.db.transaction((transaction) => {
         this.assertApplicationOwner();
         const currentRun = transaction.select().from(agentRuns).where(eq(agentRuns.id, run.id)).get();
-        if (!currentRun || !["queued", "running", "cancelled"].includes(currentRun.status)) return null;
+        if (!currentRun || !activeStatuses.includes(currentRun.status as typeof activeStatuses[number])) return null;
         const currentLease = transaction.select().from(runLeases).where(eq(runLeases.runId, run.id)).get();
         if (currentLease?.ownerInstanceId !== expectedLease?.ownerInstanceId) return null;
         transaction.update(agentRuns).set({ status: "interrupted", processId: null, finishedAt })
           .where(and(
             eq(agentRuns.id, run.id),
-            inArray(agentRuns.status, ["queued", "running", "cancelled"]),
+            inArray(agentRuns.status, [...activeStatuses]),
           )).run();
         transaction.delete(runLeases).where(eq(runLeases.runId, run.id)).run();
         transaction.update(tasks).set({ status: target, updatedAt: finishedAt }).where(eq(tasks.id, run.taskId)).run();

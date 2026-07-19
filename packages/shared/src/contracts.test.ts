@@ -65,10 +65,9 @@ test("review result rejects findings with an invalid line range", () => {
   expect(result.success).toBe(false);
 });
 
-test("project and task mutation DTOs are strict", () => {
-  expectStrict("updateProjectRequestSchema", { name: "Renamed project" });
+test("project mutation DTOs are strict", () => {
+  expectStrict("markProjectOpenedRequestSchema", { lastOpenedAt: "2026-07-19T00:00:00.000Z" });
   expectStrict("deleteProjectRequestSchema", { confirm: true });
-  expectStrict("updateTaskRequestSchema", { title: "Renamed task" });
 });
 
 test("agent action and run DTOs are strict", () => {
@@ -211,7 +210,6 @@ test("tasks expose immutable developer and reviewer provider snapshots", () => {
     developerProvider: "claude",
     reviewerProvider: "codex",
     developerSessionId: null,
-    reviewerSessionId: null,
     createdAt: "2026-07-18T00:00:00.000Z",
     updatedAt: "2026-07-18T00:00:00.000Z",
     completedAt: null,

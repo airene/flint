@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitService, snapshotHashFromInputs } from "../../apps/server/src/services/git.service";
+import { validateRepositoryRelativePath } from "../../apps/server/src/utils/path";
 
 const directories: string[] = [];
 const decoder = new TextDecoder();
@@ -97,6 +98,13 @@ afterEach(() => {
 });
 
 describe("GitService", () => {
+  test("rejects Windows absolute and backslash traversal paths", () => {
+    for (const path of ["C:\\repo\\secret.txt", "C:/repo/secret.txt", "C:repo/secret.txt", "..\\secret.txt", "src\\..\\secret.txt"]) {
+      expect(() => validateRepositoryRelativePath(path)).toThrow("relative to the project root");
+    }
+    expect(() => validateRepositoryRelativePath("src/input.ts")).not.toThrow();
+  });
+
   test("lists safe tracked and untracked project files with ranked capped in-memory search and a five-second cache", async () => {
     const root = repository();
     mkdirSync(join(root, "src"), { recursive: true });

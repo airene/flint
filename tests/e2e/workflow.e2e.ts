@@ -42,6 +42,18 @@ test.afterEach(async () => {
   await Promise.all(repositories.splice(0).map((repository) => rm(repository, { recursive: true, force: true })));
 });
 
+test("records a repository as opened when its workspace is visited", async ({ page }) => {
+  const repository = await createRepository();
+  await page.goto("/projects");
+  await page.locator("#root-path").fill(repository);
+  await page.getByRole("button", { name: "Register repository" }).click();
+  await expect(page.getByRole("heading", { name: "New task" })).toBeVisible();
+
+  await page.goto("/projects");
+  await expect(page.getByText(/^Opened /)).toBeVisible();
+  await expect(page.getByText("Not opened yet", { exact: true })).toHaveCount(0);
+});
+
 test("inserts file mentions in new-task and Continue Developer prompts without changing closed-menu Enter behavior", async ({ page }) => {
   const repository = await createRepository();
   await page.goto("/projects");

@@ -29,7 +29,7 @@ export interface FinishRunInput {
 
 export interface AgentRunPersistencePort {
   markRunning(runId: string, processId: number): Promise<void>;
-  /** Must atomically update AgentRun.externalSessionId and the role-owned Task session. */
+  /** Must update AgentRun.externalSessionId and, for developer runs, Task.developerSessionId atomically. */
   recordSession(runId: string, taskId: string, runType: AgentRunType, sessionId: string): Promise<void>;
 }
 

@@ -21,7 +21,6 @@ function task(sessionId: string | null = "codex-session-exact"): Task {
     developerProvider: "codex",
     reviewerProvider: "claude",
     developerSessionId: sessionId,
-    reviewerSessionId: "claude-session-1",
     createdAt: "2026-07-18T00:00:00.000Z",
     updatedAt: "2026-07-18T00:00:00.000Z",
     completedAt: null,
@@ -163,6 +162,9 @@ describe("Feedback composer", () => {
     expect(text).toContain("src/input.ts");
     expect(text).toContain("7-9");
     expect(text).toContain("Keep the existing public error shape.");
+    expect(text).toContain("Code review feedback confirmed by a human");
+    expect(text).toContain("Address each accepted finding");
+    expect(text).not.toMatch(/[\u4e00-\u9fff]/);
     expect(text).not.toContain("Dismissed");
     expect(text).not.toContain("Not selected");
   });

@@ -11,12 +11,11 @@ import {
   feedbackPreviewRequestSchema,
   saveFeedbackDraftRequestSchema,
   feedbackTaskRequestSchema,
+  markProjectOpenedRequestSchema,
   projectFilesRequestSchema,
   reviewTaskRequestSchema,
   selectFindingsRequestSchema,
   updateFindingRequestSchema,
-  updateProjectRequestSchema,
-  updateTaskRequestSchema,
   type AgentAvailability,
   type AgentEvent,
   type AgentRun,
@@ -29,7 +28,7 @@ import {
   type Task,
   webSocketSubscribeSchema,
 } from "@local-pair-review/shared";
-import { createDatabase, type AppDatabase } from "../db/database";
+import { createDatabase } from "../db/database";
 import { ClaudeCliDriver } from "../drivers/claude-cli.driver";
 import { checkGitAvailability } from "../drivers/cli-availability";
 import { CodexCliDriver } from "../drivers/codex-cli.driver";
@@ -44,7 +43,7 @@ import { ProjectService } from "../services/project.service";
 import { ReviewService, type ReviewContextPort } from "../services/review.service";
 import { TaskService } from "../services/task.service";
 import { DatabasePorts } from "./database-ports";
-import { CliUnavailableError, errorResponse, NotFoundError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
+import { CliUnavailableError, errorResponse, NotFoundError, RequestValidationError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
 import { createRunEvent } from "../utils/agent-event";
 
@@ -72,10 +71,16 @@ function match(pathname: string, expression: RegExp): string[] | null {
 
 async function body<T>(request: Request, schema: ZodType<T>): Promise<T> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    throw new SyntaxError("Write requests require application/json.");
+    throw new RequestValidationError("Write requests require application/json.");
   }
   const text = await request.text();
-  return schema.parse(text ? JSON.parse(text) : {});
+  if (!text) return schema.parse({});
+  try {
+    return schema.parse(JSON.parse(text));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new RequestValidationError("Request body must be valid JSON.");
+    throw error;
+  }
 }
 
 function json(value: unknown, status = 200): Response {
@@ -198,7 +203,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     ] as const) {
       if (!provider) continue;
       if (!providerRegistry.get(provider).roles.includes(role)) {
-        throw new SyntaxError(`${provider} does not support the ${role} role.`);
+        throw new RequestValidationError(`${provider} does not support the ${role} role.`);
       }
     }
 
@@ -217,8 +222,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     }
   }
 
-  async function requireCli(provider: Provider | "git"): Promise<AgentAvailability> {
-    const availability = (await clis())[provider];
+  async function requireCli(provider: Provider): Promise<AgentAvailability> {
+    const availability = await providerRegistry.get(provider).driver.checkAvailability();
+    if (cliStatus) cliStatus = { ...cliStatus, [provider]: availability };
     if (!availability.installed || availability.authentication === "unauthenticated") {
       throw new CliUnavailableError(provider, availability.message ?? `${provider} is unavailable or not authenticated.`);
     }
@@ -330,8 +336,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (method === "GET") return json(await requireProject(projectId!));
         if (method === "PATCH") {
           ensureAccepting();
-          const input = await body(request, updateProjectRequestSchema);
-          return json((await projects.update(projectId!, input)) ?? await requireProject(projectId!));
+          const input = await body(request, markProjectOpenedRequestSchema);
+          return json((await projects.markOpened(projectId!, input.lastOpenedAt)) ?? await requireProject(projectId!));
         }
         if (method === "DELETE") {
           ensureAccepting();
@@ -367,11 +373,6 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters) {
         const [taskId] = parameters;
         if (method === "GET") return json(await requireTask(taskId!));
-        if (method === "PATCH") {
-          ensureAccepting();
-          const input = await body(request, updateTaskRequestSchema);
-          return json((await tasks.update(taskId!, input)) ?? await requireTask(taskId!));
-        }
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/complete$/);
@@ -393,7 +394,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         const started = await agentRuns.start({
           task,
           runType: initial ? "developer_initial" : "developer_feedback",
-          prompt: input.prompt ?? (initial ? task.originalPrompt : "继续处理当前任务，并总结本轮变更。"),
+          prompt: input.prompt ?? (initial ? task.originalPrompt : "Continue the current task and summarize the changes from this run."),
           ...(initial ? {} : { sessionId: task.developerSessionId! }),
         });
         track(started.run.id, started.completion);
@@ -478,7 +479,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "GET") {
         const task = await requireTask(parameters[0]!);
         const filePath = url.searchParams.get("path");
-        if (!filePath) throw new SyntaxError("path query parameter is required");
+        if (!filePath) throw new RequestValidationError("path query parameter is required.");
         await requireGit();
         return json(await git.fileDiff(task.workingDirectory, task.baseCommit, filePath));
       }
