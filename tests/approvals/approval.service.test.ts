@@ -44,6 +44,7 @@ const approvalCapabilities: ProviderCapabilities = {
 class MemoryApprovals implements ApprovalPersistencePort {
   readonly records = new Map<string, ApprovalRequest>();
   readonly providerKeys = new Map<string, string>();
+  decisionFailure: Error | null = null;
 
   async createApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     const key = `${request.runId}:${request.providerRequestId}`;
@@ -61,6 +62,7 @@ class MemoryApprovals implements ApprovalPersistencePort {
   }
 
   async decideApproval(approvalId: string, decision: ApprovalDecision, reason: string | null, resolvedAt: string) {
+    if (this.decisionFailure) throw this.decisionFailure;
     const approval = this.records.get(approvalId);
     if (!approval) throw new Error("approval not found");
     if (approval.status !== "pending") return { approval, resolvedNow: false };
@@ -84,10 +86,14 @@ class MemoryApprovals implements ApprovalPersistencePort {
 }
 
 class Control implements ApprovalProviderControl {
-  readonly calls: Array<{ runId: string; approvalId: string; decision: ApprovalDecision }> = [];
+  readonly calls: Array<{ runId: string; providerRequestId: string; decision: ApprovalDecision }> = [];
+  failure: Error | null = null;
+  gate: Promise<void> | null = null;
   constructor(readonly capabilities: ProviderCapabilities = approvalCapabilities) {}
-  async resolveApproval(runId: string, approvalId: string, decision: ApprovalDecision): Promise<void> {
-    this.calls.push({ runId, approvalId, decision });
+  async resolveApproval(runId: string, providerRequestId: string, decision: ApprovalDecision): Promise<void> {
+    this.calls.push({ runId, providerRequestId, decision });
+    if (this.gate) await this.gate;
+    if (this.failure) throw this.failure;
   }
 }
 
@@ -148,7 +154,59 @@ describe("ApprovalService", () => {
 
     expect(first).toMatchObject({ status: "resolved", decision: "allow_once", resolvedAt: "2026-07-19T00:00:01.000Z" });
     expect(retry).toEqual(first);
-    expect(control.calls).toEqual([{ runId: "run-1", approvalId: "provider-request-1", decision: "allow_once" }]);
+    expect(control.calls).toEqual([{ runId: "run-1", providerRequestId: "provider-request-1", decision: "allow_once" }]);
+  });
+
+  test("keeps a request pending after relay failure and permits a later retry", async () => {
+    const control = new Control();
+    control.failure = new Error("provider relay failed");
+    const { service, persistence } = createService(control);
+    const approval = await service.request(run(), {
+      providerRequestId: "provider-request-1", toolName: "shell", actionSummary: "Run tests", workingDirectory: "/repo",
+    });
+
+    await expect(service.decide(approval.id, "allow_once")).rejects.toThrow("provider relay failed");
+    expect(await persistence.getApproval(approval.id)).toEqual(approval);
+
+    control.failure = null;
+    const resolved = await service.decide(approval.id, "allow_once");
+
+    expect(resolved).toMatchObject({ status: "resolved", decision: "allow_once" });
+    expect(control.calls).toHaveLength(2);
+  });
+
+  test("coalesces concurrent decisions so the provider receives only the first one", async () => {
+    let release!: () => void;
+    const control = new Control();
+    control.gate = new Promise<void>((resolve) => { release = resolve; });
+    const { service } = createService(control);
+    const approval = await service.request(run(), {
+      providerRequestId: "provider-request-1", toolName: "shell", actionSummary: "Run tests", workingDirectory: "/repo",
+    });
+
+    const first = service.decide(approval.id, "allow_once");
+    const duplicate = service.decide(approval.id, "deny", "duplicate click");
+    release();
+
+    const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+    expect(duplicateResult).toEqual(firstResult);
+    expect(firstResult).toMatchObject({ status: "resolved", decision: "allow_once" });
+    expect(control.calls).toEqual([{ runId: "run-1", providerRequestId: "provider-request-1", decision: "allow_once" }]);
+  });
+
+  test("retries an idempotent provider relay when persistence failed after provider success", async () => {
+    const { service, persistence, control } = createService();
+    const approval = await service.request(run(), {
+      providerRequestId: "provider-request-1", toolName: "shell", actionSummary: "Run tests", workingDirectory: "/repo",
+    });
+    persistence.decisionFailure = new Error("database write failed");
+
+    await expect(service.decide(approval.id, "allow_once")).rejects.toThrow("database write failed");
+    expect(await persistence.getApproval(approval.id)).toEqual(approval);
+
+    persistence.decisionFailure = null;
+    expect(await service.decide(approval.id, "allow_once")).toMatchObject({ status: "resolved", decision: "allow_once" });
+    expect(control.calls).toHaveLength(2);
   });
 
   test("expires unresolved requests when a run terminates", async () => {
@@ -180,6 +238,23 @@ describe("ApprovalService", () => {
     await expect(service.request(run(), {
       providerRequestId: "provider-request-1", toolName: "shell", actionSummary: "Run tests", workingDirectory: "/repo",
     })).rejects.toEqual(new UnsupportedProviderCapabilityError("codex", "approvals"));
+
+    expect(persistence.records.size).toBe(0);
+  });
+
+  test("rejects late requests from every terminal run state without creating a pending record", async () => {
+    const { service, persistence } = createService();
+
+    for (const status of ["completed", "failed", "cancelled", "interrupted"] as const) {
+      await expect(service.request(run({ status, finishedAt: "2026-07-19T00:00:02.000Z" }), {
+        providerRequestId: `provider-request-${status}`, toolName: "shell", actionSummary: "Run tests", workingDirectory: "/repo",
+      })).rejects.toMatchObject({
+        name: "TerminalRunApprovalRequestError",
+        code: "TERMINAL_RUN_APPROVAL_REQUEST",
+        runId: "run-1",
+        status,
+      });
+    }
 
     expect(persistence.records.size).toBe(0);
   });
