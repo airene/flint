@@ -4,6 +4,7 @@ import { redactSensitive } from "../utils/redact";
 
 export interface ApprovalProviderControl {
   readonly capabilities: Pick<ProviderCapabilities, "approvals">;
+  /** Must be idempotent for the same Run and provider request ID. */
   resolveApproval(runId: string, providerRequestId: string, decision: ApprovalDecision): Promise<void>;
 }
 
@@ -11,7 +12,7 @@ export interface ApprovalPersistencePort {
   /** Must atomically persist the request or return the existing request for the same run and provider request ID. */
   createApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest>;
   getApproval(approvalId: string): Promise<ApprovalRequest>;
-  /** Must atomically resolve a pending request and report whether this call won the transition. */
+  /** Must atomically resolve a pending request or return its first persisted decision unchanged. */
   decideApproval(
     approvalId: string,
     decision: ApprovalDecision,
@@ -44,6 +45,15 @@ export class ReviewerApprovalRequestError extends Error {
   }
 }
 
+export class TerminalRunApprovalRequestError extends Error {
+  readonly code = "TERMINAL_RUN_APPROVAL_REQUEST" as const;
+
+  constructor(readonly runId: string, readonly status: AgentRun["status"]) {
+    super(`Run ${runId} is already ${status} and cannot request approval.`);
+    this.name = "TerminalRunApprovalRequestError";
+  }
+}
+
 interface ApprovalServiceOptions {
   controls: Record<Provider, ApprovalProviderControl>;
   persistence: ApprovalPersistencePort;
@@ -67,6 +77,7 @@ function redactedSummary(summary: string): string {
 export class ApprovalService {
   private readonly createId: () => string;
   private readonly now: () => string;
+  private readonly decisionsInFlight = new Map<string, Promise<ApprovalRequest>>();
 
   constructor(private readonly options: ApprovalServiceOptions) {
     this.createId = options.createId ?? (() => crypto.randomUUID());
@@ -79,6 +90,7 @@ export class ApprovalService {
       await this.options.security.recordSecurityError(run.id, error.message);
       throw error;
     }
+    if (isTerminal(run)) throw new TerminalRunApprovalRequestError(run.id, run.status);
 
     const control = this.options.controls[run.provider];
     if (!control.capabilities.approvals) throw new UnsupportedProviderCapabilityError(run.provider, "approvals");
@@ -102,6 +114,23 @@ export class ApprovalService {
 
   async decide(approvalId: string, decision: ApprovalDecision, reason: string | null = null): Promise<ApprovalRequest> {
     approvalDecisionSchema.parse(decision);
+    const active = this.decisionsInFlight.get(approvalId);
+    if (active) return await active;
+
+    const operation = this.relayAndPersist(approvalId, decision, reason);
+    this.decisionsInFlight.set(approvalId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.decisionsInFlight.get(approvalId) === operation) this.decisionsInFlight.delete(approvalId);
+    }
+  }
+
+  private async relayAndPersist(
+    approvalId: string,
+    decision: ApprovalDecision,
+    reason: string | null,
+  ): Promise<ApprovalRequest> {
     const existing = await this.options.persistence.getApproval(approvalId);
     if (existing.status !== "pending") return existing;
 
@@ -109,10 +138,8 @@ export class ApprovalService {
     const control = this.options.controls[provider];
     if (!control.capabilities.approvals) throw new UnsupportedProviderCapabilityError(provider, "approvals");
 
+    await control.resolveApproval(existing.runId, existing.providerRequestId, decision);
     const result = await this.options.persistence.decideApproval(approvalId, decision, reason, this.now());
-    if (!result.resolvedNow) return result.approval;
-
-    await control.resolveApproval(result.approval.runId, result.approval.providerRequestId, decision);
     return result.approval;
   }
 
