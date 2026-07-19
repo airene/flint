@@ -9,6 +9,7 @@ import {
 import type { StartAgentRunInput, StartedAgentRun } from "./agent-run.service";
 import type { EventService } from "./event.service";
 import { createRunEvent } from "../utils/agent-event";
+import { redactSensitive } from "../utils/redact";
 
 export interface ReviewSnapshot {
   snapshotHash: string;
@@ -146,7 +147,13 @@ export class ReviewService {
     completion: Promise<AgentRun>,
     startSnapshotHash: string,
   ): Promise<ReviewOutcome> {
-    const terminal = await completion;
+    const completed = await completion;
+    const terminal: AgentRun = {
+      ...completed,
+      finalMessage: redactSensitive(completed.finalMessage),
+      structuredOutput: redactSensitive(completed.structuredOutput),
+      errorMessage: redactSensitive(completed.errorMessage),
+    };
     const endSnapshot = await this.options.context.capture(task);
     const stale = endSnapshot.snapshotHash !== startSnapshotHash;
     if (terminal.status !== "completed") {
@@ -184,7 +191,7 @@ export class ReviewService {
       id: this.createId(),
       taskId: task.id,
       runId: terminal.id,
-      ...finding,
+      ...redactSensitive(finding),
       selected: finding.severity !== "P2",
       dismissed: false,
       userNote: null,

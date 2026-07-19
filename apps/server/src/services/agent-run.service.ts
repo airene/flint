@@ -172,14 +172,15 @@ export class AgentRunService {
         capturedSession = result.sessionId;
         await this.persistence.recordSession(run.id, run.taskId, run.runType, result.sessionId);
       }
+      const patch = this.successPatch(run, result);
       const terminal = await this.taskState.succeed({
         runId: run.id,
         taskId: run.taskId,
         runType: run.runType,
-        patch: this.successPatch(run, result),
+        patch,
       });
       try {
-        await this.events.publish(this.lifecycleEvent(run, "run_completed", { finalMessage: result.finalMessage }));
+        await this.events.publish(this.lifecycleEvent(run, "run_completed", { finalMessage: patch.finalMessage }));
       } catch {
         // The completed Run/Task transaction is authoritative; never emit a contradictory failure.
       }
@@ -224,8 +225,8 @@ export class AgentRunService {
       status: "completed",
       reviewParseStatus: run.reviewParseStatus,
       exitCode: 0,
-      finalMessage: result.finalMessage,
-      structuredOutput: result.structuredOutput,
+      finalMessage: redactSensitive(result.finalMessage),
+      structuredOutput: redactSensitive(result.structuredOutput),
       errorMessage: null,
       finishedAt: this.now(),
     };
