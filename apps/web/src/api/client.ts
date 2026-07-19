@@ -35,9 +35,11 @@ export interface ApiClient {
   request<T>(path: string, responseSchema: ResponseSchema<T>, options?: ApiRequestOptions): Promise<T>;
 }
 
+export type ApiFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 export interface CreateApiClientOptions {
   baseUrl?: string;
-  fetcher?: typeof globalThis.fetch;
+  fetcher?: ApiFetcher;
 }
 
 function appendQuery(search: URLSearchParams, key: string, value: ApiQueryValue): void {

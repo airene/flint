@@ -18,6 +18,8 @@ function task(sessionId: string | null = "codex-session-exact"): Task {
     baseCommit: "abc123",
     latestSnapshotHash: "snapshot-1",
     status: "waiting_for_human",
+    developerProvider: "codex",
+    reviewerProvider: "claude",
     developerSessionId: sessionId,
     reviewerSessionId: "claude-session-1",
     createdAt: "2026-07-18T00:00:00.000Z",

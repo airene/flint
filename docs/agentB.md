@@ -80,7 +80,6 @@
 - **没有 lint/format 配置**(eslint/biome/prettier 均无):多 agent 协作开发尤其需要机器裁判;
 - `bun run typecheck` 对 web 实际上**只检查 .ts**(tsc 不吃 .vue),`.vue` 模板类型检查只在 `build` 里由 vue-tsc 执行——typecheck 绿灯的含金量比看上去低,建议 typecheck 脚本对 web 改用 `vue-tsc --noEmit`;
 - zod 版本漂移:shared `^4.1.12` vs server `^4.4.3`,建议对齐到同一 caret;
-- `tests/**` 仍无类型检查(`scripts/**` 已于 2026-07-19 纳入):首次尝试纳入时暴露约 20 处测试文件类型债(fetch double 缺 `preconnect`、可选字段未加断言、workspace 包解析配置),建议清偿后并入 typecheck;
 - TypeScript 已锁定 5.9.3:vue-tsc 尚不支持 TS7 原生编译器,跟踪 vuejs/language-tools#5381,上游支持后一行 bump 回 7;
 - `.idea/` 部分文件已入库(`flint.iml`、`modules.xml` 等),按团队习惯决定是否移出。
 

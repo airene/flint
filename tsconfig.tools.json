@@ -1,5 +1,11 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "types": ["bun"] },
-  "include": ["scripts/**/*.ts", "playwright.config.ts"]
+  "compilerOptions": {
+    "types": ["bun"],
+    "baseUrl": ".",
+    "paths": {
+      "@local-pair-review/shared": ["packages/shared/src/index.ts"]
+    }
+  },
+  "include": ["scripts/**/*.ts", "tests/**/*.ts", "playwright.config.ts"]
 }

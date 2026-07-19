@@ -40,12 +40,12 @@ describe("Codex JSONL parser", () => {
       usage: { input_tokens: 12, cached_input_tokens: 3, output_tokens: 5 },
     }), context);
 
-    expect(session.event.type).toBe("session_started");
+    expect(session.event?.type).toBe("session_started");
     expect(session.sessionId).toBe("thread-exact-123");
-    expect(session.event.payload).toMatchObject({ raw: expect.any(String) });
-    expect(message.event.type).toBe("message");
+    expect(session.event?.payload).toMatchObject({ raw: expect.any(String) });
+    expect(message.event?.type).toBe("message");
     expect(message.finalMessage).toBe("Implemented the task.");
-    expect(completed.event.type).toBe("turn_completed");
+    expect(completed.event?.type).toBe("turn_completed");
     expect(completed.completed).toBe(true);
   });
 
@@ -112,7 +112,7 @@ describe("Claude stream-json parser", () => {
 
     const parsed = parseClaudeEventLine(raw, context);
 
-    expect(parsed.event.type).toBe("turn_completed");
+    expect(parsed.event?.type).toBe("turn_completed");
     expect(parsed.sessionId).toBe("claude-session-exact-456");
     expect(parsed.finalMessage).toBe("Review complete.");
     expect(parsed.structuredOutput).toEqual(structuredOutput);
