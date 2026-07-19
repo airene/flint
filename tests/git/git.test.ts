@@ -155,11 +155,69 @@ describe("GitService", () => {
     const invocations = instrumentation.invocations();
     expect(invocations.filter((entry) => entry.startsWith("status --porcelain"))).toHaveLength(1);
     expect(invocations.filter((entry) => entry.startsWith("ls-files --others"))).toHaveLength(1);
-    expect(invocations.filter((entry) => entry.startsWith("diff --numstat"))).toHaveLength(1);
+    expect(invocations.filter((entry) => entry.startsWith("diff --numstat"))).toHaveLength(2);
     expect(invocations.filter((entry) => entry === "rev-parse HEAD")).toHaveLength(1);
     expect(invocations.filter((entry) => entry === `diff ${baseCommit} --`)).toHaveLength(1);
     expect(invocations.filter((entry) => entry === `diff --cached ${baseCommit} --`)).toHaveLength(1);
     expect(invocations.filter((entry) => entry === `diff --stat ${baseCommit} --`)).toHaveLength(1);
+  });
+
+  test("captures committed changes after the task base in the task-scoped status and per-file diff", async () => {
+    const root = repository();
+    const service = new GitService();
+    const baseCommit = git(root, "rev-parse", "HEAD");
+    await Bun.write(join(root, "tracked.txt"), "committed after base\n");
+    git(root, "add", "tracked.txt");
+    git(root, "commit", "-m", "change after task base");
+
+    const capture = await service.capture(root, baseCommit);
+    const file = await service.fileDiff(root, baseCommit, "tracked.txt");
+
+    expect(capture.status).toMatchObject({ clean: false });
+    expect(capture.status.files).toEqual(capture.diff.files);
+    expect(capture.status.files).toContainEqual(expect.objectContaining({
+      path: "tracked.txt",
+      status: "modified",
+      staged: false,
+      tracked: true,
+    }));
+    expect(capture.diff.trackedPatch).toContain("committed after base");
+    expect(file).toMatchObject({
+      file: expect.objectContaining({ path: "tracked.txt", status: "modified" }),
+      originalText: "before\n",
+      modifiedText: "committed after base\n",
+    });
+    expect(file.patch).toContain("committed after base");
+  });
+
+  test("merges committed and current working-tree changes from the task base without duplicate paths", async () => {
+    const root = repository();
+    const service = new GitService();
+    await Bun.write(join(root, "second.txt"), "second before\n");
+    git(root, "add", "second.txt");
+    git(root, "commit", "-m", "add second fixture");
+    const baseCommit = git(root, "rev-parse", "HEAD");
+    await Bun.write(join(root, "tracked.txt"), "committed after base\n");
+    git(root, "add", "tracked.txt");
+    git(root, "commit", "-m", "change after task base");
+    await Bun.write(join(root, "second.txt"), "working after base\n");
+
+    const capture = await service.capture(root, baseCommit);
+
+    expect(capture.status.files.map((file) => file.path)).toEqual(["second.txt", "tracked.txt"]);
+    expect(capture.status.files.find((file) => file.path === "tracked.txt")).toMatchObject({ staged: false, status: "modified" });
+    expect(capture.status.files.find((file) => file.path === "second.txt")).toMatchObject({ staged: false, status: "modified" });
+    expect(capture.diff.trackedPatch).toContain("committed after base");
+    expect(capture.diff.trackedPatch).toContain("working after base");
+  });
+
+  test("rejects an unreachable base commit consistently across task-scoped Git operations", async () => {
+    const root = repository();
+    const service = new GitService();
+    await Bun.write(join(root, "tracked.txt"), "working change\n");
+
+    await expect(service.capture(root, "does-not-exist")).rejects.toThrow("Git diff failed");
+    await expect(service.fileDiff(root, "does-not-exist", "tracked.txt")).rejects.toThrow("Git diff failed");
   });
 
   test("limits concurrent untracked diff work", async () => {
