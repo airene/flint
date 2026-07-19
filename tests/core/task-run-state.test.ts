@@ -41,4 +41,37 @@ describe("task run state policy", () => {
       workingTreeChanged: false,
     })).toBe("ready_for_review");
   });
+
+  test("gives follow-up runs their distinct workflow semantics", () => {
+    const cases = [
+      {
+        name: "developer follow-up",
+        start: taskStatusForRunStart("ready_for_review", "developer_followup"),
+        success: taskStatusForRunSuccess("developer_followup"),
+        failure: taskStatusForRunFailure("developer_followup", {
+          hasDeveloperSession: true,
+          workingTreeChanged: true,
+        }),
+        expected: ["fixing", "ready_for_review", "ready_for_review"],
+      },
+      {
+        name: "reviewer follow-up",
+        start: taskStatusForRunStart("ready_for_review", "reviewer_followup"),
+        success: taskStatusForRunSuccess("reviewer_followup", "ready_for_review"),
+        failure: taskStatusForRunFailure("reviewer_followup", {
+          hasDeveloperSession: true,
+          workingTreeChanged: true,
+          taskStatusAtStart: "ready_for_review",
+        }),
+        expected: ["ready_for_review", "ready_for_review", "ready_for_review"],
+      },
+    ] as const;
+
+    for (const scenario of cases) {
+      expect(
+        [scenario.start, scenario.success, scenario.failure],
+        scenario.name,
+      ).toEqual([...scenario.expected]);
+    }
+  });
 });
