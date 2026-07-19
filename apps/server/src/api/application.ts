@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ZodType } from "zod";
 import {
   cancelRunRequestSchema,
@@ -97,10 +98,34 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const git = new GitService(gitExecutable);
   const projects = new ProjectService(database, gitExecutable);
   const tasks = new TaskService(database, git, settings);
-  const ports = new DatabasePorts(database, git);
+  const ports = new DatabasePorts(database, git, { instanceId: randomUUID() });
+  let leaseLost = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  try {
+    ports.acquireApplicationLease();
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+  heartbeatTimer = setInterval(() => {
+    try {
+      if (!ports.heartbeatApplicationLease()) leaseLost = true;
+    } catch {
+      // Startup continues while transient SQLite locks are retried on the next heartbeat.
+    }
+  }, 1_000);
+  heartbeatTimer.unref?.();
   const hub = new EventHub();
   const events = new EventService(ports, hub);
-  const codexReviewSchema = await createTemporaryCodexReviewSchema();
+  let codexReviewSchema: Awaited<ReturnType<typeof createTemporaryCodexReviewSchema>>;
+  try {
+    codexReviewSchema = await createTemporaryCodexReviewSchema();
+  } catch (error) {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    ports.releaseApplicationLease();
+    database.close();
+    throw error;
+  }
   const codex = new CodexCliDriver({
     executablePath: cliExecutables.codexExecutable,
     environment,
@@ -136,6 +161,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const active = new Map<string, Promise<AgentRun>>();
   let accepting = true;
   let cliStatus: CliStatusResponse | null = null;
+  let shutdownTask: Promise<void> | null = null;
 
   function track(runId: string, completion: Promise<AgentRun> | Promise<{ run: AgentRun }>): void {
     const terminal = completion.then((result) => "run" in result ? result.run : result);
@@ -253,7 +279,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const recovered = await ports.recoverInterrupted();
     for (const run of recovered) await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
   } catch (error) {
-    database.close();
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    try { ports.releaseApplicationLease(); } finally { database.close(); }
     await codexReviewSchema.dispose();
     throw error;
   }
@@ -505,10 +532,53 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   try {
     await clis(true);
   } catch (error) {
-    database.close();
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    try { ports.releaseApplicationLease(); } finally { database.close(); }
     await codexReviewSchema.dispose();
     throw error;
   }
+
+  if (leaseLost || !ports.heartbeatApplicationLease()) {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    try { ports.releaseApplicationLease(); } finally { database.close(); }
+    await codexReviewSchema.dispose();
+    throw new Error("Flint lost ownership of its database during startup.");
+  }
+
+  async function shutdown(): Promise<void> {
+    if (shutdownTask) return shutdownTask;
+    accepting = false;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    shutdownTask = (async () => {
+      const activeIds = [...active.keys()];
+      try {
+        await Promise.allSettled(activeIds.map((runId) => agentRuns.interrupt(runId)));
+        await Promise.allSettled(activeIds.map((runId) => active.get(runId)).filter(Boolean) as Promise<AgentRun>[]);
+        const stranded = await ports.recoverInterrupted(activeIds);
+        for (const run of stranded) {
+          try { await events.publish(eventFor(run, "run_interrupted", new Date().toISOString())); } catch { /* closing continues */ }
+        }
+      } finally {
+        try { hub.closeAll(); } finally {
+          try { ports.releaseApplicationLease(); } finally {
+            database.close();
+            await codexReviewSchema.dispose();
+          }
+        }
+      }
+    })();
+    return shutdownTask;
+  }
+
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    try {
+      if (!ports.heartbeatApplicationLease()) void shutdown();
+    } catch {
+      // A transient SQLite lock can be retried on the next heartbeat; the lease still fences takeovers.
+    }
+  }, 1_000);
+  heartbeatTimer.unref?.();
 
   return {
     hub,
@@ -538,23 +608,6 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       }
     },
     socketClose(socket) { hub.close(socket); },
-    async shutdown() {
-      if (!accepting) return;
-      accepting = false;
-      const activeIds = [...active.keys()];
-      try {
-        await Promise.allSettled(activeIds.map((runId) => agentRuns.interrupt(runId)));
-        await Promise.allSettled(activeIds.map((runId) => active.get(runId)).filter(Boolean) as Promise<AgentRun>[]);
-        const stranded = await ports.recoverInterrupted(activeIds);
-        for (const run of stranded) {
-          try { await events.publish(eventFor(run, "run_interrupted", new Date().toISOString())); } catch { /* closing continues */ }
-        }
-      } finally {
-        try { hub.closeAll(); } finally {
-          database.close();
-          await codexReviewSchema.dispose();
-        }
-      }
-    },
+    shutdown,
   };
 }
