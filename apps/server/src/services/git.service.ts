@@ -194,6 +194,56 @@ function binaryPathsFromNumstat(output: string): Set<string> {
   return binaryPaths;
 }
 
+function baseStatusKind(status: string): GitFileStatus["status"] {
+  if (status === "A") return "added";
+  if (status === "D") return "deleted";
+  if (status === "R" || status === "C") return "renamed";
+  return "modified";
+}
+
+function baseFilesFromNameStatus(output: string, binaryPaths: ReadonlySet<string>): GitFileStatus[] {
+  const entries = output.split("\0");
+  entries.pop();
+  const files: GitFileStatus[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const statusEntry = entries[index] ?? "";
+    const status = statusEntry[0];
+    if (!status) continue;
+    const renamed = status === "R" || status === "C";
+    const previousPath = renamed ? entries[++index] ?? null : null;
+    const path = entries[++index];
+    if (!path) continue;
+    const fileStatus = baseStatusKind(status);
+    files.push({
+      path,
+      previousPath,
+      status: fileStatus,
+      staged: false,
+      tracked: true,
+      binary: fileStatus !== "deleted" && binaryPaths.has(path),
+    });
+  }
+  return files;
+}
+
+function mergeBaseRelativeFiles(baseFiles: readonly GitFileStatus[], currentFiles: readonly GitFileStatus[]): GitFileStatus[] {
+  const currentByPath = new Map(currentFiles.map((file) => [file.path, file]));
+  const files = baseFiles.map((file) => {
+    const current = currentByPath.get(file.path);
+    if (!current) return file;
+    return {
+      ...file,
+      staged: current.staged,
+      binary: file.status !== "deleted" && (file.binary || current.binary),
+    };
+  });
+  const basePaths = new Set(baseFiles.map((file) => file.path));
+  for (const file of currentFiles) {
+    if (!basePaths.has(file.path)) files.push(file);
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export class GitService {
   constructor(private executable = "git") {}
 
@@ -275,7 +325,7 @@ export class GitService {
 
   async fileDiff(rootPath: string, baseCommit: string, path: string): Promise<GitFileDiffResponse> {
     validateRepositoryRelativePath(path);
-    const file = (await this.status(rootPath)).files.find((candidate) => candidate.path === path);
+    const file = (await this.scanDiff(rootPath, baseCommit)).diff.files.find((candidate) => candidate.path === path);
     if (!file) throw new Error("File is not changed in this task");
     if (file.binary) return { file, patch: "", originalText: null, modifiedText: null };
     const patchPromise = !file.tracked
@@ -315,11 +365,13 @@ export class GitService {
   }
 
   private async scanDiff(rootPath: string, baseCommit: string): Promise<{ scan: RepositoryScan; diff: GitDiffResponse }> {
-    const [scan, trackedPatch, stagedPatch, stat, configuredObjectFormat] = await Promise.all([
+    const [scan, trackedPatch, stagedPatch, stat, baseNameStatus, baseNumstat, configuredObjectFormat] = await Promise.all([
       this.scan(rootPath),
       command(this.executable, rootPath, ["diff", baseCommit, "--"]),
       command(this.executable, rootPath, ["diff", "--cached", baseCommit, "--"]),
       command(this.executable, rootPath, ["diff", "--stat", baseCommit, "--"]),
+      command(this.executable, rootPath, ["diff", "--name-status", "-z", "--find-renames", "--find-copies", baseCommit, "--"]),
+      command(this.executable, rootPath, ["diff", "--numstat", "-z", "--find-renames", "--find-copies", baseCommit, "--"]),
       command(this.executable, rootPath, ["config", "--get", "extensions.objectFormat"], true),
     ]);
     const objectFormat = configuredObjectFormat.trim() === "sha256" ? "sha256" : "sha1";
@@ -337,9 +389,11 @@ export class GitService {
       return capturedUntrackedPatch(file.path, read.content, patch, objectFormat);
     });
     const untrackedPatch = untrackedPatches.join("");
+    const files = mergeBaseRelativeFiles(baseFilesFromNameStatus(baseNameStatus, binaryPathsFromNumstat(baseNumstat)), scan.status.files);
+    const status = { clean: files.length === 0, files };
     return {
-      scan,
-      diff: { baseCommit, trackedPatch, stagedPatch, untrackedPatch, stat, files: scan.status.files },
+      scan: { ...scan, status },
+      diff: { baseCommit, trackedPatch, stagedPatch, untrackedPatch, stat, files },
     };
   }
 }
