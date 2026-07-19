@@ -1,36 +1,93 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
+import type { UnfinishedTaskSummary } from "@local-pair-review/shared";
+import UnfinishedTaskList from "./components/UnfinishedTaskList.vue";
+import { apiEndpoints } from "./api/endpoints";
+import { applyUnfinishedTaskSocketMessage, replaceUnfinishedTaskSnapshot } from "./realtime/unfinished-task-events";
 import { useProjectsStore } from "./stores/projects";
 import { useSystemStore } from "./stores/system";
-import { useTaskWorkspaceStore } from "./stores/task-workspace";
 import { useThemeStore } from "./stores/theme";
+import { useUnfinishedTasksStore } from "./stores/unfinished-tasks";
 
 const route = useRoute();
+const router = useRouter();
 const projects = useProjectsStore();
 const system = useSystemStore();
-const workspace = useTaskWorkspaceStore();
+const unfinished = useUnfinishedTasksStore();
 const theme = useThemeStore();
 const currentProjectId = computed(() => String(route.params.projectId ?? ""));
 const currentTaskId = computed(() => String(route.params.taskId ?? ""));
 const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.allProvidersReady || !system.gitReady)));
+let unfinishedSocket: WebSocket | null = null;
+let unfinishedReconnect: ReturnType<typeof setTimeout> | null = null;
+let stopped = false;
+
+function unfinishedWebSocketUrl(): string {
+  const protocol = globalThis.location?.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${globalThis.location?.host ?? "127.0.0.1:3000"}/ws`;
+}
+
+function connectUnfinishedTasks(): void {
+  if (stopped) return;
+  let socket: WebSocket;
+  try {
+    socket = new WebSocket(unfinishedWebSocketUrl());
+  } catch {
+    unfinishedReconnect = setTimeout(() => {
+      unfinishedReconnect = null;
+      connectUnfinishedTasks();
+    }, 500);
+    return;
+  }
+  unfinishedSocket = socket;
+  let snapshotReady = false;
+  const buffered: unknown[] = [];
+  socket.onopen = () => socket.send(JSON.stringify({ action: "subscribe_unfinished" }));
+  socket.onmessage = (message) => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(String(message.data)); } catch { return; }
+    if (parsed && typeof parsed === "object" && (parsed as { action?: unknown }).action === "subscribed_unfinished") {
+      unfinished.loading = true;
+      void replaceUnfinishedTaskSnapshot(unfinished, () => apiEndpoints.listUnfinishedTasks())
+        .then(() => {
+          snapshotReady = true;
+          for (const event of buffered.splice(0)) applyUnfinishedTaskSocketMessage(unfinished, event);
+        })
+        .catch(() => socket.close(1011, "Unfinished task snapshot failed"))
+        .finally(() => { unfinished.loading = false; });
+      return;
+    }
+    if (!snapshotReady) buffered.push(parsed);
+    else applyUnfinishedTaskSocketMessage(unfinished, parsed);
+  };
+  socket.onerror = () => socket.close(1011, "Unfinished task stream failed");
+  socket.onclose = () => {
+    if (unfinishedSocket === socket) unfinishedSocket = null;
+    if (!stopped && unfinishedReconnect === null) {
+      unfinishedReconnect = setTimeout(() => {
+        unfinishedReconnect = null;
+        connectUnfinishedTasks();
+      }, 500);
+    }
+  };
+}
+
+function selectUnfinishedTask(task: UnfinishedTaskSummary): void {
+  void router.push(`/tasks/${encodeURIComponent(task.id)}`);
+}
 
 onMounted(() => {
-  void projects.loadProjects()
-    .then(() => projects.loadUnfinishedTasks())
-    .catch(() => undefined);
+  void projects.loadProjects().catch(() => undefined);
   void system.loadCliStatus().catch(() => undefined);
+  connectUnfinishedTasks();
 });
 
-// Keep the unfinished-task shortcuts fresh as the user navigates (task statuses change mid-session).
-watch(() => route.fullPath, () => {
-  void projects.loadUnfinishedTasks().catch(() => undefined);
-});
-
-// Mirror the currently-open task's live status (arrives via WebSocket) into the sidebar list,
-// so a task that starts/continues development shows up without waiting for a navigation refetch.
-watch(() => workspace.task, (task) => {
-  if (task) projects.syncTask(task);
+watch(currentTaskId, (taskId) => unfinished.setCurrentTask(taskId || null), { immediate: true });
+onBeforeUnmount(() => {
+  stopped = true;
+  if (unfinishedReconnect) clearTimeout(unfinishedReconnect);
+  unfinishedSocket?.close(1000, "Application closed");
 });
 </script>
 
@@ -68,20 +125,10 @@ watch(() => workspace.task, (task) => {
       </div>
 
       <div class="sidebar-section">
-        <div class="section-label"><span>Unfinished tasks</span><span class="section-count">{{ projects.unfinishedTasks.length }}</span></div>
-        <div v-if="projects.unfinishedLoading && !projects.unfinishedTasks.length" class="sidebar-empty">Loading…</div>
-        <div v-else-if="!projects.unfinishedTasks.length" class="sidebar-empty">All caught up</div>
-        <RouterLink
-          v-for="task in projects.unfinishedTasks"
-          :key="task.id"
-          :to="`/tasks/${task.id}`"
-          class="repo-link task-link"
-          :class="{ active: currentTaskId === task.id }"
-          :title="task.title"
-        >
-          <span :class="['task-dot', task.status]" />
-          <span class="truncate">{{ task.title }}</span>
-        </RouterLink>
+        <div class="section-label"><span>Unfinished tasks</span><span class="section-count">{{ unfinished.tasks.length }}</span></div>
+        <div v-if="unfinished.loading && !unfinished.tasks.length" class="sidebar-empty">Loading…</div>
+        <div v-else-if="!unfinished.tasks.length" class="sidebar-empty">All caught up</div>
+        <UnfinishedTaskList :tasks="unfinished.tasks" :current-task-id="currentTaskId" @select="selectUnfinishedTask" />
       </div>
 
       <div class="sidebar-footer">

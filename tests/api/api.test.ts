@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentEvent, AgentRun, ReviewFinding, Task } from "@local-pair-review/shared";
@@ -295,8 +295,28 @@ describe("local server API assembly", () => {
       expect(initial.status).toBe(200);
       expect(await initial.json()).toMatchObject({
         providers: [
-          { id: "codex", roles: ["developer", "reviewer"], availability: { installed: true } },
-          { id: "claude", roles: ["developer", "reviewer"], availability: { installed: true } },
+          {
+            id: "codex",
+            roles: ["developer", "reviewer"],
+            capabilities: {
+              developerInitialImage: true,
+              developerResumeImage: true,
+              reviewerInitialImage: true,
+              reviewerResumeImage: true,
+            },
+            availability: { installed: true },
+          },
+          {
+            id: "claude",
+            roles: ["developer", "reviewer"],
+            capabilities: {
+              developerInitialImage: false,
+              developerResumeImage: false,
+              reviewerInitialImage: false,
+              reviewerResumeImage: false,
+            },
+            availability: { installed: true },
+          },
         ],
         roles: { developerProvider: "codex", reviewerProvider: "claude" },
         git: { installed: true },
@@ -332,6 +352,121 @@ describe("local server API assembly", () => {
       }));
       expect(beforeTask).toMatchObject({ developerProvider: "codex", reviewerProvider: "claude" });
       expect(await after.json()).toMatchObject({ developerProvider: "claude", reviewerProvider: "codex" });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("uploads and securely claims initial Task images without writing them into the repository", async () => {
+    const firstRoot = await repository();
+    const secondRoot = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-attachment-api-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const application = await createApplication({
+      databasePath: join(dataDirectory, "app.sqlite"),
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const firstProject = await applicationRequest<{ id: string }>(application, "/api/projects", {
+        method: "POST", body: JSON.stringify({ rootPath: firstRoot }),
+      });
+      const secondProject = await applicationRequest<{ id: string }>(application, "/api/projects", {
+        method: "POST", body: JSON.stringify({ rootPath: secondRoot }),
+      });
+      const upload = await application.handle(new Request(
+        `http://127.0.0.1/api/projects/${firstProject.body.id}/attachment-drafts`,
+        {
+          method: "POST",
+          headers: { "content-type": "image/png" },
+          body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        },
+      ));
+      expect(upload.status).toBe(201);
+      const draft = await upload.json() as { id: string };
+      expect(draft.id).toBeTruthy();
+
+      const wrongProject = await applicationRequest<{ code: string }>(
+        application,
+        `/api/projects/${secondProject.body.id}/tasks`,
+        {
+          method: "POST",
+          body: JSON.stringify({ title: "Wrong project", originalPrompt: "Reject this", attachmentIds: [draft.id] }),
+        },
+      );
+      expect(wrongProject).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+      expect((await applicationRequest<Task[]>(application, `/api/projects/${secondProject.body.id}/tasks`)).body).toEqual([]);
+
+      const created = await applicationRequest<Task>(application, `/api/projects/${firstProject.body.id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({ title: "Image task", originalPrompt: "Use the screenshot", attachmentIds: [draft.id] }),
+      });
+      expect(created.status).toBe(201);
+      const unfinished = await applicationRequest<Array<{ id: string; attention: string }>>(application, "/api/tasks/unfinished");
+      expect(unfinished).toMatchObject({
+        status: 200,
+        body: [{ id: created.body.id, attention: "pending_start" }],
+      });
+
+      expect((await readdir(join(dataDirectory, "attachment-drafts"))).length).toBe(1);
+      expect(Bun.spawnSync(["git", "status", "--porcelain"], { cwd: firstRoot }).stdout.toString()).toBe("");
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("keeps image drafts reusable when the selected Developer cannot receive initial images", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-attachment-capability-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const application = await createApplication({
+      databasePath: join(dataDirectory, "app.sqlite"),
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+        method: "POST", body: JSON.stringify({ rootPath }),
+      });
+      const upload = await application.handle(new Request(
+        `http://127.0.0.1/api/projects/${project.body.id}/attachment-drafts`,
+        {
+          method: "POST",
+          headers: { "content-type": "image/png" },
+          body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        },
+      ));
+      const draft = await upload.json() as { id: string };
+      await applicationRequest(application, "/api/system/settings", {
+        method: "POST", body: JSON.stringify({ developerProvider: "claude" }),
+      });
+      const rejected = await applicationRequest<{ code: string; message: string }>(
+        application,
+        `/api/projects/${project.body.id}/tasks`,
+        {
+          method: "POST",
+          body: JSON.stringify({ title: "Unsupported", originalPrompt: "Do not drop the image", attachmentIds: [draft.id] }),
+        },
+      );
+      expect(rejected).toMatchObject({
+        status: 409,
+        body: { code: "CONFLICT" },
+      });
+      expect(rejected.body.message).toContain("initial-run images");
+      expect((await applicationRequest<Task[]>(application, `/api/projects/${project.body.id}/tasks`)).body).toEqual([]);
+
+      await applicationRequest(application, "/api/system/settings", {
+        method: "POST", body: JSON.stringify({ developerProvider: "codex" }),
+      });
+      const retried = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({ title: "Supported", originalPrompt: "Deliver the image", attachmentIds: [draft.id] }),
+      });
+      expect(retried.status).toBe(201);
     } finally {
       await application.shutdown();
     }

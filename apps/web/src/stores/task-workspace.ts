@@ -13,6 +13,7 @@ import type {
 import { ApiClientError } from "../api/client";
 import { apiEndpoints } from "../api/endpoints";
 import { TaskEventController } from "../realtime/task-events";
+import { browserNotificationController } from "../realtime/browser-notification-runtime";
 import { shouldApplyRunUpdate, WorkspaceRefreshGuard } from "./workspace-refresh-guard";
 
 function message(error: unknown): string {
@@ -156,6 +157,11 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         if (last && event.sequence <= last.sequence) return;
         events.value.push(event);
         if (events.value.length > MAX_TASK_EVENTS) events.value.splice(0, events.value.length - MAX_TASK_EVENTS);
+        const run = runs.value.find((candidate) => candidate.id === event.runId);
+        if (run) {
+          const role = run.runType.startsWith("reviewer") ? "reviewer" : "developer";
+          browserNotificationController.consumePersistedEvent({ event, role, taskTitle: task.value.title });
+        }
         if (["run_completed", "run_failed", "run_cancelled", "run_interrupted", "review_parsed", "review_parse_failed"].includes(event.type)) scheduleRefresh();
       },
       onTerminalEvent() {

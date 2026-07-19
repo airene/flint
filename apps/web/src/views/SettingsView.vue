@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, watch } from "vue";
 import type { AgentAvailability, AgentRole, CliRecheckRequest, Provider } from "@local-pair-review/shared";
 import ErrorBanner from "../components/ErrorBanner.vue";
+import NotificationSettings from "../components/NotificationSettings.vue";
+import { browserNotificationController, browserNotificationSettings } from "../realtime/browser-notification-runtime";
 import { useSystemStore } from "../stores/system";
 
 const store = useSystemStore();
@@ -81,6 +83,7 @@ onMounted(() => { if (!store.cliStatus) void store.loadCliStatus().catch(() => u
   <div class="page compact">
     <header class="page-header"><div><div class="eyebrow">Local runtime</div><h1>CLI Settings</h1><p class="subtitle">Flint uses existing CLI subscription sessions. API keys are removed from every child process environment.</p></div><button class="button primary" :disabled="!hydrated || store.rechecking" @click="saveAndRecheck">{{ store.loading ? 'Loading…' : store.rechecking ? 'Saving & checking…' : 'Save & recheck' }}</button></header>
     <ErrorBanner :message="store.error?.message ?? null" @dismiss="store.clearError" />
+    <NotificationSettings :controller="browserNotificationController" :settings="browserNotificationSettings" />
     <section class="panel role-settings">
       <div class="role-settings-copy"><h2>Task roles</h2><p>Defaults apply only when a new task is created. Existing tasks keep their provider and exact session.</p></div>
       <label for="developer-provider"><span>Developer CLI</span><select id="developer-provider" v-model="roles.developerProvider" class="input" :disabled="!hydrated || store.rechecking"><option v-for="provider in roleOptions('developer')" :key="provider.id" :value="provider.id" :disabled="!ready(provider.availability)">{{ optionLabel(provider) }}</option></select></label>

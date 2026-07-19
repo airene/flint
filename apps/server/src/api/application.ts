@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { ZodType } from "zod";
 import {
   cancelRunRequestSchema,
@@ -36,15 +38,18 @@ import { createTemporaryCodexReviewSchema } from "../drivers/codex-review-schema
 import { createProviderRegistry } from "../drivers/provider-registry";
 import { AgentRunService } from "../services/agent-run.service";
 import { AppSettingsService } from "../services/app-settings.service";
+import { AttachmentService, AttachmentValidationError } from "../services/attachment.service";
 import { EventService } from "../services/event.service";
 import { FeedbackService, composeFeedback } from "../services/feedback.service";
 import { GitService } from "../services/git.service";
 import { ProjectService } from "../services/project.service";
 import { ReviewService, type ReviewContextPort } from "../services/review.service";
 import { TaskService } from "../services/task.service";
-import { DatabasePorts } from "./database-ports";
+import { UnfinishedTaskService } from "../services/unfinished-task.service";
+import { AttachmentClaimConflictError, DatabasePorts, PersistenceOwnershipError } from "./database-ports";
 import { CliUnavailableError, errorResponse, NotFoundError, RequestValidationError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
+import { createUnfinishedTasksRoute } from "./unfinished-tasks";
 import { createRunEvent } from "../utils/agent-event";
 
 export interface ApplicationOptions {
@@ -91,9 +96,21 @@ function eventFor(run: AgentRun, type: AgentEvent["type"], timestamp: string): A
   return createRunEvent(run, "system", type, { recovered: true }, timestamp);
 }
 
+const UNFINISHED_EVENT_TYPES = new Set<AgentEvent["type"]>([
+  "run_queued",
+  "run_started",
+  "run_completed",
+  "run_failed",
+  "run_cancelled",
+  "run_interrupted",
+  "approval_requested",
+  "approval_resolved",
+]);
+
 export async function createApplication(options: ApplicationOptions = {}): Promise<LocalPairReviewApplication> {
   const environment = options.environment ?? process.env;
-  const database = createDatabase(options.databasePath ?? ":memory:");
+  const databasePath = options.databasePath ?? ":memory:";
+  const database = createDatabase(databasePath);
   const settings = new AppSettingsService(database, {
     codexExecutable: options.codexExecutable ?? "codex",
     claudeExecutable: options.claudeExecutable ?? "claude",
@@ -105,6 +122,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const projects = new ProjectService(database, gitExecutable);
   const tasks = new TaskService(database, git, settings);
   const ports = new DatabasePorts(database, git, { instanceId: randomUUID() });
+  const attachmentDataRoot = databasePath === ":memory:"
+    ? join(tmpdir(), "flint-attachment-data")
+    : dirname(resolve(databasePath));
+  const attachments = new AttachmentService({ dataRoot: attachmentDataRoot, persistence: ports });
+  const unfinishedTasks = new UnfinishedTaskService(ports);
+  const unfinishedTasksRoute = createUnfinishedTasksRoute(unfinishedTasks);
   let leaseLost = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   try {
@@ -122,7 +145,22 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }, 1_000);
   heartbeatTimer.unref?.();
   const hub = new EventHub();
-  const events = new EventService(ports, hub);
+  async function broadcastUnfinishedTask(taskId: string): Promise<void> {
+    try {
+      const summary = (await unfinishedTasks.list()).find((candidate) => candidate.id === taskId);
+      hub.broadcastUnfinished(summary
+        ? { type: "unfinished_task_upsert", task: summary }
+        : { type: "unfinished_task_remove", taskId });
+    } catch {
+      // The database is authoritative; a reconnect replaces the app-level snapshot.
+    }
+  }
+  const events = new EventService(ports, {
+    async broadcast(event) {
+      hub.broadcast(event);
+      if (UNFINISHED_EVENT_TYPES.has(event.type)) await broadcastUnfinishedTask(event.taskId);
+    },
+  });
   let codexReviewSchema: Awaited<ReturnType<typeof createTemporaryCodexReviewSchema>>;
   try {
     codexReviewSchema = await createTemporaryCodexReviewSchema();
@@ -322,6 +360,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         return json(await settingsResponse(true));
       }
 
+      const unfinishedResponse = await unfinishedTasksRoute(request);
+      if (unfinishedResponse) return unfinishedResponse;
+
       if (method === "GET" && path === "/api/projects") return json(await projects.list());
       if (method === "POST" && path === "/api/projects") {
         ensureAccepting();
@@ -356,6 +397,23 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         return json(await git.projectFiles(project.id, project.rootPath, input.q ?? "", input.limit ?? 50));
       }
 
+      parameters = match(path, /^\/api\/projects\/([^/]+)\/attachment-drafts$/);
+      if (parameters && method === "POST") {
+        ensureAccepting();
+        const project = await requireProject(parameters[0]!);
+        try {
+          const attachment = await attachments.createDraft(
+            project.id,
+            new Uint8Array(await request.arrayBuffer()),
+            request.headers.get("content-type") ?? undefined,
+          );
+          return json({ id: attachment.id }, 201);
+        } catch (error) {
+          if (error instanceof AttachmentValidationError) throw new RequestValidationError(error.message);
+          throw error;
+        }
+      }
+
       parameters = match(path, /^\/api\/projects\/([^/]+)\/tasks$/);
       if (parameters) {
         const [projectId] = parameters;
@@ -364,8 +422,24 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         if (method === "POST") {
           ensureAccepting();
           const input = await body(request, createTaskRequestSchema);
+          const attachmentIds = input.attachmentIds ?? [];
           await requireGit();
-          return json(await tasks.create(projectId!, input), 201);
+          const task = await tasks.create(projectId!, input);
+          try {
+            if (attachmentIds.length
+              && !providerRegistry.get(task.developerProvider).driver.capabilities.developerInitialImage) {
+              throw new RunConflictError(`${task.developerProvider} does not support developer initial-run images through its configured CLI protocol.`);
+            }
+            await attachments.claim(projectId!, task.id, attachmentIds);
+          } catch (error) {
+            await tasks.discardDraft(task.id);
+            if (error instanceof AttachmentClaimConflictError || error instanceof PersistenceOwnershipError) {
+              throw new RunConflictError(error.message);
+            }
+            throw error;
+          }
+          await broadcastUnfinishedTask(task.id);
+          return json(task, 201);
         }
       }
 
@@ -380,7 +454,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         ensureAccepting();
         await body(request, completeTaskRequestSchema);
         await requireTask(parameters[0]!);
-        return json(await tasks.complete(parameters[0]!));
+        const completed = await tasks.complete(parameters[0]!);
+        await broadcastUnfinishedTask(completed.id);
+        return json(completed);
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/develop$/);
@@ -612,6 +688,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       const text = typeof rawMessage === "string" ? rawMessage : new TextDecoder().decode(rawMessage);
       let parsed: unknown;
       try { parsed = JSON.parse(text); } catch { socket.close(1008, "Invalid subscription message"); return; }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        && Object.keys(parsed).length === 1
+        && (parsed as { action?: unknown }).action === "subscribe_unfinished") {
+        hub.beginUnfinished(socket);
+        socket.send(JSON.stringify({ action: "subscribed_unfinished" }));
+        return;
+      }
       const subscription = webSocketSubscribeSchema.safeParse(parsed);
       if (!subscription.success || !(await tasks.get(subscription.data.taskId))) {
         socket.close(1008, "Invalid subscription message");

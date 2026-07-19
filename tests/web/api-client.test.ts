@@ -191,6 +191,7 @@ describe("API endpoints", () => {
     await api.markProjectOpened(projectId, { lastOpenedAt: "2026-07-19T00:00:00.000Z" });
     await api.deleteProject(projectId, { confirm: true });
     await api.listTasks(projectId);
+    await api.listUnfinishedTasks();
     await api.createTask(projectId, { title: "Task", originalPrompt: "Implement it" });
     await api.getTask(taskId);
     await api.completeTask(taskId);
@@ -225,6 +226,7 @@ describe("API endpoints", () => {
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one/tasks",
+      "/api/tasks/unfinished",
       "/api/projects/project%20%2F%20one/tasks",
       "/api/tasks/task%20%2F%20one",
       "/api/tasks/task%20%2F%20one/complete",
@@ -248,6 +250,6 @@ describe("API endpoints", () => {
     });
     expect(calls[4]?.options?.query).toEqual({ q: "src/app", limit: 7 });
     expect(calls[6]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
-    expect(calls[17]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
+    expect(calls[18]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
   });
 });

@@ -1,4 +1,5 @@
 import {
+  apiErrorSchema,
   cancelRunResponseSchema,
   completeTaskResponseSchema,
   createProjectResponseSchema,
@@ -22,6 +23,7 @@ import {
   settingsResponseSchema,
   taskListResponseSchema,
   taskResponseSchema,
+  unfinishedTaskListResponseSchema,
   type CancelRunResponse,
   type CliRecheckRequest,
   type CompleteTaskResponse,
@@ -56,9 +58,10 @@ import {
   type SettingsResponse,
   type TaskListResponse,
   type TaskResponse,
+  type UnfinishedTaskListResponse,
   type UpdateFindingRequest,
 } from "@local-pair-review/shared";
-import { apiClient, type ApiClient } from "./client";
+import { ApiClientError, apiClient, type ApiClient } from "./client";
 
 function id(value: string): string {
   return encodeURIComponent(value);
@@ -73,6 +76,7 @@ export interface ApiEndpoints {
   markProjectOpened(projectId: string, input: MarkProjectOpenedRequest): Promise<ProjectResponse>;
   deleteProject(projectId: string, input: DeleteProjectRequest): Promise<DeleteProjectResponse>;
   listTasks(projectId: string): Promise<TaskListResponse>;
+  listUnfinishedTasks(): Promise<UnfinishedTaskListResponse>;
   createTask(projectId: string, input: CreateTaskRequest): Promise<CreateTaskResponse>;
   getTask(taskId: string): Promise<TaskResponse>;
   completeTask(taskId: string): Promise<CompleteTaskResponse>;
@@ -117,6 +121,7 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
       body: input,
     }),
     listTasks: (projectId) => client.request(`/api/projects/${id(projectId)}/tasks`, taskListResponseSchema),
+    listUnfinishedTasks: () => client.request("/api/tasks/unfinished", unfinishedTaskListResponseSchema),
     createTask: (projectId, input) => client.request(`/api/projects/${id(projectId)}/tasks`, createTaskResponseSchema, {
       method: "POST",
       body: input,
@@ -173,3 +178,35 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
 }
 
 export const apiEndpoints = createApiEndpoints(apiClient);
+
+export interface UploadAttachmentDraftInput {
+  projectId: string;
+  file: File;
+  onProgress: (percent: number) => void;
+}
+
+export async function uploadAttachmentDraft(input: UploadAttachmentDraftInput): Promise<{ id: string }> {
+  input.onProgress(0);
+  let response: Response;
+  try {
+    response = await fetch(`/api/projects/${id(input.projectId)}/attachment-drafts`, {
+      method: "POST",
+      headers: { "content-type": input.file.type || "application/octet-stream" },
+      body: input.file,
+    });
+  } catch (error) {
+    throw new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : "Image upload failed.");
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const parsed = apiErrorSchema.safeParse(payload);
+    throw parsed.success
+      ? new ApiClientError(response.status, parsed.data.code, parsed.data.message, parsed.data.details)
+      : new ApiClientError(response.status, "INTERNAL_ERROR", `Image upload failed with HTTP ${response.status}.`);
+  }
+  if (!payload || typeof payload !== "object" || typeof (payload as { id?: unknown }).id !== "string") {
+    throw new ApiClientError(response.status, "INTERNAL_ERROR", "The attachment response was invalid.");
+  }
+  input.onProgress(100);
+  return { id: (payload as { id: string }).id };
+}

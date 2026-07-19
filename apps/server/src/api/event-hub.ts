@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@local-pair-review/shared";
+import type { AgentEvent, UnfinishedTaskSummary } from "@local-pair-review/shared";
 import type { EventBroadcastPort } from "../services/event.service";
 
 export interface EventSocket {
@@ -9,19 +9,28 @@ export interface EventSocket {
 
 interface SubscriptionState {
   taskId: string | null;
+  unfinished: boolean;
   replaying: boolean;
   buffered: AgentEvent[];
 }
+
+export type UnfinishedTaskBroadcast =
+  | { type: "unfinished_task_upsert"; task: UnfinishedTaskSummary }
+  | { type: "unfinished_task_remove"; taskId: string };
 
 export class EventHub implements EventBroadcastPort {
   private readonly sockets = new Map<EventSocket, SubscriptionState>();
 
   open(socket: EventSocket): void {
-    this.sockets.set(socket, { taskId: null, replaying: false, buffered: [] });
+    this.sockets.set(socket, { taskId: null, unfinished: false, replaying: false, buffered: [] });
   }
 
   beginReplay(socket: EventSocket, taskId: string): void {
-    this.sockets.set(socket, { taskId, replaying: true, buffered: [] });
+    this.sockets.set(socket, { taskId, unfinished: false, replaying: true, buffered: [] });
+  }
+
+  beginUnfinished(socket: EventSocket): void {
+    this.sockets.set(socket, { taskId: null, unfinished: true, replaying: false, buffered: [] });
   }
 
   finishReplay(socket: EventSocket, lastReplayedSequence: number): void {
@@ -62,14 +71,26 @@ export class EventHub implements EventBroadcastPort {
     }
   }
 
+  broadcastUnfinished(event: UnfinishedTaskBroadcast): void {
+    const data = JSON.stringify(event);
+    for (const [socket, state] of this.sockets) {
+      if (!state.unfinished) continue;
+      this.sendData(socket, data);
+    }
+  }
+
   private send(socket: EventSocket, event: AgentEvent): boolean {
+    return this.sendData(socket, JSON.stringify({ action: "event", event }));
+  }
+
+  private sendData(socket: EventSocket, data: string): boolean {
     if (socket.getBufferedAmount() > 1_000_000) {
       socket.close(1013, "Client is too slow; reconnect to replay events");
       this.sockets.delete(socket);
       return false;
     }
     try {
-      socket.send(JSON.stringify({ action: "event", event }));
+      socket.send(data);
       return true;
     } catch {
       this.sockets.delete(socket);
