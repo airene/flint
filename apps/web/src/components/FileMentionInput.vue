@@ -137,7 +137,12 @@ function onKeydown(event: KeyboardEvent): void {
       selectedIndex.value = (selectedIndex.value - 1 + files.value.length) % files.value.length;
       return;
     }
-    if (files.value.length > 0 && exactKey(event) && (event.key === "Tab" || event.key === "Enter")) {
+    if (exactKey(event) && event.key === "Enter") {
+      event.preventDefault();
+      if (files.value.length > 0) selectFile(files.value[selectedIndex.value]!);
+      return;
+    }
+    if (files.value.length > 0 && exactKey(event) && event.key === "Tab") {
       event.preventDefault();
       selectFile(files.value[selectedIndex.value]!);
       return;

@@ -62,6 +62,9 @@ test("inserts file mentions in new-task and Continue Developer prompts without c
 
   const continuation = page.getByLabel("Codex continuation message");
   await continuation.fill("Recheck @inp");
+  await continuation.press("Enter");
+  await expect(page.getByRole("button", { name: "Select Developer run 2" })).toHaveCount(0);
+  await expect(continuation).toHaveValue("Recheck @inp");
   await expect(page.getByRole("option", { name: "src/input.ts" })).toBeVisible();
   await continuation.press("ArrowDown");
   await continuation.press("Enter");
