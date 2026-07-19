@@ -183,6 +183,8 @@ export abstract class StreamingCliDriver implements AgentControl {
     throw new UnsupportedProviderCapabilityError(this.provider, "liveMessages");
   }
 
+  // Dormant: the prompt is written to stdin once and closed in run(), so there is no channel
+  // to relay an approval decision back to a running CLI. See the TODO in approval.service.ts.
   async resolveApproval(_runId: string, _approvalId: string, _decision: ApprovalDecision): Promise<void> {
     throw new UnsupportedProviderCapabilityError(this.provider, "approvals");
   }

@@ -17,6 +17,7 @@ import {
   type SettleDeliveryBatchInput,
 } from "../../apps/server/src/services/conversation.service";
 import type { StartAgentRunInput, StartedAgentRun } from "../../apps/server/src/services/agent-run.service";
+import { ProjectWriteRunConflictError } from "../../apps/server/src/services/task.service";
 
 const now = "2026-07-19T00:00:00.000Z";
 
@@ -655,5 +656,44 @@ describe("ConversationService scheduling", () => {
     ]);
     expect([...persistence.messages.values()].map((message) => message.status))
       .toEqual(["delivered", "delivered"]);
+  });
+
+  test("retries delivery instead of burning the message when the project write lock is briefly held", async () => {
+    const persistence = new MemoryConversationPersistence(task());
+    const scenario = new ScenarioAgentRuns(persistence);
+    let conflicts = 1;
+    const agentRuns: ConversationAgentRunPort = {
+      async start(input) {
+        if (conflicts > 0) {
+          conflicts -= 1;
+          throw new ProjectWriteRunConflictError("project-1");
+        }
+        return scenario.start(input);
+      },
+      interrupt: (runId) => scenario.interrupt(runId),
+      waitForTerminal: (runId) => scenario.waitForTerminal(runId),
+    };
+    const service = new ConversationService({
+      persistence,
+      agentRuns,
+      createDeliveryBatchId: () => "batch-1",
+      now: () => now,
+      retryDelay: async () => {},
+    });
+    await persistQueuedMessage(persistence, {
+      id: "message-z",
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: "deliver me",
+      deliveryMode: "queue",
+    });
+
+    service.resume("task-1");
+    await service.drain("task-1");
+
+    // The transient conflict must not settle the batch; it retries and delivers once the lock clears.
+    expect(scenario.starts).toHaveLength(1);
+    expect(persistence.messages.get("message-z")?.status).toBe("delivered");
+    expect(persistence.batches.size).toBe(0);
   });
 });

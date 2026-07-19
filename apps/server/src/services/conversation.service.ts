@@ -7,6 +7,7 @@ import type {
   TaskMessage,
 } from "@local-pair-review/shared";
 import type { StartAgentRunInput, StartedAgentRun } from "./agent-run.service";
+import { ProjectWriteRunConflictError } from "./task.service";
 
 export interface ConversationDeliveryBatch {
   id: string;
@@ -259,6 +260,13 @@ export class ConversationService {
         ? await this.settleBatch(batch, "delivered", null)
         : await this.settleBatch(batch, "failed", terminal.errorMessage ?? `Follow-up Run ended as ${terminal.status}`);
     } catch (error) {
+      // A project-wide write lock held by another Run is transient: it clears when that
+      // Run reaches a terminal state. queue() throws before binding the batch, so the batch
+      // stays open with runId null and re-enters this path on retry. Never burn the message.
+      if (error instanceof ProjectWriteRunConflictError) {
+        this.scheduleRetry(batch.taskId);
+        return false;
+      }
       return await this.settleBatch(batch, "failed", errorText(error));
     }
   }

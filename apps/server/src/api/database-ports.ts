@@ -818,15 +818,8 @@ export class DatabasePorts implements
       pendingApprovalCount: number;
       hasActiveRun: number;
     }>;
-    const priority: Record<UnfinishedTaskSummary["attention"], number> = {
-      pending_approval: 0,
-      needs_attention: 1,
-      running: 2,
-      waiting_for_human: 3,
-      ready_for_review: 4,
-      pending_start: 5,
-      other: 6,
-    };
+    // Attention is derived here from the single summary query; deterministic ordering
+    // is owned by UnfinishedTaskService.list (see sortUnfinishedTasks), the sole caller.
     return rows.map(({ hasActiveRun, ...row }) => ({
       ...row,
       attention: row.pendingApprovalCount > 0
@@ -842,11 +835,7 @@ export class DatabasePorts implements
                 : row.status === "draft"
                   ? "pending_start" as const
                   : "other" as const,
-    })).sort((left, right) => (
-      priority[left.attention] - priority[right.attention]
-      || right.updatedAt.localeCompare(left.updatedAt)
-      || left.id.localeCompare(right.id)
-    ));
+    }));
   }
 
   async reviewSnapshotHash(runId: string): Promise<string | null> {

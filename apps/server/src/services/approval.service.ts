@@ -2,6 +2,18 @@ import { approvalDecisionSchema, type AgentRun, type ApprovalDecision, type Appr
 import { UnsupportedProviderCapabilityError } from "../drivers/agent-control";
 import { redactSensitive } from "../utils/redact";
 
+// TODO(approvals): This subsystem is intentionally dormant in production. No driver sets
+// `capabilities.approvals = true` and nothing calls `ApprovalService.request`, so approval
+// requests are never created. Root cause: the streaming CLI drivers write the prompt to
+// stdin once and close it (see `StreamingCliDriver.run`), then read the CLI event stream
+// one-way — there is no back-channel to answer a mid-run approval prompt, so `resolveApproval`
+// throws. Flint instead runs the CLIs headless within a fixed permission envelope (codex
+// `--sandbox`, claude `--permission-mode`) and relies on each CLI's own config to auto-approve
+// (see README "无人值守运行与 CLI 审批配置"). Enabling in-app approvals needs a bidirectional
+// driver that keeps stdin open, parses an approval-request event → `ApprovalService.request`,
+// relays the decision via `resolveApproval`, and flips the capability flag. Before enabling,
+// also handle the "resolving" stuck-state (`expireApprovals` only clears "pending").
+
 export interface ApprovalProviderControl {
   readonly capabilities: Pick<ProviderCapabilities, "approvals">;
   /** Must be idempotent for the same Run and provider request ID. */

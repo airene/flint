@@ -67,7 +67,7 @@ const composerProvider = computed(() => composerTargetRole.value === "reviewer"
   : workspace.task?.developerProvider);
 const composerImagesEnabled = computed(() => {
   const descriptor = system.providerById(composerProvider.value);
-  return Boolean(descriptor?.capabilities[composerTargetRole.value === "reviewer" ? "reviewerResumeImage" : "developerResumeImage"]);
+  return Boolean(descriptor?.capabilities?.[composerTargetRole.value === "reviewer" ? "reviewerResumeImage" : "developerResumeImage"]);
 });
 const composerDisabledReason = computed(() => {
   if (workspace.task?.status === "completed") return "Completed tasks are read-only.";
