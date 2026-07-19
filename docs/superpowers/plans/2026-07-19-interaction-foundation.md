@@ -14,7 +14,7 @@
 
 - **Branch:** `codex/interaction-foundation`
 - **Depends on:** current integration target only; this is Wave 0.
-- **Owns:** `packages/shared/src/index.ts`, `packages/shared/src/contracts.test.ts`, `apps/server/src/db/schema.ts`, `apps/server/src/db/database.ts`, `apps/server/src/api/database-ports.ts`, `tests/core/core.test.ts`.
+- **Owns:** `packages/shared/src/index.ts`, `packages/shared/src/contracts.test.ts`, `apps/server/src/db/schema.ts`, `apps/server/src/db/database.ts`, `apps/server/src/api/database-ports.ts`, `scripts/rebuild-database.ts`, `tests/core/core.test.ts`.
 - **Must not edit:** application routes, provider drivers, feature services, Vue files, realtime entry points, API/E2E integration tests, or README.
 - **Handoff:** one committed branch exporting stable contracts and persistence operations that downstream plans can consume without editing these files.
 
@@ -32,7 +32,9 @@ Run: `bun test packages/shared/src/contracts.test.ts`
 
 ## Task 2: Add persistence and atomic ports
 
-Write failing database tests in `tests/core/core.test.ts`, then add tables/indexes and `DatabasePorts` operations for messages, attachments, approvals, unfinished summaries, and exact-session lookup. Enforce project/task ownership, one-time attachment claim, idempotent approval decisions, and at most one active Run per Task at the database boundary. Keep filesystem movement and orchestration outside this plan.
+Write failing database tests in `tests/core/core.test.ts`, then add tables/indexes and `DatabasePorts` operations for messages, attachments, approvals, unfinished summaries, and exact-session lookup. Enforce project/task ownership, one-time attachment claim, idempotent approval decisions, and at most one active Run per Task at the database boundary.
+
+Flint 尚未进入稳定版，当前完整 schema 是唯一真相源：不增加旧库增量迁移链。新数据库必须原子创建全部当前表和索引并写入明确的 schema version；非空旧库或未知版本直接给出清晰错误。提供 `scripts/rebuild-database.ts`，仅在用户给出显式数据库路径和 `--yes` 时全量重建本地 SQLite schema，并在结束后检查 integrity 和 foreign keys。Keep filesystem movement and orchestration outside this plan.
 
 Run: `bun test tests/core/core.test.ts`
 
