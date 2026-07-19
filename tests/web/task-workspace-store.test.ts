@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import type { AgentRun, ReviewFinding, Task } from "@local-pair-review/shared";
+import type { AgentEvent, AgentRun, CreateTaskMessageRequest, ReviewFinding, Task, TaskMessage } from "@local-pair-review/shared";
 import { ApiClientError } from "../../apps/web/src/api/client";
 import { apiEndpoints } from "../../apps/web/src/api/endpoints";
+import { browserNotificationController } from "../../apps/web/src/realtime/browser-notification-runtime";
+import type { PersistedRunEvent } from "../../apps/web/src/realtime/browser-notifications";
 import { latestFeedbackReviewRun, useTaskWorkspaceStore } from "../../apps/web/src/stores/task-workspace";
 
 const { createPinia } = createRequire(new URL("../../apps/web/package.json", import.meta.url))("pinia") as {
@@ -10,6 +12,7 @@ const { createPinia } = createRequire(new URL("../../apps/web/package.json", imp
 };
 const originalEndpoints = { ...apiEndpoints };
 const originalWebSocket = globalThis.WebSocket;
+const originalNotificationConsumer = browserNotificationController.consumePersistedEvent;
 
 class SilentWebSocket {
   onopen: (() => void) | null = null;
@@ -20,9 +23,19 @@ class SilentWebSocket {
   close(): void {}
 }
 
+class CapturingWebSocket extends SilentWebSocket {
+  static latest: CapturingWebSocket | null = null;
+  constructor() {
+    super();
+    CapturingWebSocket.latest = this;
+  }
+}
+
 afterEach(() => {
   Object.assign(apiEndpoints, originalEndpoints);
   Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: originalWebSocket });
+  browserNotificationController.consumePersistedEvent = originalNotificationConsumer;
+  CapturingWebSocket.latest = null;
 });
 
 function reviewRun(id: string, reviewParseStatus: AgentRun["reviewParseStatus"]): AgentRun {
@@ -82,6 +95,78 @@ function task(): Task {
     updatedAt: "2026-07-18T00:00:03.000Z",
     completedAt: "2026-07-18T00:00:03.000Z",
   };
+}
+
+function developerFollowupRun(): AgentRun {
+  return {
+    id: "developer-followup-1",
+    taskId: "task-1",
+    projectId: "project-1",
+    provider: "codex",
+    runType: "developer_followup",
+    status: "completed",
+    reviewParseStatus: null,
+    externalSessionId: "developer-session",
+    processId: null,
+    exitCode: 0,
+    prompt: "Continue",
+    finalMessage: "Done",
+    structuredOutput: null,
+    errorMessage: null,
+    startedAt: "2026-07-18T00:00:04.000Z",
+    finishedAt: "2026-07-18T00:00:05.000Z",
+  };
+}
+
+function messageInput(): CreateTaskMessageRequest {
+  return {
+    targetRole: "developer",
+    sourceReviewRunId: null,
+    text: "Continue",
+    deliveryMode: "queue",
+    attachmentIds: [],
+  };
+}
+
+function queuedMessage(): TaskMessage {
+  return {
+    id: "message-1",
+    projectId: "project-1",
+    taskId: "task-1",
+    targetRole: "developer",
+    sourceReviewRunId: null,
+    text: "Continue",
+    deliveryMode: "queue",
+    status: "queued",
+    createdAt: "2026-07-18T00:00:04.000Z",
+    updatedAt: "2026-07-18T00:00:04.000Z",
+    deliveredAt: null,
+    errorMessage: null,
+  };
+}
+
+function completionEvent(runId = "developer-followup-1"): AgentEvent {
+  return {
+    sequence: 1,
+    timestamp: "2026-07-18T00:00:05.000Z",
+    projectId: "project-1",
+    taskId: "task-1",
+    runId,
+    source: "system",
+    type: "run_completed",
+    payload: { finalMessage: "Done" },
+  };
+}
+
+function stubWorkspaceLoad(listRuns: () => Promise<AgentRun[]>): void {
+  Object.assign(apiEndpoints, {
+    getTask: async () => task(),
+    listRuns,
+    listFindings: async () => [],
+    listMessages: async () => [],
+    listApprovals: async () => [],
+    getGitStatus: async () => ({ clean: true, snapshotHash: "snapshot", files: [] }),
+  });
 }
 
 describe("latestFeedbackReviewRun", () => {
@@ -221,6 +306,100 @@ describe("task workspace repository loading", () => {
     expect(workspace.diffError).toContain("File changed during diff loading");
     expect(workspace.repositoryError).toBeNull();
     expect(workspace.error).toBeNull();
+    workspace.dispose();
+  });
+});
+
+describe("task workspace message delivery", () => {
+  test("coalesces concurrent message actions and exposes the in-flight state", async () => {
+    let resolveMessage!: (message: TaskMessage) => void;
+    const response = new Promise<TaskMessage>((resolve) => { resolveMessage = resolve; });
+    let calls = 0;
+    Object.assign(apiEndpoints, {
+      sendMessage: async () => {
+        calls += 1;
+        return await response;
+      },
+    });
+    const workspace = useTaskWorkspaceStore(createPinia());
+    workspace.task = task();
+
+    const first = workspace.sendMessage(messageInput());
+    const duplicate = workspace.sendMessage(messageInput());
+
+    expect(calls).toBe(1);
+    expect(workspace.sendingMessage).toBe(true);
+    resolveMessage(queuedMessage());
+    expect(await duplicate).toEqual(await first);
+    expect(workspace.sendingMessage).toBe(false);
+    expect(workspace.messages).toEqual([queuedMessage()]);
+  });
+
+  test("unlocks message delivery after a failed action", async () => {
+    let calls = 0;
+    Object.assign(apiEndpoints, {
+      sendMessage: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("delivery unavailable");
+        return queuedMessage();
+      },
+    });
+    const workspace = useTaskWorkspaceStore(createPinia());
+    workspace.task = task();
+
+    expect(await workspace.sendMessage(messageInput())).toBeUndefined();
+    expect(workspace.sendingMessage).toBe(false);
+    expect(await workspace.sendMessage(messageInput())).toEqual(queuedMessage());
+    expect(calls).toBe(2);
+  });
+});
+
+describe("task workspace completion notifications", () => {
+  test("refreshes a missing Run before resolving its role and notifying", async () => {
+    let runReads = 0;
+    const completedRun = developerFollowupRun();
+    stubWorkspaceLoad(async () => (++runReads === 1 ? [] : [completedRun]));
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: CapturingWebSocket });
+    const consumed: PersistedRunEvent[] = [];
+    browserNotificationController.consumePersistedEvent = ((input) => {
+      consumed.push(input);
+      return true;
+    }) as typeof browserNotificationController.consumePersistedEvent;
+    const workspace = useTaskWorkspaceStore(createPinia());
+    await workspace.load("task-1");
+    const socket = CapturingWebSocket.latest!;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ action: "subscribed", taskId: "task-1", afterSequence: 0 }) });
+
+    socket.onmessage?.({ data: JSON.stringify({ action: "event", event: completionEvent() }) });
+    for (let attempt = 0; attempt < 20 && consumed.length === 0; attempt += 1) await Bun.sleep(0);
+
+    expect(runReads).toBe(2);
+    expect(workspace.runs).toEqual([completedRun]);
+    expect(consumed).toEqual([{ event: completionEvent(), role: "developer", taskTitle: task().title }]);
+    workspace.dispose();
+  });
+
+  test("stays silent when a completed Run remains unknown after refresh", async () => {
+    let runReads = 0;
+    stubWorkspaceLoad(async () => { runReads += 1; return []; });
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: CapturingWebSocket });
+    let notifications = 0;
+    browserNotificationController.consumePersistedEvent = (() => {
+      notifications += 1;
+      return true;
+    }) as typeof browserNotificationController.consumePersistedEvent;
+    const workspace = useTaskWorkspaceStore(createPinia());
+    await workspace.load("task-1");
+    const socket = CapturingWebSocket.latest!;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ action: "subscribed", taskId: "task-1", afterSequence: 0 }) });
+
+    socket.onmessage?.({ data: JSON.stringify({ action: "event", event: completionEvent("missing-run") }) });
+    for (let attempt = 0; attempt < 20 && runReads < 2; attempt += 1) await Bun.sleep(0);
+
+    expect(runReads).toBe(2);
+    expect(notifications).toBe(0);
     workspace.dispose();
   });
 });

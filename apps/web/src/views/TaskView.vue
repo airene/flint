@@ -225,7 +225,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
             <small v-else>Exact Developer session · {{ workspace.task.developerSessionId ?? 'not established' }}</small>
           </div>
           <label class="delivery-mode">Delivery
-            <select v-model="deliveryMode" :disabled="Boolean(composerDisabledReason)">
+            <select v-model="deliveryMode" :disabled="Boolean(composerDisabledReason) || workspace.sendingMessage">
               <option value="queue">Queue next turn</option>
               <option value="interrupt">Interrupt same role</option>
             </select>
@@ -242,6 +242,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
         <TaskComposer
           :key="composerKey" v-model="composerText" :project-id="workspace.task.projectId"
           :upload-image="uploadAttachmentDraft" :disabled="Boolean(composerDisabledReason)"
+          :submitting="workspace.sendingMessage"
           :aria-label="`${composerTargetRole === 'reviewer' ? reviewerLabel : developerLabel} ${composerTargetRole} follow-up message`"
           :images-enabled="composerImagesEnabled"
           :image-disabled-reason="`${composerProvider ?? 'Provider'} cannot receive images in this resumed session.`"

@@ -23,6 +23,14 @@ describe("TaskComposer", () => {
     expect(strip).toContain("Upload failed.");
   });
 
+  test("blocks submission until every attachment is ready and fences repeated submits synchronously", () => {
+    expect(composer).toContain('attachment.status !== "ready"');
+    expect(composer).toContain("submissionLocked.value = true");
+    expect(composer).toContain("props.submitting || submissionLocked.value || hasBlockedAttachment.value");
+    expect(composer).toContain("submitting?: boolean");
+    expect(composer).toContain("Sending…");
+  });
+
   test("shows a capability reason and limits a composed message to four images", () => {
     expect(composer).toContain('v-if="!imagesEnabled"');
     expect(composer).toContain("{{ imageDisabledReason }}");

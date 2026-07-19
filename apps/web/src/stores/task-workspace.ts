@@ -58,6 +58,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const loading = ref(false);
   const repositoryLoading = ref(false);
   const busy = ref(false);
+  const sendingMessage = ref(false);
   const connected = ref(false);
   const error = ref<string | null>(null);
   const repositoryError = ref<string | null>(null);
@@ -68,6 +69,11 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let feedbackDraftTimer: ReturnType<typeof setTimeout> | null = null;
   let feedbackDraftQueue: Promise<void> = Promise.resolve();
+  let notificationQueue: Promise<void> = Promise.resolve();
+  let messageSendInFlight: {
+    context: ActionContext;
+    operation: Promise<TaskMessage | undefined>;
+  } | null = null;
   let generation = 0;
   let repositoryRequest = 0;
   const refreshGuard = new WorkspaceRefreshGuard();
@@ -151,6 +157,31 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       && refreshGuard.shouldApply(token, scheduleRefresh);
   }
 
+  async function consumeNotificationEvent(event: AgentEvent, context: ActionContext): Promise<void> {
+    if (!isCurrent(context)) return;
+    let run = runs.value.find((candidate) => candidate.id === event.runId) ?? null;
+    if (!run && event.type === "run_completed") {
+      let loadedRuns: AgentRun[];
+      try {
+        loadedRuns = await apiEndpoints.listRuns(context.taskId);
+      } catch {
+        return;
+      }
+      if (!isCurrent(context)) return;
+      for (const loadedRun of loadedRuns) mergeRun(loadedRun);
+      run = runs.value.find((candidate) => candidate.id === event.runId) ?? null;
+    }
+    if (!run || !isCurrent(context)) return;
+    const role = run.runType.startsWith("reviewer") ? "reviewer" : "developer";
+    browserNotificationController.consumePersistedEvent({ event, role, taskTitle: task.value!.title });
+  }
+
+  function queueNotificationEvent(event: AgentEvent, context: ActionContext): void {
+    notificationQueue = notificationQueue
+      .catch(() => undefined)
+      .then(() => consumeNotificationEvent(event, context));
+  }
+
   function connect(taskId: string, connectionGeneration: number): void {
     controller?.stop();
     connected.value = false;
@@ -164,11 +195,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         if (last && event.sequence <= last.sequence) return;
         events.value.push(event);
         if (events.value.length > MAX_TASK_EVENTS) events.value.splice(0, events.value.length - MAX_TASK_EVENTS);
-        const run = runs.value.find((candidate) => candidate.id === event.runId);
-        if (run) {
-          const role = run.runType.startsWith("reviewer") ? "reviewer" : "developer";
-          browserNotificationController.consumePersistedEvent({ event, role, taskTitle: task.value.title });
-        }
+        queueNotificationEvent(event, { generation: connectionGeneration, taskId });
         if ([
           "run_completed", "run_failed", "run_cancelled", "run_interrupted", "review_parsed", "review_parse_failed",
           "message_queued", "message_delivered", "message_failed", "approval_requested", "approval_resolved",
@@ -288,6 +315,9 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     loading.value = true;
     repositoryLoading.value = false;
     busy.value = false;
+    sendingMessage.value = false;
+    messageSendInFlight = null;
+    notificationQueue = Promise.resolve();
     error.value = null;
     repositoryError.value = null;
     diffError.value = null;
@@ -513,20 +543,35 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     }
   }
 
-  async function sendMessage(input: CreateTaskMessageRequest): Promise<TaskMessage | undefined> {
+  function sendMessage(input: CreateTaskMessageRequest): Promise<TaskMessage | undefined> {
     const context = captureAction();
-    if (!context) return undefined;
-    error.value = null;
-    try {
-      const sent = await apiEndpoints.sendMessage(context.taskId, input);
-      if (!isCurrent(context)) return undefined;
-      const index = messages.value.findIndex((message) => message.id === sent.id);
-      if (index === -1) messages.value.push(sent); else messages.value[index] = sent;
-      return sent;
-    } catch (problem) {
-      if (isCurrent(context)) error.value = message(problem);
-      return undefined;
+    if (!context) return Promise.resolve(undefined);
+    const current = messageSendInFlight;
+    if (current && current.context.generation === context.generation && current.context.taskId === context.taskId) {
+      return current.operation;
     }
+    sendingMessage.value = true;
+    error.value = null;
+    let operation!: Promise<TaskMessage | undefined>;
+    operation = (async () => {
+      try {
+        const sent = await apiEndpoints.sendMessage(context.taskId, input);
+        if (!isCurrent(context)) return undefined;
+        const index = messages.value.findIndex((candidate) => candidate.id === sent.id);
+        if (index === -1) messages.value.push(sent); else messages.value[index] = sent;
+        return sent;
+      } catch (problem) {
+        if (isCurrent(context)) error.value = message(problem);
+        return undefined;
+      } finally {
+        if (messageSendInFlight?.operation === operation) {
+          messageSendInFlight = null;
+          if (isCurrent(context)) sendingMessage.value = false;
+        }
+      }
+    })();
+    messageSendInFlight = { context, operation };
+    return operation;
   }
 
   async function decideApproval(approvalId: string, input: ApprovalDecisionRequest): Promise<void> {
@@ -566,10 +611,13 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     task.value = null;
     loading.value = false;
     repositoryLoading.value = false;
+    sendingMessage.value = false;
+    messageSendInFlight = null;
+    notificationQueue = Promise.resolve();
   }
 
   return {
-    task, runs, findings, messages, approvals, approvalErrors, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, connected,
+    task, runs, findings, messages, approvals, approvalErrors, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, sendingMessage, connected,
     error, repositoryError, diffError, staleFeedback, reviewSnapshotStale,
     activeRun, feedbackReviewRun, selectedFindings,
     load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, updateFeedbackText, sendFeedback,
