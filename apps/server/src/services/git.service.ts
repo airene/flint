@@ -9,6 +9,13 @@ const decoder = new TextDecoder();
 const UNTRACKED_CONCURRENCY_LIMIT = 4;
 const PROJECT_FILES_CACHE_MS = 5_000;
 
+export class GitCliExecutionError extends Error {
+  constructor(readonly cause?: unknown) {
+    super("Git cannot be executed for this repository. The executable or repository path may be unavailable.");
+    this.name = "GitCliExecutionError";
+  }
+}
+
 async function command(
   executable: string,
   rootPath: string,
@@ -16,17 +23,30 @@ async function command(
   allowNonZero = false,
   stdin?: Uint8Array,
 ): Promise<string> {
-  const subprocess = Bun.spawn([executable, ...args], {
-    cwd: rootPath,
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: stdin ? new Blob([Buffer.from(stdin)]) : "ignore",
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    Bun.readableStreamToText(subprocess.stdout),
-    Bun.readableStreamToText(subprocess.stderr),
-    subprocess.exited,
-  ]);
+  const subprocess = (() => {
+    try {
+      return Bun.spawn([executable, ...args], {
+        cwd: rootPath,
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: stdin ? new Blob([Buffer.from(stdin)]) : "ignore",
+      });
+    } catch (cause) {
+      throw new GitCliExecutionError(cause);
+    }
+  })();
+  let stdout: string;
+  let stderr: string;
+  let exitCode: number;
+  try {
+    [stdout, stderr, exitCode] = await Promise.all([
+      Bun.readableStreamToText(subprocess.stdout),
+      Bun.readableStreamToText(subprocess.stderr),
+      subprocess.exited,
+    ]);
+  } catch (cause) {
+    throw new GitCliExecutionError(cause);
+  }
   if (exitCode !== 0 && !allowNonZero) throw new Error(`Git ${args[0]} failed: ${stderr.trim()}`);
   return stdout;
 }

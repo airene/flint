@@ -51,6 +51,45 @@ async function request<T>(baseUrl: string, path: string, init: RequestInit = {})
   return { status: response.status, body: await response.json() as T };
 }
 
+async function applicationRequest<T>(
+  application: Awaited<ReturnType<typeof createApplication>>,
+  path: string,
+  init: RequestInit = {},
+): Promise<{ status: number; body: T }> {
+  const response = await application.handle(new Request(`http://127.0.0.1${path}`, {
+    ...init,
+    headers: { "content-type": "application/json", ...init.headers },
+  }));
+  return { status: response.status, body: await response.json() as T };
+}
+
+async function waitForApplicationTask(
+  application: Awaited<ReturnType<typeof createApplication>>,
+  taskId: string,
+  status: Task["status"],
+): Promise<Task> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await applicationRequest<Task>(application, `/api/tasks/${taskId}`);
+    if (result.body.status === status) return result.body;
+    await Bun.sleep(10);
+  }
+  throw new Error(`Task ${taskId} did not reach ${status}`);
+}
+
+async function waitForApplicationReviewParse(
+  application: Awaited<ReturnType<typeof createApplication>>,
+  runId: string,
+): Promise<AgentRun> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await applicationRequest<AgentRun>(application, `/api/runs/${runId}`);
+    if (result.body.reviewParseStatus === "succeeded") return result.body;
+    await Bun.sleep(10);
+  }
+  throw new Error(`Review run ${runId} did not finish parsing`);
+}
+
 async function waitForTask(baseUrl: string, taskId: string, status: Task["status"]): Promise<Task> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
@@ -526,6 +565,102 @@ describe("local server API assembly", () => {
       method: "DELETE", body: JSON.stringify({ confirm: true }),
     });
     expect(deleteConflict).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+  });
+
+  test("keeps persisted task history readable when its repository is deleted", async () => {
+    const rootPath = await repository();
+    const application = await createApplication({
+      databasePath: ":memory:", codexExecutable: codexFixture, claudeExecutable: claudeFixture,
+      gitExecutable: "git", environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    cleanups.push(() => application.shutdown());
+    const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+      method: "POST", body: JSON.stringify({ rootPath }),
+    });
+    const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+      method: "POST", body: JSON.stringify({ title: "persisted history", originalPrompt: "persisted history" }),
+    });
+    await applicationRequest(application, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
+    await waitForApplicationTask(application, task.body.id, "ready_for_review");
+    await rm(rootPath, { recursive: true, force: true });
+
+    const persistedTask = await applicationRequest<Task>(application, `/api/tasks/${task.body.id}`);
+    const runs = await applicationRequest<AgentRun[]>(application, `/api/tasks/${task.body.id}/runs`);
+    const findings = await applicationRequest<ReviewFinding[]>(application, `/api/tasks/${task.body.id}/findings`);
+    const repositoryStatus = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/tasks/${task.body.id}/git/status`,
+    );
+
+    expect(persistedTask).toMatchObject({ status: 200, body: { id: task.body.id, status: "ready_for_review" } });
+    expect(runs).toMatchObject({ status: 200, body: [{ taskId: task.body.id, status: "completed" }] });
+    expect(findings).toEqual({ status: 200, body: [] });
+    expect(repositoryStatus).toMatchObject({
+      status: 422,
+      body: { code: "CLI_UNAVAILABLE", details: { provider: "git" } },
+    });
+  });
+
+  test("maps a missing Git executable for task creation, review, feedback, and Git routes", async () => {
+    const rootPath = await repository();
+    const application = await createApplication({
+      databasePath: ":memory:", codexExecutable: codexFixture, claudeExecutable: claudeFixture,
+      gitExecutable: "git", environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    cleanups.push(() => application.shutdown());
+    const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+      method: "POST", body: JSON.stringify({ rootPath }),
+    });
+    const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+      method: "POST", body: JSON.stringify({ title: "existing task", originalPrompt: "existing task" }),
+    });
+    await applicationRequest(application, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
+    await waitForApplicationTask(application, task.body.id, "ready_for_review");
+    const reviewed = await applicationRequest<{ run: AgentRun }>(application, `/api/tasks/${task.body.id}/review`, {
+      method: "POST", body: "{}",
+    });
+    await waitForApplicationTask(application, task.body.id, "waiting_for_human");
+    await waitForApplicationReviewParse(application, reviewed.body.run.id);
+    const [finding] = (await applicationRequest<ReviewFinding[]>(application, `/api/tasks/${task.body.id}/findings`)).body;
+    const missingGit = join(rootPath, "missing-git");
+    const settings = await applicationRequest<{ git: { installed: boolean } }>(application, "/api/system/settings", {
+      method: "POST", body: JSON.stringify({ gitExecutable: missingGit }),
+    });
+    expect(settings).toMatchObject({ status: 200, body: { git: { installed: false } } });
+
+    const createTask = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/projects/${project.body.id}/tasks`,
+      { method: "POST", body: JSON.stringify({ title: "blocked", originalPrompt: "blocked" }) },
+    );
+    const review = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/tasks/${task.body.id}/review`,
+      { method: "POST", body: "{}" },
+    );
+    const gitStatus = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/tasks/${task.body.id}/git/status`,
+    );
+    const feedback = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/tasks/${task.body.id}/feedback`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sourceReviewRunId: reviewed.body.run.id,
+          selectedFindingIds: finding ? [finding.id] : [],
+          finalText: "Apply the reviewed changes.",
+        }),
+      },
+    );
+
+    for (const response of [createTask, review, gitStatus, feedback]) {
+      expect(response).toMatchObject({
+        status: 422,
+        body: { code: "CLI_UNAVAILABLE", details: { provider: "git" } },
+      });
+    }
   });
 
   test("keeps completed review findings read-only", async () => {

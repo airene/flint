@@ -121,7 +121,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 
 <template>
   <div class="page task-page">
-    <div v-if="workspace.loading && !workspace.task" class="panel empty-state loading-task"><strong>Loading task workspace…</strong><span>Restoring runs, findings, Git state and persisted events.</span></div>
+    <div v-if="workspace.loading && !workspace.task" class="panel empty-state loading-task"><strong>Loading task workspace…</strong><span>Restoring persisted runs, findings and events.</span></div>
     <template v-else-if="workspace.task">
       <TaskHeader
         :task="workspace.task" :runs="workspace.runs" :busy="workspace.busy"
@@ -133,6 +133,10 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
       />
       <ErrorBanner :message="workspace.error" @dismiss="workspace.error = null" />
       <ErrorBanner :message="system.error?.message ?? null" @dismiss="system.clearError" />
+      <div v-if="workspace.repositoryError" class="panel repository-warning">
+        <strong>Repository unavailable</strong>
+        <span>Task history remains available. {{ workspace.repositoryError }}</span>
+      </div>
       <div v-if="runtimeWarnings.length" class="panel runtime-warning">
         <div><strong>Local CLI action required</strong><span v-for="warning in runtimeWarnings" :key="warning">{{ warning }}</span></div>
         <RouterLink class="button" to="/settings">Open CLI Settings</RouterLink>
@@ -180,7 +184,8 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
           <div class="diff-drawer-body">
             <DiffPanel
               :files="workspace.files" :selected-path="workspace.selectedPath" :diff="workspace.selectedDiff"
-              :findings="selectedReviewFindings" :loading="workspace.loading"
+              :findings="selectedReviewFindings" :loading="workspace.repositoryLoading"
+              :repository-error="workspace.repositoryError" :diff-error="workspace.diffError"
               @select="workspace.selectFile" @refresh="workspace.refresh"
             />
           </div>
@@ -193,6 +198,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 <style scoped>
 .task-page{max-width:none;padding-bottom:calc(48px + var(--task-action-bar-h, 0px))}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:var(--text-body);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
 .runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:var(--yellow-ink);font-size:11px}.runtime-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
+.repository-warning{display:grid;gap:4px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.repository-warning strong{color:var(--yellow-ink);font-size:11px}.repository-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
 @media(max-width:900px){.run-workspace{grid-template-columns:1fr}.context-strip{grid-template-columns:repeat(2,1fr);gap:10px}.context-strip>div{border:0;padding:0}}
 
 .diff-drawer-root{position:fixed;inset:0;z-index:60;visibility:hidden;pointer-events:none;transition:visibility 0s .26s}
