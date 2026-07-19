@@ -12,6 +12,7 @@ import {
   TaskTransitionConflictError,
 } from "../services/task.service";
 import { DuplicateFeedbackError, StaleFeedbackLeaseError } from "../services/feedback.service";
+import { GitCliExecutionError } from "../services/git.service";
 import { GitRootValidationError } from "../utils/path";
 
 export class NotFoundError extends Error {
@@ -84,8 +85,12 @@ export function errorResponse(error: unknown): Response {
         : undefined;
     return Response.json({ code: "CONFLICT", message: error.message, ...(details ? { details } : {}) }, { status: 409 });
   }
-  if (error instanceof CliUnavailableError) {
-    return Response.json({ code: "CLI_UNAVAILABLE", message: error.message, details: { provider: error.provider } }, { status: 422 });
+  if (error instanceof CliUnavailableError || error instanceof GitCliExecutionError) {
+    return Response.json({
+      code: "CLI_UNAVAILABLE",
+      message: error.message,
+      details: { provider: error instanceof CliUnavailableError ? error.provider : "git" },
+    }, { status: 422 });
   }
   return Response.json({ code: "INTERNAL_ERROR", message: "Internal server error." }, { status: 500 });
 }

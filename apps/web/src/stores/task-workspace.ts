@@ -48,9 +48,12 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   const feedbackText = ref("");
   const feedbackDraftRunId = ref<string | null>(null);
   const loading = ref(false);
+  const repositoryLoading = ref(false);
   const busy = ref(false);
   const connected = ref(false);
   const error = ref<string | null>(null);
+  const repositoryError = ref<string | null>(null);
+  const diffError = ref<string | null>(null);
   const staleFeedback = ref(false);
   const reviewSnapshotStale = ref(false);
   let controller: TaskEventController | null = null;
@@ -58,6 +61,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   let feedbackDraftTimer: ReturnType<typeof setTimeout> | null = null;
   let feedbackDraftQueue: Promise<void> = Promise.resolve();
   let generation = 0;
+  let repositoryRequest = 0;
   const refreshGuard = new WorkspaceRefreshGuard();
 
   const activeRun = computed(() => runs.value.find((run) => run.status === "queued" || run.status === "running") ?? null);
@@ -170,6 +174,94 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     controller.start(taskId, 0);
   }
 
+  interface RepositoryLoadContext extends ActionContext {
+    request: number;
+  }
+
+  function beginRepositoryLoad(taskId: string): RepositoryLoadContext {
+    repositoryLoading.value = true;
+    repositoryError.value = null;
+    diffError.value = null;
+    return { generation, taskId, request: ++repositoryRequest };
+  }
+
+  function isCurrentRepository(context: RepositoryLoadContext): boolean {
+    return isCurrent(context) && context.request === repositoryRequest;
+  }
+
+  function applyRepositoryStatus(
+    context: RepositoryLoadContext,
+    loadedTask: Task,
+    loadedRuns: AgentRun[],
+    gitStatus: Awaited<ReturnType<typeof apiEndpoints.getGitStatus>>,
+    preferredPath: string | null,
+  ): string | null {
+    if (!isCurrentRepository(context)) return null;
+    files.value = gitStatus.files;
+    reviewSnapshotStale.value = loadedRuns.some((run) => run.runType === "reviewer")
+      && Boolean(loadedTask.latestSnapshotHash && gitStatus.snapshotHash && loadedTask.latestSnapshotHash !== gitStatus.snapshotHash);
+    const path = preferredPath && gitStatus.files.some((file) => file.path === preferredPath)
+      ? preferredPath
+      : gitStatus.files[0]?.path ?? null;
+    selectedPath.value = path;
+    selectedDiff.value = null;
+    return path;
+  }
+
+  async function loadRepository(loadedTask: Task, loadedRuns: AgentRun[], preferredPath: string | null): Promise<void> {
+    const context = beginRepositoryLoad(loadedTask.id);
+    let path = preferredPath;
+    try {
+      let gitStatus;
+      try {
+        gitStatus = await apiEndpoints.getGitStatus(loadedTask.id);
+      } catch (problem) {
+        if (isCurrentRepository(context)) {
+          files.value = [];
+          selectedPath.value = null;
+          selectedDiff.value = null;
+          reviewSnapshotStale.value = false;
+          repositoryError.value = message(problem);
+        }
+        return;
+      }
+      path = applyRepositoryStatus(context, loadedTask, loadedRuns, gitStatus, path);
+      if (!path || !isCurrentRepository(context)) return;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const diff = await apiEndpoints.getGitFileDiff(loadedTask.id, path);
+          if (isCurrentRepository(context) && selectedPath.value === path) selectedDiff.value = diff;
+          return;
+        } catch (problem) {
+          if (attempt === 1) {
+            if (isCurrentRepository(context)) {
+              selectedDiff.value = null;
+              diffError.value = message(problem);
+            }
+            return;
+          }
+          try {
+            gitStatus = await apiEndpoints.getGitStatus(loadedTask.id);
+          } catch (statusProblem) {
+            if (isCurrentRepository(context)) {
+              files.value = [];
+              selectedPath.value = null;
+              selectedDiff.value = null;
+              reviewSnapshotStale.value = false;
+              repositoryError.value = message(statusProblem);
+            }
+            return;
+          }
+          path = applyRepositoryStatus(context, loadedTask, loadedRuns, gitStatus, path);
+          if (!path || !isCurrentRepository(context)) return;
+        }
+      }
+    } finally {
+      if (isCurrentRepository(context)) repositoryLoading.value = false;
+    }
+  }
+
   async function load(taskId: string): Promise<void> {
     void flushFeedbackDraft();
     const loadGeneration = ++generation;
@@ -179,8 +271,11 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = null;
     loading.value = true;
+    repositoryLoading.value = false;
     busy.value = false;
     error.value = null;
+    repositoryError.value = null;
+    diffError.value = null;
     staleFeedback.value = false;
     reviewSnapshotStale.value = false;
     feedbackText.value = "";
@@ -193,27 +288,28 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     selectedPath.value = null;
     selectedDiff.value = null;
     try {
-      const [loadedTask, loadedRuns, loadedFindings, gitStatus] = await Promise.all([
-        apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId), apiEndpoints.getGitStatus(taskId),
-      ]);
-      const preferred = gitStatus.files[0]?.path ?? null;
-      const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
-      const [diff, draftResponse] = await Promise.all([
-        preferred ? apiEndpoints.getGitFileDiff(taskId, preferred) : Promise.resolve(null),
-        reviewRun ? apiEndpoints.getFeedbackDraft(taskId, reviewRun.id) : Promise.resolve({ draft: null }),
+      const [loadedTask, loadedRuns, loadedFindings] = await Promise.all([
+        apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId),
       ]);
       if (loadGeneration !== generation) return;
+      const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
       task.value = loadedTask;
       runs.value = loadedRuns;
       findings.value = loadedFindings;
       feedbackDraftRunId.value = reviewRun?.id ?? null;
-      feedbackText.value = draftResponse.draft?.finalText ?? "";
-      files.value = gitStatus.files;
-      reviewSnapshotStale.value = loadedRuns.some((run) => run.runType === "reviewer")
-        && Boolean(loadedTask.latestSnapshotHash && gitStatus.snapshotHash && loadedTask.latestSnapshotHash !== gitStatus.snapshotHash);
-      selectedPath.value = preferred;
-      selectedDiff.value = diff;
       connect(taskId, loadGeneration);
+      loading.value = false;
+
+      const repository = loadRepository(loadedTask, loadedRuns, null);
+      try {
+        const draftResponse = reviewRun
+          ? await apiEndpoints.getFeedbackDraft(taskId, reviewRun.id)
+          : { draft: null };
+        if (loadGeneration === generation) feedbackText.value = draftResponse.draft?.finalText ?? "";
+      } catch (problem) {
+        if (loadGeneration === generation) error.value = message(problem);
+      }
+      await repository;
     } catch (problem) {
       if (loadGeneration === generation) error.value = message(problem);
     } finally {
@@ -227,8 +323,8 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     const refreshGeneration = generation;
     const taskId = task.value.id;
     try {
-      const [loadedTask, loadedRuns, loadedFindings, gitStatus] = await Promise.all([
-        apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId), apiEndpoints.getGitStatus(taskId),
+      const [loadedTask, loadedRuns, loadedFindings] = await Promise.all([
+        apiEndpoints.getTask(taskId), apiEndpoints.listRuns(taskId), apiEndpoints.listFindings(taskId),
       ]);
       const reviewRun = latestFeedbackReviewRun(loadedRuns, loadedFindings);
       const draftChanged = reviewRun?.id !== feedbackDraftRunId.value;
@@ -245,13 +341,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         feedbackDraftRunId.value = reviewRun?.id ?? null;
         feedbackText.value = draftResponse?.draft?.finalText ?? "";
       }
-      files.value = gitStatus.files;
-      reviewSnapshotStale.value = loadedRuns.some((run) => run.runType === "reviewer")
-        && Boolean(loadedTask.latestSnapshotHash && gitStatus.snapshotHash && loadedTask.latestSnapshotHash !== gitStatus.snapshotHash);
-      if (selectedPath.value && !files.value.some((file) => file.path === selectedPath.value)) selectedPath.value = files.value[0]?.path ?? null;
-      const path = selectedPath.value;
-      const diff = path ? await apiEndpoints.getGitFileDiff(taskId, path) : null;
-      if (canApplyRefresh(refreshToken, refreshGeneration, taskId)) selectedDiff.value = diff;
+      await loadRepository(loadedTask, loadedRuns, selectedPath.value);
     } catch (problem) {
       if (canApplyRefresh(refreshToken, refreshGeneration, taskId)) error.value = message(problem);
     }
@@ -398,29 +488,28 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   }
 
   async function selectFile(path: string): Promise<void> {
-    const context = captureAction();
-    if (!context) return;
+    const currentTask = task.value;
+    if (!currentTask) return;
     selectedPath.value = path;
-    try {
-      const diff = await apiEndpoints.getGitFileDiff(context.taskId, path);
-      if (isCurrent(context) && selectedPath.value === path) selectedDiff.value = diff;
-    } catch (problem) {
-      if (isCurrent(context)) error.value = message(problem);
-    }
+    selectedDiff.value = null;
+    await loadRepository(currentTask, runs.value, path);
   }
 
   function dispose(): void {
     void flushFeedbackDraft();
     generation += 1;
     controller?.stop(); controller = null; connected.value = false;
+    repositoryRequest += 1;
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = null;
     task.value = null;
     loading.value = false;
+    repositoryLoading.value = false;
   }
 
   return {
-    task, runs, findings, files, selectedPath, selectedDiff, events, feedbackText, loading, busy, connected, error, staleFeedback, reviewSnapshotStale,
+    task, runs, findings, files, selectedPath, selectedDiff, events, feedbackText, loading, repositoryLoading, busy, connected,
+    error, repositoryError, diffError, staleFeedback, reviewSnapshotStale,
     activeRun, latestReviewRun, feedbackReviewRun, selectedFindings,
     load, refresh, develop, review, cancel, complete, updateFinding, selectMode, previewFeedback, updateFeedbackText, sendFeedback, selectFile, dispose,
   };
