@@ -4,6 +4,8 @@ const projectView = await Bun.file(new URL("../../apps/web/src/views/ProjectView
 const settingsView = await Bun.file(new URL("../../apps/web/src/views/SettingsView.vue", import.meta.url)).text();
 const app = await Bun.file(new URL("../../apps/web/src/App.vue", import.meta.url)).text();
 const workspace = await Bun.file(new URL("../../apps/web/src/stores/task-workspace.ts", import.meta.url)).text();
+const taskView = await Bun.file(new URL("../../apps/web/src/views/TaskView.vue", import.meta.url)).text();
+const activityPanel = await Bun.file(new URL("../../apps/web/src/components/ActivityPanel.vue", import.meta.url)).text();
 
 describe("completed interactive leaf integration", () => {
   test("uses the attachment composer for initial Task creation and gates images by provider capability", () => {
@@ -27,5 +29,18 @@ describe("completed interactive leaf integration", () => {
     expect(settingsView).toContain('<NotificationSettings');
     expect(workspace).toContain('consumePersistedEvent');
     expect(workspace).toContain('run.runType.startsWith("reviewer") ? "reviewer" : "developer"');
+  });
+
+  test("wires persisted exact-session conversations and approval cards into the Task workspace", () => {
+    expect(taskView).toContain('import TaskComposer');
+    expect(taskView).toContain('selectedFormalReview');
+    expect(taskView).toContain('reviewerResumeImage');
+    expect(taskView).toContain('developerResumeImage');
+    expect(taskView).toContain('workspace.sendMessage');
+    expect(taskView).toContain('workspace.decideApproval');
+    expect(workspace).toContain('apiEndpoints.listMessages');
+    expect(workspace).toContain('apiEndpoints.listApprovals');
+    expect(activityPanel).toContain('import ApprovalCard');
+    expect(activityPanel).toContain('approvalErrors[approval.id]');
   });
 });

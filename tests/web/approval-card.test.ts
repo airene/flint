@@ -25,10 +25,20 @@ describe("approvalCardDisplay", () => {
   test("maps pending, resolving, resolved, expired, and retry states to a safe card model", () => {
     expect(approvalCardDisplay(approval())).toMatchObject({ state: "pending", canDecide: true });
     expect(approvalCardDisplay(approval(), { resolving: true })).toMatchObject({ state: "resolving", canDecide: false });
+    expect(approvalCardDisplay(approval({ status: "resolving", decision: "allow_once" }))).toMatchObject({
+      state: "retry", canDecide: true, lockedDecision: "allow_once",
+    });
     expect(approvalCardDisplay(approval({ status: "resolved", decision: "allow_once", resolvedAt: "2026-07-19T00:01:00.000Z" }))).toMatchObject({ state: "allowed", canDecide: false });
     expect(approvalCardDisplay(approval({ status: "resolved", decision: "deny", reason: "Needs review", resolvedAt: "2026-07-19T00:01:00.000Z" }))).toMatchObject({ state: "denied", reason: "Needs review", canDecide: false });
     expect(approvalCardDisplay(approval({ status: "expired", resolvedAt: "2026-07-19T00:01:00.000Z" }))).toMatchObject({ state: "expired", canDecide: false });
     expect(approvalCardDisplay(approval(), { error: "Connection lost" })).toMatchObject({ state: "retry", error: "Connection lost", canDecide: true });
+  });
+
+  test("allows a resolving request to retry only its persisted first decision", () => {
+    const controller = createApprovalCardController(approval({ status: "resolving", decision: "deny", reason: "unsafe" }));
+
+    expect(controller.submit("allow_once")).toBeNull();
+    expect(controller.submit("deny", "replacement")).toEqual({ decision: "deny", reason: "unsafe" });
   });
 });
 

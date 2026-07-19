@@ -12,13 +12,14 @@ export interface ApprovalPersistencePort {
   /** Must atomically persist the request or return the existing request for the same run and provider request ID. */
   createApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest>;
   getApproval(approvalId: string): Promise<ApprovalRequest>;
-  /** Must atomically resolve a pending request or return its first persisted decision unchanged. */
-  decideApproval(
+  /** Atomically reserves the first decision (pending -> resolving) or returns the stored decision unchanged. */
+  reserveDecision(
     approvalId: string,
     decision: ApprovalDecision,
     reason: string | null,
-    resolvedAt: string,
-  ): Promise<{ approval: ApprovalRequest; resolvedNow: boolean }>;
+  ): Promise<ApprovalRequest>;
+  /** Completes a successfully relayed resolving request (resolving -> resolved). */
+  completeDecision(approvalId: string, resolvedAt: string): Promise<ApprovalRequest>;
   /** Must expire only pending requests for the supplied terminal Run. */
   expireApprovals(runId: string, expiredAt: string): Promise<ApprovalRequest[]>;
   /** Returns the immutable provider selected for the Run that owns this approval. */
@@ -132,15 +133,19 @@ export class ApprovalService {
     reason: string | null,
   ): Promise<ApprovalRequest> {
     const existing = await this.options.persistence.getApproval(approvalId);
-    if (existing.status !== "pending") return existing;
+    if (existing.status === "resolved" || existing.status === "expired") return existing;
 
     const provider = await this.options.persistence.providerForRun(existing.runId);
     const control = this.options.controls[provider];
     if (!control.capabilities.approvals) throw new UnsupportedProviderCapabilityError(provider, "approvals");
 
-    await control.resolveApproval(existing.runId, existing.providerRequestId, decision);
-    const result = await this.options.persistence.decideApproval(approvalId, decision, reason, this.now());
-    return result.approval;
+    const reserved = existing.status === "pending"
+      ? await this.options.persistence.reserveDecision(approvalId, decision, reason)
+      : existing;
+    if (reserved.status !== "resolving" || !reserved.decision) return reserved;
+
+    await control.resolveApproval(reserved.runId, reserved.providerRequestId, reserved.decision);
+    return await this.options.persistence.completeDecision(approvalId, this.now());
   }
 
   async expireRun(run: AgentRun): Promise<ApprovalRequest[]> {

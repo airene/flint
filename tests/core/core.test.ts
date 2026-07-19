@@ -285,7 +285,7 @@ describe("database schema policy", () => {
 
   test("creates the complete current schema atomically with an explicit version", () => {
     const database = createDatabase(join(temporaryDirectory(), "fresh.db"));
-    expect(database.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(database.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     expect((database.sqlite.query(
       "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name",
     ).all() as Array<{ name: string }>).map(({ name }) => name)).toEqual(expectedTables);
@@ -335,7 +335,7 @@ describe("database schema policy", () => {
     expect((rebuilt.sqlite.query(
       "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name",
     ).all() as Array<{ name: string }>).map(({ name }) => name)).toEqual(expectedTables);
-    expect(rebuilt.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(rebuilt.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     expect(rebuilt.sqlite.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     expect(rebuilt.sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
     rebuilt.close();
@@ -481,7 +481,7 @@ describe("interactive workflow persistence", () => {
       .toMatchObject({ id: message.id, sourceReviewRunId: "formal-review" });
   });
 
-  test("resolves an approval decision once and returns the original result on duplicate decisions", async () => {
+  test("reserves the first approval decision durably before completing provider relay", async () => {
     const { database, projects, tasks: taskService } = services();
     const project = await projects.add(repository());
     const task = await taskService.create(project.id, { title: "Approval", originalPrompt: "Prompt" });
@@ -507,21 +507,26 @@ describe("interactive workflow persistence", () => {
     };
 
     expect(await ports.createApprovalRequest(request)).toEqual(request);
-    const first = await ports.decideApproval(
+    const first = await ports.reserveDecision(
       request.id,
       "allow_once",
       null,
-      "2026-07-19T00:00:01.000Z",
     );
-    const duplicate = await ports.decideApproval(
+    const duplicate = await ports.reserveDecision(
       request.id,
       "deny",
       "too late",
-      "2026-07-19T00:00:02.000Z",
     );
-    expect(first).toMatchObject({ status: "resolved", decision: "allow_once", reason: null });
+    expect(first).toMatchObject({ status: "resolving", decision: "allow_once", reason: null, resolvedAt: null });
     expect(duplicate).toEqual(first);
+    expect(await ports.expireApprovals("run-approval", "2026-07-19T00:00:01.000Z")).toEqual([]);
+    const resolved = await ports.completeDecision(request.id, "2026-07-19T00:00:02.000Z");
+    expect(resolved).toMatchObject({ status: "resolved", decision: "allow_once" });
     expect(await ports.listPendingApprovals(task.id)).toEqual([]);
+
+    database.sqlite.run("update agent_runs set status = 'completed' where id = 'run-approval'");
+    await expect(ports.createApprovalRequest({ ...request, id: "late", providerRequestId: "late" }))
+      .rejects.toThrow("is not active");
   });
 
   test("lists unfinished summaries and finds only the exact task provider session", async () => {

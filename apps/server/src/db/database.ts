@@ -12,7 +12,7 @@ export interface AppDatabase {
   close(): void;
 }
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 1;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 2;
 
 const currentSchema = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -74,6 +74,7 @@ const currentSchema = `
     created_at TEXT NOT NULL, resolved_at TEXT,
     CHECK (
       (status = 'resolved' AND decision IN ('allow_once', 'deny') AND resolved_at IS NOT NULL)
+      OR (status = 'resolving' AND decision IN ('allow_once', 'deny') AND resolved_at IS NULL)
       OR (status = 'pending' AND decision IS NULL AND resolved_at IS NULL)
       OR (status = 'expired' AND decision IS NULL AND resolved_at IS NOT NULL)
     )

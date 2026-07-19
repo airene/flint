@@ -308,6 +308,19 @@ test("follow-up runs and interaction events are distinct from a formal reviewer 
   ]) expect(eventTypes.safeParse(eventType).success).toBe(true);
 });
 
+test("approval resolving state durably carries the first decision without a resolution time", () => {
+  const approval = getSchema("approvalRequestSchema");
+  const resolving = {
+    id: "approval_1", projectId: "project_1", taskId: "task_1", runId: "run_1",
+    providerRequestId: "provider_request_1", toolName: "shell", actionSummary: "Run tests",
+    workingDirectory: "/repo", status: "resolving", decision: "deny", reason: "unsafe",
+    createdAt: "2026-07-19T00:00:00.000Z", resolvedAt: null,
+  };
+  expect(approval.safeParse(resolving).success).toBe(true);
+  expect(approval.safeParse({ ...resolving, decision: null }).success).toBe(false);
+  expect(approval.safeParse({ ...resolving, resolvedAt: "2026-07-19T00:00:01.000Z" }).success).toBe(false);
+});
+
 test("provider interaction capabilities are independent by role and delivery phase", () => {
   expectStrict("providerCapabilitiesSchema", {
     developerInitialImage: true,

@@ -78,6 +78,13 @@ export class AttachmentClaimConflictError extends Error {
   }
 }
 
+export class InactiveRunApprovalError extends Error {
+  constructor(readonly runId: string) {
+    super(`Run ${runId} is not active and cannot request approval.`);
+    this.name = "InactiveRunApprovalError";
+  }
+}
+
 export interface DatabasePortsOptions {
   instanceId?: string;
   leaseDurationMs?: number;
@@ -436,9 +443,10 @@ export class DatabasePorts implements
     }
     return this.database.db.transaction((transaction) => {
       const claimedAt = this.now();
-      const task = transaction.select({ projectId: tasks.projectId }).from(tasks)
+      const task = transaction.select({ projectId: tasks.projectId, status: tasks.status }).from(tasks)
         .where(eq(tasks.id, message.taskId)).get();
       if (!task) throw new NotFoundError("Task");
+      if (task.status === "completed") throw new CompletedTaskReadOnlyError(message.taskId);
       if (task.projectId !== message.projectId) throw new PersistenceOwnershipError("Message");
       if (message.targetRole === "reviewer" && !message.sourceReviewRunId) {
         throw new PersistenceOwnershipError("Reviewer message target must reference a formal completed Review Run");
@@ -487,13 +495,53 @@ export class DatabasePorts implements
       .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
   }
 
+  async transitionMessage(
+    messageId: string,
+    from: TaskMessage["status"],
+    patch: Pick<TaskMessage, "status" | "updatedAt" | "deliveredAt" | "errorMessage">,
+  ): Promise<TaskMessage | null> {
+    return this.database.db.transaction((transaction) => {
+      const current = transaction.select().from(taskMessages).where(eq(taskMessages.id, messageId)).get();
+      if (!current || current.status !== from) return null;
+      transaction.update(taskMessages).set(patch).where(and(
+        eq(taskMessages.id, messageId),
+        eq(taskMessages.status, from),
+      )).run();
+      return transaction.select().from(taskMessages).where(eq(taskMessages.id, messageId)).get() as TaskMessage;
+    }, { behavior: "immediate" });
+  }
+
+  async attachmentPaths(messageIds: readonly string[]): Promise<string[]> {
+    if (messageIds.length === 0) return [];
+    return (await this.database.db.select().from(taskAttachments).where(and(
+      inArray(taskAttachments.messageId, [...messageIds]),
+      eq(taskAttachments.state, "claimed"),
+    )).orderBy(asc(taskAttachments.createdAt), asc(taskAttachments.id)).all() as TaskAttachment[])
+      .map((attachment) => attachment.storagePath);
+  }
+
+  async initialAttachmentPaths(taskId: string): Promise<string[]> {
+    const rows = await this.database.db.select().from(taskAttachments).where(and(
+      eq(taskAttachments.taskId, taskId),
+      eq(taskAttachments.state, "claimed"),
+    )).orderBy(asc(taskAttachments.createdAt), asc(taskAttachments.id)).all() as TaskAttachment[];
+    return rows.filter((attachment) => attachment.messageId === null).map((attachment) => attachment.storagePath);
+  }
+
+  async discardIncompleteFormalFindings(runId: string): Promise<void> {
+    await this.database.db.delete(reviewFindings).where(eq(reviewFindings.runId, runId)).run();
+  }
+
   async createApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     return this.database.db.transaction((transaction) => {
-      const run = transaction.select({ projectId: agentRuns.projectId, taskId: agentRuns.taskId })
+      const run = transaction.select({ projectId: agentRuns.projectId, taskId: agentRuns.taskId, status: agentRuns.status })
         .from(agentRuns).where(eq(agentRuns.id, request.runId)).get();
       if (!run) throw new NotFoundError("Run");
       if (run.projectId !== request.projectId || run.taskId !== request.taskId) {
         throw new PersistenceOwnershipError("Approval request");
+      }
+      if (run.status !== "queued" && run.status !== "running") {
+        throw new InactiveRunApprovalError(request.runId);
       }
       const existing = transaction.select().from(approvalRequests).where(and(
         eq(approvalRequests.runId, request.runId),
@@ -505,11 +553,10 @@ export class DatabasePorts implements
     }, { behavior: "immediate" });
   }
 
-  async decideApproval(
+  async reserveDecision(
     approvalId: string,
     decision: ApprovalDecision,
     reason: string | null,
-    resolvedAt: string,
   ): Promise<ApprovalRequest> {
     return this.database.db.transaction((transaction) => {
       const existing = transaction.select().from(approvalRequests)
@@ -517,10 +564,9 @@ export class DatabasePorts implements
       if (!existing) throw new NotFoundError("Approval request");
       if (existing.status === "pending") {
         transaction.update(approvalRequests).set({
-          status: "resolved",
+          status: "resolving",
           decision,
           reason,
-          resolvedAt,
         }).where(and(
           eq(approvalRequests.id, approvalId),
           eq(approvalRequests.status, "pending"),
@@ -531,14 +577,50 @@ export class DatabasePorts implements
     }, { behavior: "immediate" });
   }
 
+  async completeDecision(approvalId: string, resolvedAt: string): Promise<ApprovalRequest> {
+    return this.database.db.transaction((transaction) => {
+      const existing = transaction.select().from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalId)).get();
+      if (!existing) throw new NotFoundError("Approval request");
+      if (existing.status === "resolving") {
+        transaction.update(approvalRequests).set({ status: "resolved", resolvedAt }).where(and(
+          eq(approvalRequests.id, approvalId),
+          eq(approvalRequests.status, "resolving"),
+        )).run();
+      }
+      return transaction.select().from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalId)).get() as ApprovalRequest;
+    }, { behavior: "immediate" });
+  }
+
+  async getApproval(approvalId: string): Promise<ApprovalRequest> {
+    const approval = await this.database.db.select().from(approvalRequests)
+      .where(eq(approvalRequests.id, approvalId)).get();
+    if (!approval) throw new NotFoundError("Approval request");
+    return approval as ApprovalRequest;
+  }
+
+  async providerForRun(runId: string): Promise<Provider> {
+    const run = await this.database.db.select({ provider: agentRuns.provider }).from(agentRuns)
+      .where(eq(agentRuns.id, runId)).get();
+    if (!run) throw new NotFoundError("Run");
+    return run.provider;
+  }
+
   async expireApprovals(runId: string, expiredAt: string): Promise<ApprovalRequest[]> {
     return this.database.db.transaction((transaction) => {
-      transaction.update(approvalRequests).set({ status: "expired", resolvedAt: expiredAt }).where(and(
+      const pending = transaction.select({ id: approvalRequests.id }).from(approvalRequests).where(and(
         eq(approvalRequests.runId, runId),
         eq(approvalRequests.status, "pending"),
+      )).all();
+      if (pending.length === 0) return [];
+      const ids = pending.map(({ id }) => id);
+      transaction.update(approvalRequests).set({ status: "expired", resolvedAt: expiredAt }).where(inArray(
+        approvalRequests.id,
+        ids,
       )).run();
       return transaction.select().from(approvalRequests)
-        .where(eq(approvalRequests.runId, runId)).orderBy(asc(approvalRequests.createdAt)).all() as ApprovalRequest[];
+        .where(inArray(approvalRequests.id, ids)).orderBy(asc(approvalRequests.createdAt)).all() as ApprovalRequest[];
     }, { behavior: "immediate" });
   }
 
@@ -547,6 +629,12 @@ export class DatabasePorts implements
       eq(approvalRequests.taskId, taskId),
       eq(approvalRequests.status, "pending"),
     )).orderBy(asc(approvalRequests.createdAt), asc(approvalRequests.id)).all() as ApprovalRequest[];
+  }
+
+  async listApprovals(taskId: string): Promise<ApprovalRequest[]> {
+    return await this.database.db.select().from(approvalRequests)
+      .where(eq(approvalRequests.taskId, taskId))
+      .orderBy(asc(approvalRequests.createdAt), asc(approvalRequests.id)).all() as ApprovalRequest[];
   }
 
   async findRunBySession(taskId: string, provider: Provider, externalSessionId: string): Promise<AgentRun | null> {
@@ -573,7 +661,7 @@ export class DatabasePorts implements
         ) AS latestRunStatus,
         (
           SELECT COUNT(*) FROM approval_requests approval
-          WHERE approval.task_id = t.id AND approval.status = 'pending'
+          WHERE approval.task_id = t.id AND approval.status IN ('pending', 'resolving')
         ) AS pendingApprovalCount,
         EXISTS (
           SELECT 1 FROM agent_runs active

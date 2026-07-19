@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import type { ZodType } from "zod";
 import {
   cancelRunRequestSchema,
+  approvalDecisionRequestSchema,
+  createTaskMessageRequestSchema,
   cliRecheckRequestSchema,
   completeTaskRequestSchema,
   createProjectRequestSchema,
@@ -21,6 +23,7 @@ import {
   type AgentAvailability,
   type AgentEvent,
   type AgentRun,
+  type ApprovalRequest,
   type Provider,
   type CliStatusResponse,
   type CliRecheckRequest,
@@ -28,6 +31,7 @@ import {
   type Project,
   type ReviewFinding,
   type Task,
+  type TaskMessage,
   webSocketSubscribeSchema,
 } from "@local-pair-review/shared";
 import { createDatabase } from "../db/database";
@@ -46,11 +50,14 @@ import { ProjectService } from "../services/project.service";
 import { ReviewService, type ReviewContextPort } from "../services/review.service";
 import { TaskService } from "../services/task.service";
 import { UnfinishedTaskService } from "../services/unfinished-task.service";
+import { ConversationService } from "../services/conversation.service";
+import { ApprovalService } from "../services/approval.service";
 import { AttachmentClaimConflictError, DatabasePorts, PersistenceOwnershipError } from "./database-ports";
 import { CliUnavailableError, errorResponse, NotFoundError, RequestValidationError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
 import { createUnfinishedTasksRoute } from "./unfinished-tasks";
 import { createRunEvent } from "../utils/agent-event";
+import { UnsupportedProviderCapabilityError } from "../drivers/agent-control";
 
 export interface ApplicationOptions {
   databasePath?: string;
@@ -203,15 +210,110 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const reviews = new ReviewService({ agentRuns, context: reviewContext, persistence: ports, events });
   const feedback = new FeedbackService({ agentRuns, persistence: ports });
   const active = new Map<string, Promise<AgentRun>>();
+  const approvalDecisions = new Map<string, Promise<ApprovalRequest>>();
   let accepting = true;
   let cliStatus: CliStatusResponse | null = null;
   let shutdownTask: Promise<void> | null = null;
 
+  async function publishApprovalEvent(approval: ApprovalRequest): Promise<void> {
+    const run = await ports.getRun(approval.runId);
+    if (!run) return;
+    try {
+      await events.publish(createRunEvent(run, "system", "approval_resolved", {
+        approvalId: approval.id,
+        status: approval.status,
+        decision: approval.decision,
+      }));
+    } catch {
+      // Approval persistence is authoritative; the Activity stream can recover on refresh.
+    }
+  }
+
+  const approvals = new ApprovalService({
+    controls: { codex, claude },
+    persistence: ports,
+    security: {
+      async recordSecurityError(runId, securityError) {
+        const run = await ports.getRun(runId);
+        if (run) await events.publish(createRunEvent(run, "system", "raw", { securityError }));
+      },
+    },
+  });
+
   function track(runId: string, completion: Promise<AgentRun> | Promise<{ run: AgentRun }>): void {
     const terminal = completion.then((result) => "run" in result ? result.run : result);
     active.set(runId, terminal);
-    void terminal.catch(() => undefined).finally(() => active.delete(runId));
+    void terminal.then(async (run) => {
+      for (const approval of await approvals.expireRun(run)) await publishApprovalEvent(approval);
+    }).catch(() => undefined).finally(() => active.delete(runId));
   }
+
+  async function decideApproval(approvalId: string, decision: "allow_once" | "deny", reason: string | null): Promise<ApprovalRequest> {
+    const pending = approvalDecisions.get(approvalId);
+    if (pending) return await pending;
+    const operation = (async () => {
+      const before = await ports.getApproval(approvalId);
+      const decided = await approvals.decide(approvalId, decision, reason);
+      if (before.status === "pending" && decided.status !== "pending") await publishApprovalEvent(decided);
+      return decided;
+    })();
+    approvalDecisions.set(approvalId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (approvalDecisions.get(approvalId) === operation) approvalDecisions.delete(approvalId);
+    }
+  }
+
+  async function publishMessageEvent(message: TaskMessage, type: "message_queued" | "message_delivered" | "message_failed"): Promise<void> {
+    const runs = await ports.listRuns(message.taskId);
+    const targetRun = type === "message_queued" && message.sourceReviewRunId
+      ? runs.find((run) => run.id === message.sourceReviewRunId)
+      : runs.filter((run) => message.targetRole === "reviewer"
+        ? run.runType === "reviewer" || run.runType === "reviewer_followup"
+        : run.runType !== "reviewer" && run.runType !== "reviewer_followup").at(-1);
+    if (!targetRun) return;
+    try {
+      await events.publish(createRunEvent(targetRun, "system", type, {
+        messageId: message.id,
+        status: message.status,
+        targetRole: message.targetRole,
+      }));
+    } catch {
+      // Message persistence is authoritative; a stream outage must not duplicate delivery.
+    }
+  }
+
+  const conversations = new ConversationService({
+    persistence: {
+      async createMessage(message, attachmentIds) {
+        const persisted = await ports.createMessage(message, attachmentIds);
+        await publishMessageEvent(persisted, "message_queued");
+        return persisted;
+      },
+      async transitionMessage(messageId, from, patch) {
+        const transitioned = await ports.transitionMessage(messageId, from, patch);
+        if (transitioned?.status === "delivered") await publishMessageEvent(transitioned, "message_delivered");
+        if (transitioned?.status === "failed") await publishMessageEvent(transitioned, "message_failed");
+        return transitioned;
+      },
+      getTask: (taskId) => ports.getTask(taskId),
+      getRun: (runId) => ports.getRun(runId),
+      listRuns: (taskId) => ports.listRuns(taskId),
+      listMessages: (taskId) => ports.listMessages(taskId),
+      attachmentPaths: (messageIds) => ports.attachmentPaths(messageIds),
+      discardIncompleteFormalFindings: (runId) => ports.discardIncompleteFormalFindings(runId),
+    },
+    agentRuns: {
+      async start(input) {
+        const started = await agentRuns.start(input);
+        track(started.run.id, started.completion);
+        return started;
+      },
+      interrupt: (runId) => agentRuns.interrupt(runId),
+      waitForTerminal: (runId) => agentRuns.waitForTerminal(runId),
+    },
+  });
 
   async function clis(recheck = false): Promise<CliStatusResponse> {
     if (!cliStatus || recheck) {
@@ -267,6 +369,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       throw new CliUnavailableError(provider, availability.message ?? `${provider} is unavailable or not authenticated.`);
     }
     return availability;
+  }
+
+  function requireImageCapability(
+    provider: Provider,
+    capability: "developerInitialImage" | "developerResumeImage" | "reviewerInitialImage" | "reviewerResumeImage",
+    imagePathsOrIds: readonly string[],
+  ): void {
+    if (imagePathsOrIds.length && !providerRegistry.get(provider).driver.capabilities[capability]) {
+      throw new UnsupportedProviderCapabilityError(provider, capability);
+    }
   }
 
   async function requireGit(): Promise<AgentAvailability> {
@@ -467,11 +579,14 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         await requireCli(task.developerProvider);
         const initial = task.status === "draft";
         if (!initial && !task.developerSessionId) throw new RunConflictError("Continuing development requires an exact developer session ID.");
+        const imagePaths = initial ? await ports.initialAttachmentPaths(task.id) : [];
+        requireImageCapability(task.developerProvider, initial ? "developerInitialImage" : "developerResumeImage", imagePaths);
         const started = await agentRuns.start({
           task,
           runType: initial ? "developer_initial" : "developer_feedback",
           prompt: input.prompt ?? (initial ? task.originalPrompt : "Continue the current task and summarize the changes from this run."),
           ...(initial ? {} : { sessionId: task.developerSessionId! }),
+          imagePaths,
         });
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
@@ -484,7 +599,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         const task = await requireTask(parameters[0]!);
         await requireCli(task.reviewerProvider);
         await requireGit();
-        const started = await reviews.start(task);
+        const imagePaths = await ports.initialAttachmentPaths(task.id);
+        requireImageCapability(task.reviewerProvider, "reviewerInitialImage", imagePaths);
+        const started = await reviews.start(task, imagePaths);
         track(started.run.id, started.completion);
         return json({ task: await requireTask(task.id), run: started.run }, 202);
       }
@@ -537,6 +654,48 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       if (parameters && method === "GET") {
         await requireTask(parameters[0]!);
         return json(await ports.listRuns(parameters[0]!));
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/messages$/);
+      if (parameters) {
+        const task = await requireTask(parameters[0]!);
+        if (method === "GET") return json(await ports.listMessages(task.id));
+        if (method === "POST") {
+          ensureAccepting();
+          const input = await body(request, createTaskMessageRequestSchema);
+          const provider = input.targetRole === "reviewer" ? task.reviewerProvider : task.developerProvider;
+          await requireCli(provider);
+          requireImageCapability(
+            provider,
+            input.targetRole === "reviewer" ? "reviewerResumeImage" : "developerResumeImage",
+            input.attachmentIds,
+          );
+          try {
+            return json(await conversations.enqueue({
+              ...input,
+              projectId: task.projectId,
+              taskId: task.id,
+            }), 202);
+          } catch (error) {
+            if (error instanceof AttachmentClaimConflictError || error instanceof PersistenceOwnershipError) {
+              throw new RunConflictError(error.message);
+            }
+            throw error;
+          }
+        }
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/approvals$/);
+      if (parameters && method === "GET") {
+        await requireTask(parameters[0]!);
+        return json(await ports.listApprovals(parameters[0]!));
+      }
+
+      parameters = match(path, /^\/api\/approvals\/([^/]+)\/decision$/);
+      if (parameters && method === "POST") {
+        ensureAccepting();
+        const input = await body(request, approvalDecisionRequestSchema);
+        return json(await decideApproval(parameters[0]!, input.decision, input.reason ?? null));
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/git\/(status|diff|files)$/);

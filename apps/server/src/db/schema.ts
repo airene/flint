@@ -107,7 +107,7 @@ export const approvalRequests = sqliteTable("approval_requests", {
   toolName: text("tool_name").notNull(),
   actionSummary: text("action_summary").notNull(),
   workingDirectory: text("working_directory").notNull(),
-  status: text("status", { enum: ["pending", "resolved", "expired"] }).notNull(),
+  status: text("status", { enum: ["pending", "resolving", "resolved", "expired"] }).notNull(),
   decision: text("decision", { enum: ["allow_once", "deny"] }),
   reason: text("reason"),
   createdAt: text("created_at").notNull(),

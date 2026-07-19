@@ -1,5 +1,7 @@
 import {
   apiErrorSchema,
+  approvalListResponseSchema,
+  approvalResponseSchema,
   cancelRunResponseSchema,
   completeTaskResponseSchema,
   createProjectResponseSchema,
@@ -23,13 +25,19 @@ import {
   settingsResponseSchema,
   taskListResponseSchema,
   taskResponseSchema,
+  taskMessageListResponseSchema,
+  taskMessageResponseSchema,
   unfinishedTaskListResponseSchema,
   type CancelRunResponse,
+  type ApprovalDecisionRequest,
+  type ApprovalListResponse,
+  type ApprovalResponse,
   type CliRecheckRequest,
   type CompleteTaskResponse,
   type CreateProjectRequest,
   type CreateProjectResponse,
   type CreateTaskRequest,
+  type CreateTaskMessageRequest,
   type CreateTaskResponse,
   type DeleteProjectRequest,
   type DeleteProjectResponse,
@@ -58,6 +66,8 @@ import {
   type SettingsResponse,
   type TaskListResponse,
   type TaskResponse,
+  type TaskMessageListResponse,
+  type TaskMessageResponse,
   type UnfinishedTaskListResponse,
   type UpdateFindingRequest,
 } from "@local-pair-review/shared";
@@ -93,6 +103,10 @@ export interface ApiEndpoints {
   previewFeedback(taskId: string, input: FeedbackPreviewRequest): Promise<FeedbackPreviewResponse>;
   getFeedbackDraft(taskId: string, reviewRunId: string): Promise<FeedbackDraftResponse>;
   saveFeedbackDraft(taskId: string, reviewRunId: string, input: SaveFeedbackDraftRequest): Promise<SaveFeedbackDraftResponse>;
+  listMessages(taskId: string): Promise<TaskMessageListResponse>;
+  sendMessage(taskId: string, input: CreateTaskMessageRequest): Promise<TaskMessageResponse>;
+  listApprovals(taskId: string): Promise<ApprovalListResponse>;
+  decideApproval(approvalId: string, input: ApprovalDecisionRequest): Promise<ApprovalResponse>;
 }
 
 export function createApiEndpoints(client: ApiClient): ApiEndpoints {
@@ -174,6 +188,16 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
       saveFeedbackDraftResponseSchema,
       { method: "PUT", body: input },
     ),
+    listMessages: (taskId) => client.request(`/api/tasks/${id(taskId)}/messages`, taskMessageListResponseSchema),
+    sendMessage: (taskId, input) => client.request(`/api/tasks/${id(taskId)}/messages`, taskMessageResponseSchema, {
+      method: "POST",
+      body: input,
+    }),
+    listApprovals: (taskId) => client.request(`/api/tasks/${id(taskId)}/approvals`, approvalListResponseSchema),
+    decideApproval: (approvalId, input) => client.request(`/api/approvals/${id(approvalId)}/decision`, approvalResponseSchema, {
+      method: "POST",
+      body: input,
+    }),
   };
 }
 

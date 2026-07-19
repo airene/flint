@@ -2,11 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, copyFile, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentEvent, AgentRun, ReviewFinding, Task } from "@local-pair-review/shared";
+import type { AgentEvent, AgentRun, ApprovalRequest, ReviewFinding, Task, TaskMessage } from "@local-pair-review/shared";
 import { createApplication } from "../../apps/server/src/api/application";
 import { ApplicationAlreadyRunningError } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
-import { agentEvents, agentRuns, projects, tasks } from "../../apps/server/src/db/schema";
+import { agentEvents, agentRuns, approvalRequests, projects, tasks } from "../../apps/server/src/db/schema";
 import { createServer, type LocalPairReviewServer } from "../../apps/server/src/server";
 
 const codexFixture = resolve(import.meta.dir, "../fixtures/bin/codex");
@@ -88,6 +88,22 @@ async function waitForApplicationReviewParse(
     await Bun.sleep(10);
   }
   throw new Error(`Review run ${runId} did not finish parsing`);
+}
+
+async function waitForApplicationMessage(
+  application: Awaited<ReturnType<typeof createApplication>>,
+  taskId: string,
+  messageId: string,
+  status: TaskMessage["status"],
+): Promise<TaskMessage> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await applicationRequest<TaskMessage[]>(application, `/api/tasks/${taskId}/messages`);
+    const candidate = result.body.find((message) => message.id === messageId);
+    if (candidate?.status === status) return candidate;
+    await Bun.sleep(10);
+  }
+  throw new Error(`Message ${messageId} did not reach ${status}`);
 }
 
 async function waitForTask(baseUrl: string, taskId: string, status: Task["status"]): Promise<Task> {
@@ -361,13 +377,14 @@ describe("local server API assembly", () => {
     const firstRoot = await repository();
     const secondRoot = await repository();
     const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-attachment-api-"));
+    const invocationLog = join(dataDirectory, "invocation.json");
     cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
     const application = await createApplication({
       databasePath: join(dataDirectory, "app.sqlite"),
       codexExecutable: codexFixture,
       claudeExecutable: claudeFixture,
       gitExecutable: "git",
-      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal", FAKE_CLI_INVOCATION_LOG: invocationLog },
     });
     try {
       const firstProject = await applicationRequest<{ id: string }>(application, "/api/projects", {
@@ -412,6 +429,162 @@ describe("local server API assembly", () => {
 
       expect((await readdir(join(dataDirectory, "attachment-drafts"))).length).toBe(1);
       expect(Bun.spawnSync(["git", "status", "--porcelain"], { cwd: firstRoot }).stdout.toString()).toBe("");
+
+      const developed = await applicationRequest<{ run: AgentRun }>(application, `/api/tasks/${created.body.id}/develop`, {
+        method: "POST", body: "{}",
+      });
+      expect(developed.status).toBe(202);
+      await waitForApplicationTask(application, created.body.id, "ready_for_review");
+      const invocation = JSON.parse(await Bun.file(invocationLog).text()) as { args: string[] };
+      const imageIndex = invocation.args.indexOf("--image");
+      expect(imageIndex).toBeGreaterThan(-1);
+      expect(invocation.args[imageIndex + 1]).toStartWith(join(dataDirectory, "attachment-drafts"));
+
+      const review = await applicationRequest<{ code: string; message: string }>(application, `/api/tasks/${created.body.id}/review`, {
+        method: "POST", body: "{}",
+      });
+      expect(review).toMatchObject({ status: 409, body: { code: "CONFLICT" } });
+      expect(review.body.message).toContain("reviewer initial-run images");
+
+      await applicationRequest(application, "/api/system/settings", {
+        method: "POST", body: JSON.stringify({ reviewerProvider: "codex" }),
+      });
+      const secondUpload = await application.handle(new Request(
+        `http://127.0.0.1/api/projects/${firstProject.body.id}/attachment-drafts`,
+        { method: "POST", headers: { "content-type": "image/png" }, body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+      ));
+      const secondDraft = await secondUpload.json() as { id: string };
+      const codexReviewTask = await applicationRequest<Task>(application, `/api/projects/${firstProject.body.id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({ title: "Codex image review", originalPrompt: "Review the screenshot", attachmentIds: [secondDraft.id] }),
+      });
+      await applicationRequest(application, `/api/tasks/${codexReviewTask.body.id}/develop`, { method: "POST", body: "{}" });
+      await waitForApplicationTask(application, codexReviewTask.body.id, "ready_for_review");
+      const codexReview = await applicationRequest<{ run: AgentRun }>(application, `/api/tasks/${codexReviewTask.body.id}/review`, {
+        method: "POST", body: "{}",
+      });
+      expect(codexReview.status).toBe(202);
+      await waitForApplicationReviewParse(application, codexReview.body.run.id);
+      const reviewInvocation = JSON.parse(await Bun.file(invocationLog).text()) as { args: string[] };
+      expect(reviewInvocation.args).toContain("--output-schema");
+      expect(reviewInvocation.args).toContain("--image");
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("persists and delivers exact-session developer and selected Review messages", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-message-api-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const invocationLog = join(dataDirectory, "invocation.json");
+    const application = await createApplication({
+      databasePath: join(dataDirectory, "app.sqlite"),
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal", FAKE_CLI_INVOCATION_LOG: invocationLog },
+    });
+    try {
+      await applicationRequest(application, "/api/system/settings", {
+        method: "POST", body: JSON.stringify({ reviewerProvider: "codex" }),
+      });
+      const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+        method: "POST", body: JSON.stringify({ rootPath }),
+      });
+      const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+        method: "POST", body: JSON.stringify({ title: "Conversation", originalPrompt: "Build it" }),
+      });
+      await applicationRequest(application, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
+      await waitForApplicationTask(application, task.body.id, "ready_for_review");
+
+      const upload = await application.handle(new Request(
+        `http://127.0.0.1/api/projects/${project.body.id}/attachment-drafts`,
+        { method: "POST", headers: { "content-type": "image/png" }, body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+      ));
+      const draft = await upload.json() as { id: string };
+      const developerMessage = await applicationRequest<TaskMessage>(application, `/api/tasks/${task.body.id}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          targetRole: "developer", sourceReviewRunId: null, text: "Use this image", deliveryMode: "queue", attachmentIds: [draft.id],
+        }),
+      });
+      expect(developerMessage.status).toBe(202);
+      await waitForApplicationMessage(application, task.body.id, developerMessage.body.id, "delivered");
+      const developerInvocation = JSON.parse(await Bun.file(invocationLog).text()) as { args: string[] };
+      expect(developerInvocation.args.slice(0, 3)).toEqual(["exec", "resume", "codex-session-fake-123"]);
+      expect(developerInvocation.args).toContain("--image");
+      await waitForApplicationTask(application, task.body.id, "ready_for_review");
+
+      const review = await applicationRequest<{ run: AgentRun }>(application, `/api/tasks/${task.body.id}/review`, {
+        method: "POST", body: "{}",
+      });
+      const completedReview = await waitForApplicationReviewParse(application, review.body.run.id);
+      const beforeFollowup = await applicationRequest<Task>(application, `/api/tasks/${task.body.id}`);
+      expect(beforeFollowup.body.status).toBe("waiting_for_human");
+      const reviewerMessage = await applicationRequest<TaskMessage>(application, `/api/tasks/${task.body.id}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          targetRole: "reviewer", sourceReviewRunId: review.body.run.id, text: "Clarify the finding", deliveryMode: "queue", attachmentIds: [],
+        }),
+      });
+      await waitForApplicationMessage(application, task.body.id, reviewerMessage.body.id, "delivered");
+      const runs = await applicationRequest<AgentRun[]>(application, `/api/tasks/${task.body.id}/runs`);
+      expect(runs.body.at(-1)).toMatchObject({
+        runType: "reviewer_followup", externalSessionId: completedReview.externalSessionId, status: "completed",
+      });
+      expect((await applicationRequest<Task>(application, `/api/tasks/${task.body.id}`)).body.status).toBe("waiting_for_human");
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("returns persisted approvals and visibly rejects unsupported provider decisions without faking resolution", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-approval-api-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const databasePath = join(dataDirectory, "app.sqlite");
+    const application = await createApplication({
+      databasePath,
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
+        method: "POST", body: JSON.stringify({ rootPath }),
+      });
+      const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+        method: "POST", body: JSON.stringify({ title: "Approval", originalPrompt: "Build it" }),
+      });
+      const started = await applicationRequest<{ run: AgentRun }>(application, `/api/tasks/${task.body.id}/develop`, {
+        method: "POST", body: "{}",
+      });
+      await waitForApplicationTask(application, task.body.id, "ready_for_review");
+      const seeded: ApprovalRequest = {
+        id: "approval-api-1", projectId: project.body.id, taskId: task.body.id, runId: started.body.run.id,
+        providerRequestId: "provider-approval-1", toolName: "shell", actionSummary: "Run tests",
+        workingDirectory: rootPath, status: "pending", decision: null, reason: null,
+        createdAt: "2026-07-19T00:00:00.000Z", resolvedAt: null,
+      };
+      const second = createDatabase(databasePath);
+      second.db.insert(approvalRequests).values(seeded).run();
+      second.close();
+
+      expect(await applicationRequest<ApprovalRequest[]>(application, `/api/tasks/${task.body.id}/approvals`))
+        .toEqual({ status: 200, body: [seeded] });
+      const rejected = await applicationRequest<{ code: string; details: unknown }>(
+        application,
+        `/api/approvals/${seeded.id}/decision`,
+        { method: "POST", body: JSON.stringify({ decision: "allow_once" }) },
+      );
+      expect(rejected).toMatchObject({
+        status: 409,
+        body: { code: "CONFLICT", details: { provider: "codex", capability: "approvals" } },
+      });
+      expect((await applicationRequest<ApprovalRequest[]>(application, `/api/tasks/${task.body.id}/approvals`)).body[0])
+        .toMatchObject({ status: "pending", decision: null });
     } finally {
       await application.shutdown();
     }

@@ -20,8 +20,13 @@ watch(() => props.request.status, (status) => {
 function decide(decision: ApprovalDecision): void {
   if (!display.value.canDecide) return;
   resolving.value = true;
-  emit("decide", { decision, reason: decision === "deny" ? denyReason.value.trim() || null : null });
+  emit("decide", {
+    decision: display.value.lockedDecision ?? decision,
+    reason: display.value.lockedDecision ? requestReason() : decision === "deny" ? denyReason.value.trim() || null : null,
+  });
 }
+
+function requestReason(): string | null { return props.request.reason; }
 </script>
 
 <template>
@@ -33,14 +38,14 @@ function decide(decision: ApprovalDecision): void {
     <p class="tool-name">{{ request.toolName }}</p>
     <p class="summary">{{ request.actionSummary }}</p>
     <p class="directory">{{ request.workingDirectory }}</p>
-    <p v-if="display.state === 'denied' && display.reason" class="deny-reason">Reason: {{ display.reason }}</p>
+    <p v-if="(display.state === 'denied' || display.state === 'retry') && display.reason" class="deny-reason">Reason: {{ display.reason }}</p>
     <p v-if="display.state === 'expired'">This request expired when its run ended.</p>
     <p v-if="display.error" class="error">{{ display.error }}</p>
     <template v-if="display.canDecide">
-      <label class="deny-reason-input">Reason (optional)<input v-model="denyReason" :disabled="resolving" placeholder="Why deny this request?"></label>
+      <label v-if="!display.lockedDecision" class="deny-reason-input">Reason (optional)<input v-model="denyReason" :disabled="resolving" placeholder="Why deny this request?"></label>
       <div class="actions">
-        <button class="button" type="button" :disabled="resolving" @click="decide('allow_once')">{{ display.state === 'retry' ? 'Retry allow once' : 'Allow once' }}</button>
-        <button class="button ghost" type="button" :disabled="resolving" @click="decide('deny')">{{ display.state === 'retry' ? 'Retry deny' : 'Deny' }}</button>
+        <button v-if="display.lockedDecision !== 'deny'" class="button" type="button" :disabled="resolving" @click="decide('allow_once')">{{ display.state === 'retry' ? 'Retry allow once' : 'Allow once' }}</button>
+        <button v-if="display.lockedDecision !== 'allow_once'" class="button ghost" type="button" :disabled="resolving" @click="decide('deny')">{{ display.state === 'retry' ? 'Retry deny' : 'Deny' }}</button>
       </div>
     </template>
   </article>

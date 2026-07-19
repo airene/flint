@@ -123,6 +123,10 @@ class MemoryConversationPersistence implements ConversationPersistencePort {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   }
 
+  async attachmentPaths(_messageIds: readonly string[]): Promise<string[]> {
+    return [];
+  }
+
   async discardIncompleteFormalFindings(runId: string): Promise<void> {
     this.discardedFormalRuns.push(runId);
     this.order.push(`findings:discard:${runId}`);

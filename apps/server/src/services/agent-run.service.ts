@@ -59,6 +59,8 @@ export interface StartAgentRunInput {
   sessionId?: string;
   /** Review-only snapshot persisted atomically with the queued Run. */
   snapshotHash?: string;
+  /** Absolute paths for images already claimed by this Task or message. */
+  imagePaths?: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -173,7 +175,7 @@ export class AgentRunService {
     let capturedSession = input.sessionId ?? null;
     try {
       await this.events.publish(this.lifecycleEvent(run, "run_queued", { runType: run.runType }));
-      const result = await driver.start({
+      const request = {
         runId: run.id,
         taskId: run.taskId,
         projectId: run.projectId,
@@ -181,8 +183,10 @@ export class AgentRunService {
         prompt: input.prompt,
         runType: run.runType,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.imagePaths?.length ? { imagePaths: input.imagePaths } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
-      }, async (event) => {
+      };
+      const result = await driver.start(request, async (event) => {
         if (event.type === "run_started") {
           const payload = event.payload as { processId?: unknown };
           if (typeof payload.processId === "number") await this.persistence.markRunning(run.id, payload.processId);

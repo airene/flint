@@ -45,7 +45,7 @@ export type TaskMessageStatus = z.infer<typeof taskMessageStatusSchema>;
 export const attachmentStateSchema = z.enum(["draft", "claimed"]);
 export type AttachmentState = z.infer<typeof attachmentStateSchema>;
 
-export const approvalStatusSchema = z.enum(["pending", "resolved", "expired"]);
+export const approvalStatusSchema = z.enum(["pending", "resolving", "resolved", "expired"]);
 export type ApprovalStatus = z.infer<typeof approvalStatusSchema>;
 
 export const approvalDecisionSchema = z.enum(["allow_once", "deny"]);
@@ -172,6 +172,9 @@ export const approvalRequestSchema = z.object({
 }).strict().superRefine((approval, context) => {
   if (approval.status === "resolved" && (!approval.decision || !approval.resolvedAt)) {
     context.addIssue({ code: "custom", message: "Resolved approvals require a decision and resolution time" });
+  }
+  if (approval.status === "resolving" && (!approval.decision || approval.resolvedAt)) {
+    context.addIssue({ code: "custom", message: "Resolving approvals require a decision and no resolution time" });
   }
   if (approval.status === "pending" && (approval.decision || approval.resolvedAt)) {
     context.addIssue({ code: "custom", message: "Pending approvals cannot have a decision" });
@@ -384,6 +387,8 @@ export const taskMessageListResponseSchema = z.array(taskMessageSchema);
 export type TaskMessageListResponse = z.infer<typeof taskMessageListResponseSchema>;
 export const approvalResponseSchema = approvalRequestSchema;
 export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
+export const approvalListResponseSchema = z.array(approvalRequestSchema);
+export type ApprovalListResponse = z.infer<typeof approvalListResponseSchema>;
 export const unfinishedTaskListResponseSchema = z.array(unfinishedTaskSummarySchema);
 export type UnfinishedTaskListResponse = z.infer<typeof unfinishedTaskListResponseSchema>;
 

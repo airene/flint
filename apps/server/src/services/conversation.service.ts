@@ -24,6 +24,7 @@ export interface ConversationPersistencePort {
   getRun(runId: string): Promise<AgentRun | null>;
   listRuns(taskId: string): Promise<AgentRun[]>;
   listMessages(taskId: string): Promise<TaskMessage[]>;
+  attachmentPaths(messageIds: readonly string[]): Promise<string[]>;
   discardIncompleteFormalFindings(runId: string): Promise<void>;
 }
 
@@ -230,11 +231,13 @@ export class ConversationService {
       const task = await this.persistence.getTask(delivering[0]!.taskId);
       if (!task || task.projectId !== delivering[0]!.projectId) throw new Error("Task not found for message delivery");
       const sessionId = await this.exactSession(task, delivering[0]!);
+      const imagePaths = await this.persistence.attachmentPaths(delivering.map((message) => message.id));
       const started = await this.agentRuns.start({
         task,
         runType: delivering[0]!.targetRole === "reviewer" ? "reviewer_followup" : "developer_followup",
         prompt: delivering.map((message) => message.text).join(visibleMessageSeparator),
         sessionId,
+        imagePaths,
       });
       const terminal = await started.completion;
       if (terminal.status !== "completed") {

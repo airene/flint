@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ReviewFinding, UpdateFindingRequest } from "@local-pair-review/shared";
+import type { MessageDeliveryMode, ReviewFinding, UpdateFindingRequest } from "@local-pair-review/shared";
 import ActivityPanel from "../components/ActivityPanel.vue";
 import AgentPanel from "../components/AgentPanel.vue";
 import ErrorBanner from "../components/ErrorBanner.vue";
@@ -9,6 +9,8 @@ import FeedbackEditor from "../components/FeedbackEditor.vue";
 import ReviewPanel from "../components/ReviewPanel.vue";
 import RunHistory from "../components/RunHistory.vue";
 import TaskHeader from "../components/TaskHeader.vue";
+import TaskComposer, { type ComposerSubmission } from "../components/TaskComposer.vue";
+import { uploadAttachmentDraft } from "../api/endpoints";
 import { buildRunHistory, selectRunAfterUpdate } from "../components/run-history";
 import { useSystemStore } from "../stores/system";
 import { useTaskWorkspaceStore } from "../stores/task-workspace";
@@ -28,6 +30,7 @@ const historyEntries = computed(() => buildRunHistory(workspace.runs, system.pro
 const selectedRun = computed(() => workspace.runs.find((run) => run.id === selectedRunId.value) ?? null);
 const selectedHistoryEntry = computed(() => historyEntries.value.find((entry) => entry.runId === selectedRunId.value) ?? null);
 const selectedRunEvents = computed(() => workspace.events.filter((event) => event.runId === selectedRunId.value));
+const selectedRunApprovals = computed(() => workspace.approvals.filter((approval) => approval.runId === selectedRunId.value));
 const selectedIsReviewer = computed(() => selectedRun.value?.runType === "reviewer");
 const selectedReviewFindings = computed(() => selectedRun.value?.runType === "reviewer"
   ? workspace.findings.filter((finding) => finding.runId === selectedRun.value?.id)
@@ -51,6 +54,42 @@ const selectedReviewStale = computed(() => {
     && (candidate.type === "review_parsed" || candidate.type === "review_parse_failed")).at(-1);
   return Boolean((event?.payload as { stale?: unknown } | undefined)?.stale);
 });
+const composerText = ref("");
+const deliveryMode = ref<MessageDeliveryMode>("queue");
+const composerGeneration = ref(0);
+const selectedFormalReview = computed(() => {
+  const run = selectedRun.value;
+  return run?.runType === "reviewer" && run.status === "completed" && run.externalSessionId ? run : null;
+});
+const composerTargetRole = computed(() => selectedFormalReview.value ? "reviewer" as const : "developer" as const);
+const composerProvider = computed(() => composerTargetRole.value === "reviewer"
+  ? workspace.task?.reviewerProvider
+  : workspace.task?.developerProvider);
+const composerImagesEnabled = computed(() => {
+  const descriptor = system.providerById(composerProvider.value);
+  return Boolean(descriptor?.capabilities[composerTargetRole.value === "reviewer" ? "reviewerResumeImage" : "developerResumeImage"]);
+});
+const composerDisabledReason = computed(() => {
+  if (workspace.task?.status === "completed") return "Completed tasks are read-only.";
+  if (composerTargetRole.value === "developer" && !workspace.task?.developerSessionId) return "Start Developer once to establish an exact session.";
+  if (!composerProvider.value || !system.providerReady(composerProvider.value)) return "The selected provider is unavailable.";
+  return null;
+});
+const composerKey = computed(() => `${composerTargetRole.value}:${selectedFormalReview.value?.id ?? "developer"}:${composerGeneration.value}`);
+
+async function sendMessage(submission: ComposerSubmission): Promise<void> {
+  const sent = await workspace.sendMessage({
+    targetRole: composerTargetRole.value,
+    sourceReviewRunId: selectedFormalReview.value?.id ?? null,
+    text: submission.text,
+    deliveryMode: deliveryMode.value,
+    attachmentIds: submission.attachmentIds,
+  });
+  if (sent) {
+    composerText.value = "";
+    composerGeneration.value += 1;
+  }
+}
 const runtimeWarnings = computed(() => {
   const status = system.cliStatus;
   const task = workspace.task;
@@ -170,10 +209,44 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
             @preview="workspace.previewFeedback" @update-text="workspace.updateFeedbackText"
             @send="workspace.sendFeedback(false)" @confirm-stale="workspace.sendFeedback(true)"
           />
-          <ActivityPanel :events="selectedRunEvents" :connected="workspace.connected" />
+          <ActivityPanel
+            :events="selectedRunEvents" :connected="workspace.connected" :approvals="selectedRunApprovals"
+            :approval-errors="workspace.approvalErrors"
+            @decide-approval="(approvalId, decision) => workspace.decideApproval(approvalId, decision)"
+          />
         </div>
         <div v-else class="panel empty-state run-detail-empty"><strong>No run selected</strong><span>Start an action to create the first run.</span></div>
       </div>
+      <section class="panel conversation-panel">
+        <header class="panel-header">
+          <div>
+            <h2 class="panel-title">Message {{ composerTargetRole === 'reviewer' ? `${reviewerLabel} Reviewer` : `${developerLabel} Developer` }}</h2>
+            <small v-if="selectedFormalReview">Exact Review session · {{ selectedFormalReview.externalSessionId }}</small>
+            <small v-else>Exact Developer session · {{ workspace.task.developerSessionId ?? 'not established' }}</small>
+          </div>
+          <label class="delivery-mode">Delivery
+            <select v-model="deliveryMode" :disabled="Boolean(composerDisabledReason)">
+              <option value="queue">Queue next turn</option>
+              <option value="interrupt">Interrupt same role</option>
+            </select>
+          </label>
+        </header>
+        <div v-if="workspace.messages.length" class="message-list">
+          <article v-for="message in workspace.messages" :key="message.id" :class="['task-message', message.status]">
+            <div><strong>{{ message.targetRole === 'reviewer' ? 'Reviewer' : 'Developer' }}</strong><span>{{ message.status }}</span></div>
+            <p>{{ message.text }}</p>
+            <small v-if="message.errorMessage">{{ message.errorMessage }}</small>
+          </article>
+        </div>
+        <p v-if="composerDisabledReason" class="composer-note">{{ composerDisabledReason }}</p>
+        <TaskComposer
+          :key="composerKey" v-model="composerText" :project-id="workspace.task.projectId"
+          :upload-image="uploadAttachmentDraft" :disabled="Boolean(composerDisabledReason)"
+          :images-enabled="composerImagesEnabled"
+          :image-disabled-reason="`${composerProvider ?? 'Provider'} cannot receive images in this resumed session.`"
+          placeholder="Send a persisted follow-up…" @submit="sendMessage"
+        />
+      </section>
     </template>
     <div v-else class="panel empty-state"><strong>Task unavailable</strong><span>{{ workspace.error ?? 'The task could not be loaded.' }}</span></div>
 
@@ -204,6 +277,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 .task-page{max-width:none;padding-bottom:calc(48px + var(--task-action-bar-h, 0px))}.loading-task{margin-top:10vh}.context-strip{display:grid;grid-template-columns:1.5fr .7fr 1fr .55fr;margin-bottom:14px;padding:10px 13px}.context-strip>div{min-width:0;padding:0 13px;border-right:1px solid var(--border)}.context-strip>div:first-child{padding-left:0}.context-strip>div:last-child{border:0}.context-strip span,.context-strip code{display:block}.context-strip span{margin-bottom:4px;color:var(--faint);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.context-strip code{color:var(--text-body);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.run-detail{min-width:0}.run-detail-empty{min-height:180px}
 .runtime-warning{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.runtime-warning strong,.runtime-warning span{display:block}.runtime-warning strong{margin-bottom:4px;color:var(--yellow-ink);font-size:11px}.runtime-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
 .repository-warning{display:grid;gap:4px;margin-bottom:14px;padding:11px 13px;border-color:rgba(243,201,105,.3);background:rgba(243,201,105,.06)}.repository-warning strong{color:var(--yellow-ink);font-size:11px}.repository-warning span{color:var(--yellow-ink);font-size:9px;line-height:1.5}
+.conversation-panel{margin-top:14px;padding-bottom:14px}.conversation-panel>.panel-header{align-items:flex-start}.conversation-panel small{display:block;margin-top:4px;color:var(--faint);font-size:9px}.delivery-mode{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px}.delivery-mode select{padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:var(--input-bg);color:var(--text)}.message-list{display:grid;gap:6px;max-height:210px;overflow:auto;padding:10px 14px;border-bottom:1px solid var(--border)}.task-message{padding:8px 10px;border:1px solid var(--border-soft);border-radius:5px;background:var(--block-bg)}.task-message>div{display:flex;justify-content:space-between;gap:8px}.task-message strong{font-size:10px}.task-message span{color:var(--faint);font-size:9px;text-transform:capitalize}.task-message p{margin:5px 0 0;color:var(--text-body);font-size:10px;white-space:pre-wrap}.task-message small{color:var(--red-ink)}.task-message.failed{border-color:rgba(255,100,100,.35)}.composer-note{margin:10px 14px 0;color:var(--yellow-ink);font-size:10px}.conversation-panel>.task-composer{padding:12px 14px 0}
 @media(max-width:900px){.run-workspace{grid-template-columns:1fr}.context-strip{grid-template-columns:repeat(2,1fr);gap:10px}.context-strip>div{border:0;padding:0}}
 
 .diff-drawer-root{position:fixed;inset:0;z-index:60;visibility:hidden;pointer-events:none;transition:visibility 0s .26s}
