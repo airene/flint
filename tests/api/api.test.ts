@@ -119,6 +119,42 @@ afterEach(async () => {
 });
 
 describe("local server API assembly", () => {
+  test("lists project files and validates bounded queries before invoking Git", async () => {
+    const rootPath = await repository();
+    await Bun.write(join(rootPath, "src second.ts"), "untracked\n");
+    const application = await createApplication({
+      databasePath: ":memory:",
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      const created = await application.handle(new Request("http://127.0.0.1/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rootPath }),
+      }));
+      const project = await created.json() as { id: string };
+      const call = async (path: string): Promise<{ status: number; body: { files?: string[]; code?: string } }> => {
+        const response = await application.handle(new Request(`http://127.0.0.1${path}`));
+        return { status: response.status, body: await response.json() as { files?: string[]; code?: string } };
+      };
+
+      const listed = await call(`/api/projects/${encodeURIComponent(project.id)}/files?q=${encodeURIComponent("src ")}&limit=1`);
+      expect(listed).toEqual({ status: 200, body: { files: ["src second.ts"] } });
+
+      for (const query of ["limit=0", "limit=51", `q=${"x".repeat(201)}`, "unexpected=1"]) {
+        const invalid = await call(`/api/projects/${project.id}/files?${query}`);
+        expect(invalid).toMatchObject({ status: 400, body: { code: "VALIDATION_ERROR" } });
+      }
+      const missing = await call("/api/projects/missing/files");
+      expect(missing).toMatchObject({ status: 404, body: { code: "NOT_FOUND" } });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
   test("rejects a second application on the same database before it recovers active runs", async () => {
     const rootPath = await repository();
     const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-single-instance-"));
@@ -606,6 +642,10 @@ describe("local server API assembly", () => {
       application,
       `/api/tasks/${task.body.id}/git/status`,
     );
+    const projectFiles = await applicationRequest<{ code: string; details?: { provider?: string } }>(
+      application,
+      `/api/projects/${project.body.id}/files?q=src`,
+    );
     const feedback = await applicationRequest<{ code: string; details?: { provider?: string } }>(
       application,
       `/api/tasks/${task.body.id}/feedback`,
@@ -619,7 +659,7 @@ describe("local server API assembly", () => {
       },
     );
 
-    for (const response of [createTask, review, gitStatus, feedback]) {
+    for (const response of [createTask, review, gitStatus, projectFiles, feedback]) {
       expect(response).toMatchObject({
         status: 422,
         body: { code: "CLI_UNAVAILABLE", details: { provider: "git" } },

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ErrorBanner from "../components/ErrorBanner.vue";
+import FileMentionInput from "../components/FileMentionInput.vue";
 import { useProjectsStore } from "../stores/projects";
 import { useSystemStore } from "../stores/system";
 
@@ -58,7 +59,7 @@ function cancelDirtyConfirmation(): void {
       <header class="panel-header"><h2 class="panel-title">New task</h2><span class="badge">base = current HEAD</span></header>
       <div class="panel-body task-form">
         <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
-        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><textarea id="task-prompt" v-model="prompt" class="textarea" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
+        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><FileMentionInput id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" multiline :disabled="Boolean(store.pendingDirtyTask)" placeholder="Describe the change and acceptance criteria…" /></div>
         <div class="create-row"><p class="help">Creating the task immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p><button class="button primary" :disabled="Boolean(store.pendingDirtyTask) || !title.trim() || !prompt.trim()" @click="createTask(false)">Create & start {{ developerLabel }}</button></div>
       </div>
     </section>

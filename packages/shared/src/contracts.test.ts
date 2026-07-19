@@ -126,6 +126,19 @@ test("Git response DTOs distinguish status, aggregate diff, files, and file diff
   expectStrict("gitFileDiffResponseSchema", { file, patch: "diff --git", originalText: "before", modifiedText: "after" });
 });
 
+test("project file search uses strict bounded request and response DTOs", () => {
+  const request = getSchema("projectFilesRequestSchema");
+  expect(request.safeParse({}).success).toBe(true);
+  expect(request.safeParse({ q: "src/app", limit: "12" }).success).toBe(true);
+  expect(request.safeParse({ q: "x".repeat(201) }).success).toBe(false);
+  expect(request.safeParse({ limit: "0" }).success).toBe(false);
+  expect(request.safeParse({ limit: "51" }).success).toBe(false);
+  expectStrict("projectFilesResponseSchema", { files: ["src/app.ts", "docs/design notes.md"] });
+  const parsed = (shared as { projectFilesRequestSchema: { parse: (value: unknown) => unknown } })
+    .projectFilesRequestSchema.parse({});
+  expect(parsed).toEqual({ q: "", limit: 50 });
+});
+
 test("CLI status and recheck responses use strict availability records", () => {
   const cli = {
     installed: true,

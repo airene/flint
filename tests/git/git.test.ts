@@ -97,6 +97,60 @@ afterEach(() => {
 });
 
 describe("GitService", () => {
+  test("lists safe tracked and untracked project files with ranked capped in-memory search and a five-second cache", async () => {
+    const root = repository();
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "target"), { recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    mkdirSync(join(root, "xsrc"), { recursive: true });
+    await Bun.write(join(root, "target.ts"), "target\n");
+    await Bun.write(join(root, "src", "target-helper.ts"), "helper\n");
+    await Bun.write(join(root, "target", "deep.ts"), "deep\n");
+    await Bun.write(join(root, "docs", "my-target.md"), "substring\n");
+    await Bun.write(join(root, "xsrc", "target.ts"), "substring\n");
+    await Bun.write(join(root, "untracked.txt"), "untracked\n");
+    await Bun.write(join(root, "ignored.txt"), "ignored\n");
+    await Bun.write(join(root, "unsafe\nname.txt"), "unsafe\n");
+    await Bun.write(join(root, ".gitignore"), "ignored.txt\n");
+    git(root, "add", "target.ts", "src/target-helper.ts", ".gitignore");
+    const instrumentation = await instrumentedGit();
+    let now = 1_000;
+    const service = new GitService(instrumentation.executable, () => now);
+
+    const all = await service.projectFiles("project-1", root, "", 50);
+    const ranked = await service.projectFiles("project-1", root, "TARGET", 50);
+    const limited = await service.projectFiles("project-1", root, "target", 2);
+    const nestedQuery = await service.projectFiles("project-1", root, "src/target", 50);
+
+    expect(all.files).toContain("tracked.txt");
+    expect(all.files).toContain("untracked.txt");
+    expect(all.files).not.toContain("ignored.txt");
+    expect(all.files).not.toContain("unsafe\nname.txt");
+    expect(ranked.files).toEqual([
+      "target.ts",
+      "xsrc/target.ts",
+      "src/target-helper.ts",
+      "target/deep.ts",
+      "docs/my-target.md",
+    ]);
+    expect(limited.files).toEqual(ranked.files.slice(0, 2));
+    expect(nestedQuery.files).toEqual(["src/target-helper.ts", "xsrc/target.ts"]);
+    expect(instrumentation.invocations()).toEqual([
+      "ls-files --cached --others --exclude-standard -z",
+    ]);
+
+    await service.projectFiles("project-2", root, "target", 50);
+    expect(instrumentation.invocations()).toHaveLength(2);
+
+    now += 5_001;
+    await service.projectFiles("project-1", root, "query-is-not-a-git-argument", 50);
+    expect(instrumentation.invocations()).toEqual([
+      "ls-files --cached --others --exclude-standard -z",
+      "ls-files --cached --others --exclude-standard -z",
+      "ls-files --cached --others --exclude-standard -z",
+    ]);
+  });
+
   test("does not block the event loop while a Git command is running", async () => {
     const root = repository();
     const directory = mkdtempSync(join(tmpdir(), "local-pair-review-slow-git-"));

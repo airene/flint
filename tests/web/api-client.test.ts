@@ -111,6 +111,33 @@ describe("typed API client", () => {
 });
 
 describe("API endpoints", () => {
+  test("encodes project file queries, forwards cancellation, and parses the response contract", async () => {
+    let requestedUrl = "";
+    let requestedSignal: AbortSignal | null | undefined;
+    const client = createApiClient({
+      baseUrl: "http://127.0.0.1:3000",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input);
+        requestedSignal = init?.signal;
+        return Response.json({ files: ["src/a b+#?.ts"] });
+      },
+    });
+    const controller = new AbortController();
+
+    const result = await createApiEndpoints(client).listProjectFiles(
+      "project / one",
+      { q: "src/a b+#?.ts", limit: 12 },
+      controller.signal,
+    );
+
+    expect(requestedUrl).toBe("http://127.0.0.1:3000/api/projects/project%20%2F%20one/files?q=src%2Fa+b%2B%23%3F.ts&limit=12");
+    expect(requestedSignal).toBe(controller.signal);
+    expect(result).toEqual({ files: ["src/a b+#?.ts"] });
+
+    const malformed = createApiEndpoints(createApiClient({ fetcher: async () => Response.json({ files: [42] }) }));
+    await expect(malformed.listProjectFiles("project-1", { q: "" })).rejects.toBeInstanceOf(ApiClientError);
+  });
+
   test("accepts registry-shaped CLI status responses", async () => {
     const availability = {
       installed: true,
@@ -169,6 +196,7 @@ describe("API endpoints", () => {
     await api.listProjects();
     await api.createProject({ rootPath: "/work/project" });
     await api.getProject(projectId);
+    await api.listProjectFiles(projectId, { q: "src/app", limit: 7 });
     await api.updateProject(projectId, { name: "Renamed" });
     await api.deleteProject(projectId, { confirm: true });
     await api.listTasks(projectId);
@@ -210,6 +238,7 @@ describe("API endpoints", () => {
       "/api/projects",
       "/api/projects",
       "/api/projects/project%20%2F%20one",
+      "/api/projects/project%20%2F%20one/files",
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one",
       "/api/projects/project%20%2F%20one/tasks",
@@ -247,7 +276,8 @@ describe("API endpoints", () => {
       method: "POST",
       body: { developerProvider: "claude", reviewerProvider: "codex" },
     });
-    expect(calls[9]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
-    expect(calls[24]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
+    expect(calls[8]?.options?.query).toEqual({ q: "src/app", limit: 7 });
+    expect(calls[10]?.options).toMatchObject({ method: "DELETE", body: { confirm: true } });
+    expect(calls[25]?.options?.query).toEqual({ path: "src/a b+#?.ts" });
   });
 });
