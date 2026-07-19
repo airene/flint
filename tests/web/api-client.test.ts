@@ -216,6 +216,7 @@ describe("API endpoints", () => {
     });
     await api.getFeedbackDraft(taskId, "review-1");
     await api.saveFeedbackDraft(taskId, "review-1", { finalText: "Edited feedback" });
+    await api.listAttachments(taskId);
 
     expect(calls.map(({ path }) => path)).toEqual([
       "/api/system/settings",
@@ -243,6 +244,7 @@ describe("API endpoints", () => {
       "/api/tasks/task%20%2F%20one/feedback/preview",
       "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
       "/api/tasks/task%20%2F%20one/reviews/review-1/feedback-draft",
+      "/api/tasks/task%20%2F%20one/attachments",
     ]);
     expect(calls[1]?.options).toMatchObject({
       method: "POST",

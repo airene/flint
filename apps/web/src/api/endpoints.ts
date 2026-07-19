@@ -27,6 +27,7 @@ import {
   taskResponseSchema,
   taskMessageListResponseSchema,
   taskMessageResponseSchema,
+  taskAttachmentListResponseSchema,
   unfinishedTaskListResponseSchema,
   type CancelRunResponse,
   type ApprovalDecisionRequest,
@@ -68,6 +69,7 @@ import {
   type TaskResponse,
   type TaskMessageListResponse,
   type TaskMessageResponse,
+  type TaskAttachmentListResponse,
   type UnfinishedTaskListResponse,
   type UpdateFindingRequest,
 } from "@local-pair-review/shared";
@@ -104,6 +106,7 @@ export interface ApiEndpoints {
   getFeedbackDraft(taskId: string, reviewRunId: string): Promise<FeedbackDraftResponse>;
   saveFeedbackDraft(taskId: string, reviewRunId: string, input: SaveFeedbackDraftRequest): Promise<SaveFeedbackDraftResponse>;
   listMessages(taskId: string): Promise<TaskMessageListResponse>;
+  listAttachments(taskId: string): Promise<TaskAttachmentListResponse>;
   sendMessage(taskId: string, input: CreateTaskMessageRequest): Promise<TaskMessageResponse>;
   listApprovals(taskId: string): Promise<ApprovalListResponse>;
   decideApproval(approvalId: string, input: ApprovalDecisionRequest): Promise<ApprovalResponse>;
@@ -189,6 +192,7 @@ export function createApiEndpoints(client: ApiClient): ApiEndpoints {
       { method: "PUT", body: input },
     ),
     listMessages: (taskId) => client.request(`/api/tasks/${id(taskId)}/messages`, taskMessageListResponseSchema),
+    listAttachments: (taskId) => client.request(`/api/tasks/${id(taskId)}/attachments`, taskAttachmentListResponseSchema),
     sendMessage: (taskId, input) => client.request(`/api/tasks/${id(taskId)}/messages`, taskMessageResponseSchema, {
       method: "POST",
       body: input,

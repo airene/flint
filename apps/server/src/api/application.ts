@@ -51,7 +51,7 @@ import { ReviewService, type ReviewContextPort } from "../services/review.servic
 import { TaskService } from "../services/task.service";
 import { UnfinishedTaskService } from "../services/unfinished-task.service";
 import { ConversationService } from "../services/conversation.service";
-import { ApprovalService } from "../services/approval.service";
+import { ApprovalService, type ApprovalProviderControl } from "../services/approval.service";
 import { AttachmentClaimConflictError, DatabasePorts, PersistenceOwnershipError } from "./database-ports";
 import { CliUnavailableError, errorResponse, NotFoundError, RequestValidationError, RunConflictError, ServiceShuttingDownError, StaleSnapshotError } from "./errors";
 import { EventHub, type EventSocket } from "./event-hub";
@@ -65,6 +65,7 @@ export interface ApplicationOptions {
   claudeExecutable?: string;
   gitExecutable?: string;
   environment?: Readonly<Record<string, string | undefined>>;
+  approvalControls?: Partial<Record<Provider, ApprovalProviderControl>>;
 }
 
 export interface LocalPairReviewApplication {
@@ -230,7 +231,10 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }
 
   const approvals = new ApprovalService({
-    controls: { codex, claude },
+    controls: {
+      codex: options.approvalControls?.codex ?? codex,
+      claude: options.approvalControls?.claude ?? claude,
+    },
     persistence: ports,
     security: {
       async recordSecurityError(runId, securityError) {
@@ -254,7 +258,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const operation = (async () => {
       const before = await ports.getApproval(approvalId);
       const decided = await approvals.decide(approvalId, decision, reason);
-      if (before.status === "pending" && decided.status !== "pending") await publishApprovalEvent(decided);
+      if (before.status !== "resolved" && decided.status === "resolved") await publishApprovalEvent(decided);
       return decided;
     })();
     approvalDecisions.set(approvalId, operation);
@@ -690,6 +694,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
             throw error;
           }
         }
+      }
+
+      parameters = match(path, /^\/api\/tasks\/([^/]+)\/attachments$/);
+      if (parameters && method === "GET") {
+        const task = await requireTask(parameters[0]!);
+        return json(await ports.listTaskAttachments(task.id));
       }
 
       parameters = match(path, /^\/api\/tasks\/([^/]+)\/approvals$/);

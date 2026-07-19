@@ -275,6 +275,26 @@ test("interactive workflow records are strict and preserve explicit lifecycle st
     expiresAt: "2026-07-20T00:00:00.000Z",
     claimedAt: null,
   });
+  expectStrict("taskAttachmentMetadataSchema", {
+    id: "attachment_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    messageId: "message_1",
+    mediaType: "image/png",
+    sizeBytes: 128,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    claimedAt: "2026-07-19T00:00:01.000Z",
+  });
+  expect(getSchema("taskAttachmentListResponseSchema").safeParse([{
+    id: "attachment_1",
+    projectId: "project_1",
+    taskId: "task_1",
+    messageId: null,
+    mediaType: "image/png",
+    sizeBytes: 128,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    claimedAt: "2026-07-19T00:00:01.000Z",
+  }]).success).toBe(true);
   expectStrict("approvalRequestSchema", {
     id: "approval_1",
     projectId: "project_1",

@@ -345,6 +345,36 @@ describe("database schema policy", () => {
 });
 
 describe("interactive workflow persistence", () => {
+  test("preserves insertion FIFO for same-millisecond reverse-UUID messages and discovers queue-only conversations", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "FIFO", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database);
+    const message = (id: string): TaskMessage => ({
+      id,
+      projectId: project.id,
+      taskId: task.id,
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: id,
+      deliveryMode: "queue",
+      status: "queued",
+      createdAt: "2026-07-19T00:00:01.000Z",
+      updatedAt: "2026-07-19T00:00:01.000Z",
+      deliveredAt: null,
+      errorMessage: null,
+    });
+
+    await ports.createMessage(message("ffffffff-ffff-4fff-8fff-ffffffffffff"));
+    await ports.createMessage(message("00000000-0000-4000-8000-000000000000"));
+
+    expect((await ports.listMessages(task.id)).map(({ id }) => id)).toEqual([
+      "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "00000000-0000-4000-8000-000000000000",
+    ]);
+    expect(await ports.listOpenConversationTaskIds()).toEqual([task.id]);
+  });
+
   test("claims project-scoped attachment drafts once with their owning task message", async () => {
     const { database, projects, tasks: taskService } = services();
     const project = await projects.add(repository());
