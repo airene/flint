@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { ApprovalDecision, ApprovalRequest } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import { approvalCardDisplay, type ApprovalCardDecision } from "./approval-card";
 
 const props = defineProps<{ request: ApprovalRequest; error?: string | null }>();
@@ -9,6 +10,7 @@ const emit = defineEmits<{ decide: [decision: ApprovalCardDecision] }>();
 const resolving = ref(false);
 const denyReason = ref("");
 const display = computed(() => approvalCardDisplay(props.request, { resolving: resolving.value, error: props.error }));
+const { t } = useI18n();
 
 watch(() => props.error, (error) => {
   if (error) resolving.value = false;
@@ -32,20 +34,20 @@ function requestReason(): string | null { return props.request.reason; }
 <template>
   <article :class="['approval-card', display.state]" aria-live="polite">
     <header>
-      <strong>Approval required</strong>
-      <span class="badge">{{ display.state }}</span>
+      <strong>{{ t("approvals.required") }}</strong>
+      <span class="badge">{{ t(`approvals.state${display.state[0]!.toUpperCase()}${display.state.slice(1)}`) }}</span>
     </header>
     <p class="tool-name">{{ request.toolName }}</p>
     <p class="summary">{{ request.actionSummary }}</p>
     <p class="directory">{{ request.workingDirectory }}</p>
-    <p v-if="(display.state === 'denied' || display.state === 'retry') && display.reason" class="deny-reason">Reason: {{ display.reason }}</p>
-    <p v-if="display.state === 'expired'">This request expired when its run ended.</p>
+    <p v-if="(display.state === 'denied' || display.state === 'retry') && display.reason" class="deny-reason">{{ t("approvals.reasonValue", { reason: display.reason }) }}</p>
+    <p v-if="display.state === 'expired'">{{ t("approvals.expired") }}</p>
     <p v-if="display.error" class="error">{{ display.error }}</p>
     <template v-if="display.canDecide">
-      <label v-if="!display.lockedDecision" class="deny-reason-input">Reason (optional)<input v-model="denyReason" :disabled="resolving" placeholder="Why deny this request?"></label>
+      <label v-if="!display.lockedDecision" class="deny-reason-input">{{ t("approvals.reason") }}<input v-model="denyReason" :disabled="resolving" :placeholder="t('approvals.reasonPlaceholder')"></label>
       <div class="actions">
-        <button v-if="display.lockedDecision !== 'deny'" class="button" type="button" :disabled="resolving" @click="decide('allow_once')">{{ display.state === 'retry' ? 'Retry allow once' : 'Allow once' }}</button>
-        <button v-if="display.lockedDecision !== 'allow_once'" class="button ghost" type="button" :disabled="resolving" @click="decide('deny')">{{ display.state === 'retry' ? 'Retry deny' : 'Deny' }}</button>
+        <button v-if="display.lockedDecision !== 'deny'" class="button" type="button" :disabled="resolving" @click="decide('allow_once')">{{ t(display.state === "retry" ? "approvals.retryAllow" : "approvals.allowOnce") }}</button>
+        <button v-if="display.lockedDecision !== 'allow_once'" class="button ghost" type="button" :disabled="resolving" @click="decide('deny')">{{ t(display.state === "retry" ? "approvals.retryDeny" : "approvals.deny") }}</button>
       </div>
     </template>
   </article>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import type { BrowserNotificationController, NotificationPermissionState } from "../realtime/browser-notifications";
 import type { NotificationSettings } from "../stores/notification-settings";
 
@@ -9,6 +10,7 @@ const props = defineProps<{
 }>();
 
 const permission = ref<NotificationPermissionState>(props.controller.permission);
+const { t } = useI18n();
 const enabled = computed({
   get: () => props.settings.isEnabled(),
   set: (value: boolean) => props.settings.setEnabled(value),
@@ -20,20 +22,20 @@ async function requestPermission(): Promise<void> {
 </script>
 
 <template>
-  <section class="panel notification-settings" aria-label="Browser notifications">
+  <section class="panel notification-settings" :aria-label="t('notifications.heading')">
     <div>
-      <h2>Browser notifications</h2>
-      <p>Alert when a Developer or Reviewer run completes while this task is open in a background tab.</p>
+      <h2>{{ t("notifications.heading") }}</h2>
+      <p>{{ t("notifications.body") }}</p>
     </div>
     <label class="notification-toggle">
       <input v-model="enabled" type="checkbox">
-      <span>Notify for completed runs</span>
+      <span>{{ t("notifications.toggle") }}</span>
     </label>
     <div class="notification-permission">
-      <span>Permission: {{ permission }}</span>
-      <button v-if="permission === 'default'" type="button" class="button" @click="requestPermission">Enable browser notifications</button>
-      <small v-else-if="permission === 'denied'">Notifications are blocked in this browser.</small>
-      <small v-else>Browser notifications are allowed.</small>
+      <span>{{ t("notifications.permission", { permission: t(`notifications.permission${permission[0]!.toUpperCase()}${permission.slice(1)}`) }) }}</span>
+      <button v-if="permission === 'default'" type="button" class="button" @click="requestPermission">{{ t("notifications.enable") }}</button>
+      <small v-else-if="permission === 'denied'">{{ t("notifications.blocked") }}</small>
+      <small v-else>{{ t("notifications.allowed") }}</small>
     </div>
   </section>
 </template>

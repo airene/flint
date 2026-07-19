@@ -72,10 +72,10 @@ describe("completed interactive leaf integration", () => {
     expect(taskView).toContain(':connected="workspace.connected"');
     expect(taskView).not.toContain('class="context-strip panel"');
     expect(taskHeader).toContain('<dl class="task-context">');
-    expect(taskHeader).toContain('<dt>Base commit</dt>');
-    expect(taskHeader).toContain('<dt>{{ developerLabel }} session</dt>');
-    expect(taskHeader).toContain('<dt>Events</dt>');
-    expect(taskHeader).not.toContain('<dt>Repository</dt>');
+    expect(taskHeader).toContain('t("taskHeader.baseCommit")');
+    expect(taskHeader).toContain('t("taskHeader.session", { developer: developerLabel })');
+    expect(taskHeader).toContain('t("taskHeader.events")');
+    expect(taskHeader).not.toContain('taskHeader.repository');
     expect(taskHeader).toContain('.task-context{display:grid;');
   });
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { UnfinishedTaskSummary } from "@local-pair-review/shared";
-import { unfinishedTaskStatusLabel } from "../stores/unfinished-tasks";
+import { useI18n } from "vue-i18n";
+import { unfinishedTaskStatusKey, unfinishedTaskStatusLabel } from "../stores/unfinished-tasks";
 
 const props = defineProps<{
   tasks: readonly UnfinishedTaskSummary[];
@@ -8,6 +9,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ select: [task: UnfinishedTaskSummary] }>();
+const { t } = useI18n();
+
+function statusLabel(task: UnfinishedTaskSummary): string {
+  const key = unfinishedTaskStatusKey(task);
+  return key ? t(key) : unfinishedTaskStatusLabel(task);
+}
 
 function select(task: UnfinishedTaskSummary): void {
   emit("select", task);
@@ -15,7 +22,7 @@ function select(task: UnfinishedTaskSummary): void {
 </script>
 
 <template>
-  <ul class="unfinished-task-list" aria-label="Unfinished tasks">
+  <ul class="unfinished-task-list" :aria-label="t('navigation.unfinishedTasks')">
     <li v-for="task in props.tasks" :key="task.id">
       <button
         type="button"
@@ -27,7 +34,7 @@ function select(task: UnfinishedTaskSummary): void {
         <span class="task-content">
           <span class="repository">{{ task.projectName }}</span>
           <span class="title">{{ task.title }}</span>
-          <span class="status sr-only">Status: {{ unfinishedTaskStatusLabel(task) }}</span>
+          <span class="status sr-only">{{ t("accessibility.status", { status: statusLabel(task) }) }}</span>
         </span>
       </button>
     </li>

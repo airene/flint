@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type { MessageDeliveryMode, ReviewFinding, UpdateFindingRequest } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import ActivityPanel from "../components/ActivityPanel.vue";
 import AgentPanel from "../components/AgentPanel.vue";
 import ErrorBanner from "../components/ErrorBanner.vue";
@@ -21,6 +22,7 @@ const route = useRoute();
 const router = useRouter();
 const workspace = useTaskWorkspaceStore();
 const system = useSystemStore();
+const { t } = useI18n();
 const developerLabel = computed(() => system.providerLabel(workspace.task?.developerProvider));
 const reviewerLabel = computed(() => system.providerLabel(workspace.task?.reviewerProvider));
 const developerReady = computed(() => system.providerReady(workspace.task?.developerProvider));
@@ -40,7 +42,7 @@ const selectedIsFeedbackReview = computed(() => Boolean(
 ));
 const selectedRunTitle = computed(() => {
   const run = selectedRun.value;
-  if (!run) return "Run detail";
+  if (!run) return t("task.runDetail");
   const role = selectedHistoryEntry.value?.roleLabel ?? (run.runType === "reviewer" ? "Reviewer" : "Developer");
   const ordinal = selectedHistoryEntry.value?.roleOrdinal;
   return `${system.providerLabel(run.provider)} ${role}${ordinal ? ` #${ordinal}` : ""}`;
@@ -72,9 +74,9 @@ const composerImagesEnabled = computed(() => {
   return Boolean(descriptor?.capabilities?.[composerTargetRole.value === "reviewer" ? "reviewerResumeImage" : "developerResumeImage"]);
 });
 const composerDisabledReason = computed(() => {
-  if (workspace.task?.status === "completed") return "Completed tasks are read-only.";
-  if (composerTargetRole.value === "developer" && !workspace.task?.developerSessionId) return "Start Developer once to establish an exact session.";
-  if (!composerProvider.value || !system.providerReady(composerProvider.value)) return "The selected provider is unavailable.";
+  if (workspace.task?.status === "completed") return t("task.completedReadOnly");
+  if (composerTargetRole.value === "developer" && !workspace.task?.developerSessionId) return t("task.establishSession");
+  if (!composerProvider.value || !system.providerReady(composerProvider.value)) return t("task.providerUnavailable");
   return null;
 });
 const composerKey = computed(() => `${composerTargetRole.value}:${selectedFormalReview.value?.id ?? "developer"}:${composerGeneration.value}`);
@@ -113,10 +115,10 @@ const runtimeWarnings = computed(() => {
     const descriptor = system.providerById(provider);
     const availability = descriptor?.availability;
     if (availability?.installed && availability.authentication !== "unauthenticated") return [];
-    const detail = availability?.message ?? (!availability?.installed ? "executable not found" : "subscription login required");
+    const detail = availability?.message ?? t(!availability?.installed ? "task.executableNotFound" : "task.subscriptionLoginRequired");
     return [`${role} · ${descriptor?.label ?? provider}: ${detail}`];
   });
-  if (!system.gitReady) warnings.push(`Git: ${status.git.message ?? (!status.git.installed ? "executable not found" : "unavailable")}`);
+  if (!system.gitReady) warnings.push(t("task.gitWarning", { message: status.git.message ?? t(!status.git.installed ? "task.executableNotFound" : "common.unavailable") }));
   return warnings;
 });
 
@@ -175,14 +177,14 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
 
 async function completeTask(): Promise<void> {
   if (workspace.task?.status === "ready_for_review"
-    && !window.confirm("Complete this task without review? The completed task will become read-only.")) return;
+    && !window.confirm(t("task.completeWithoutReviewConfirm"))) return;
   await workspace.complete();
 }
 </script>
 
 <template>
   <div class="page task-page">
-    <div v-if="workspace.loading && !workspace.task" class="panel empty-state loading-task"><strong>Loading task workspace…</strong><span>Restoring persisted runs, findings and events.</span></div>
+    <div v-if="workspace.loading && !workspace.task" class="panel empty-state loading-task"><strong>{{ t("task.loadingWorkspace") }}</strong><span>{{ t("task.loadingWorkspaceBody") }}</span></div>
     <template v-else-if="workspace.task">
       <TaskHeader
         :task="workspace.task" :runs="workspace.runs" :busy="workspace.busy"
@@ -196,12 +198,12 @@ async function completeTask(): Promise<void> {
       <ErrorBanner :message="workspace.error" @dismiss="workspace.error = null" />
       <ErrorBanner :message="system.error?.message ?? null" @dismiss="system.clearError" />
       <div v-if="workspace.repositoryError" class="panel repository-warning">
-        <strong>Repository unavailable</strong>
-        <span>Task history remains available. {{ workspace.repositoryError }}</span>
+        <strong>{{ t("task.repositoryUnavailable") }}</strong>
+        <span>{{ t("task.taskHistoryAvailable", { error: workspace.repositoryError }) }}</span>
       </div>
       <div v-if="runtimeWarnings.length" class="panel runtime-warning">
-        <div><strong>Local CLI action required</strong><span v-for="warning in runtimeWarnings" :key="warning">{{ warning }}</span></div>
-        <RouterLink class="button" to="/settings">Open CLI Settings</RouterLink>
+        <div><strong>{{ t("task.localCliAction") }}</strong><span v-for="warning in runtimeWarnings" :key="warning">{{ warning }}</span></div>
+        <RouterLink class="button" to="/settings">{{ t("task.openCliSettings") }}</RouterLink>
       </div>
 
       <div class="run-workspace">
@@ -227,31 +229,31 @@ async function completeTask(): Promise<void> {
             @decide-approval="(approvalId, decision) => workspace.decideApproval(approvalId, decision)"
           />
         </div>
-        <div v-else class="panel empty-state run-detail-empty"><strong>No run selected</strong><span>Start an action to create the first run.</span></div>
+        <div v-else class="panel empty-state run-detail-empty"><strong>{{ t("task.noRunSelected") }}</strong><span>{{ t("task.noRunSelectedBody") }}</span></div>
       </div>
       <section v-if="conversationAvailable" class="panel conversation-panel">
         <header class="panel-header conversation-header">
           <div>
-            <h2 class="panel-title">Message {{ composerTargetRole === 'reviewer' ? `${reviewerLabel} Reviewer` : `${developerLabel} Developer` }}</h2>
-            <small v-if="selectedFormalReview">Exact Review session · {{ selectedFormalReview.externalSessionId }}</small>
-            <small v-else>Exact Developer session · {{ workspace.task.developerSessionId ?? 'not established' }}</small>
+            <h2 class="panel-title">{{ t("task.messageRole", { provider: composerTargetRole === "reviewer" ? reviewerLabel : developerLabel, role: composerTargetRole === "reviewer" ? "Reviewer" : "Developer" }) }}</h2>
+            <small v-if="selectedFormalReview">{{ t("task.exactReviewSession", { session: selectedFormalReview.externalSessionId }) }}</small>
+            <small v-else>{{ t("task.exactDeveloperSession", { session: workspace.task.developerSessionId ?? t("taskHeader.notEstablished") }) }}</small>
           </div>
-          <label class="delivery-mode">Delivery
+          <label class="delivery-mode">{{ t("task.delivery") }}
             <select v-model="deliveryMode" :disabled="Boolean(composerDisabledReason) || workspace.sendingMessage">
-              <option value="queue">Queue next turn</option>
-              <option value="interrupt">Interrupt same role</option>
+              <option value="queue">{{ t("task.queueNextTurn") }}</option>
+              <option value="interrupt">{{ t("task.interruptSameRole") }}</option>
             </select>
           </label>
         </header>
         <div v-if="initialAttachments.length || workspace.messages.length" class="message-list">
           <article v-if="initialAttachments.length" class="task-message attachment-history-entry">
-            <div><strong>Initial Task</strong><span>{{ initialAttachments.length }} {{ initialAttachments.length === 1 ? 'image' : 'images' }}</span></div>
+            <div><strong>{{ t("task.initialTask") }}</strong><span>{{ t("task.initialImageCount", { count: initialAttachments.length, label: t(initialAttachments.length === 1 ? "common.image" : "common.images") }) }}</span></div>
             <p>{{ initialAttachments.map((attachment) => `${attachment.mediaType.slice(6).toUpperCase()} · ${Math.max(1, Math.ceil(attachment.sizeBytes / 1024))} KB`).join(' · ') }}</p>
           </article>
           <article v-for="message in workspace.messages" :key="message.id" :class="['task-message', message.status]">
-            <div><strong>{{ message.targetRole === 'reviewer' ? 'Reviewer' : 'Developer' }}</strong><span>{{ message.status }}</span></div>
+            <div><strong>{{ message.targetRole === 'reviewer' ? 'Reviewer' : 'Developer' }}</strong><span>{{ t(`statuses.${message.status}`) }}</span></div>
             <p>{{ message.text }}</p>
-            <small v-if="attachmentSummary(message.id)" class="task-message-attachments">Images · {{ attachmentSummary(message.id) }}</small>
+            <small v-if="attachmentSummary(message.id)" class="task-message-attachments">{{ t("task.messageAttachments", { summary: attachmentSummary(message.id) }) }}</small>
             <small v-if="message.errorMessage">{{ message.errorMessage }}</small>
           </article>
         </div>
@@ -260,22 +262,22 @@ async function completeTask(): Promise<void> {
           :key="composerKey" v-model="composerText" :project-id="workspace.task.projectId"
           :upload-image="uploadAttachmentDraft" :disabled="Boolean(composerDisabledReason)"
           :submitting="workspace.sendingMessage"
-          :aria-label="`${composerTargetRole === 'reviewer' ? reviewerLabel : developerLabel} ${composerTargetRole} follow-up message`"
+          :aria-label="t('task.followupAria', { provider: composerTargetRole === 'reviewer' ? reviewerLabel : developerLabel, role: composerTargetRole })"
           :images-enabled="composerImagesEnabled"
-          :image-disabled-reason="`${composerProvider ?? 'Provider'} cannot receive images in this resumed session.`"
-          :rows="2" placeholder="Send a persisted follow-up…" @submit="sendMessage"
+          :image-disabled-reason="t('task.resumedImagesUnavailable', { provider: composerProvider ?? t('common.provider') })"
+          :rows="2" :placeholder="t('task.followupPlaceholder')" @submit="sendMessage"
         />
       </section>
     </template>
-    <div v-else class="panel empty-state"><strong>Task unavailable</strong><span>{{ workspace.error ?? 'The task could not be loaded.' }}</span></div>
+    <div v-else class="panel empty-state"><strong>{{ t("task.unavailable") }}</strong><span>{{ workspace.error ?? t("task.loadFailed") }}</span></div>
 
     <Teleport to="body">
       <div v-if="workspace.task" class="diff-drawer-root" :class="{ open: diffOpen }" :aria-hidden="!diffOpen">
         <div class="diff-drawer-backdrop" @click="diffOpen = false" />
         <aside class="diff-drawer-panel" role="dialog" aria-label="Git diff">
           <div class="diff-drawer-topbar">
-            <span class="diff-drawer-title">Working tree diff</span>
-            <button type="button" class="button ghost" @click="diffOpen = false">✕ Close</button>
+            <span class="diff-drawer-title">{{ t("task.workingTreeDiff") }}</span>
+            <button type="button" class="button ghost" @click="diffOpen = false">✕ {{ t("task.closeDiff") }}</button>
           </div>
           <div class="diff-drawer-body">
             <DiffPanel

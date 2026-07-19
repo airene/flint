@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, watch, watchEffect } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import type { UnfinishedTaskSummary } from "@local-pair-review/shared";
 import UnfinishedTaskList from "./components/UnfinishedTaskList.vue";
 import { apiEndpoints } from "./api/endpoints";
@@ -9,6 +10,7 @@ import { useProjectsStore } from "./stores/projects";
 import { useSystemStore } from "./stores/system";
 import { useThemeStore } from "./stores/theme";
 import { useUnfinishedTasksStore } from "./stores/unfinished-tasks";
+import { localeController } from "./i18n";
 
 const route = useRoute();
 const router = useRouter();
@@ -16,6 +18,10 @@ const projects = useProjectsStore();
 const system = useSystemStore();
 const unfinished = useUnfinishedTasksStore();
 const theme = useThemeStore();
+const { locale, t } = useI18n({ useScope: "global" });
+const localeIcon = computed(() => locale.value === "en" ? "文" : "A");
+const localeTitle = computed(() => t(locale.value === "en" ? "navigation.switchToChinese" : "navigation.switchToEnglish"));
+watchEffect(() => { document.title = t("brand.documentTitle"); });
 const currentProjectId = computed(() => String(route.params.projectId ?? ""));
 const currentTaskId = computed(() => String(route.params.taskId ?? ""));
 const hasCliIssue = computed(() => Boolean(system.cliStatus && (!system.allProvidersReady || !system.gitReady)));
@@ -96,22 +102,22 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <RouterLink class="brand" to="/projects">
         <span class="brand-mark">F</span>
-        <span><strong>Flint</strong><small>Local Pair Review</small></span>
+        <span><strong>Flint</strong><small>{{ t("brand.tagline") }}</small></span>
       </RouterLink>
 
-      <nav class="primary-nav" aria-label="Primary navigation">
+      <nav class="primary-nav" :aria-label="t('navigation.primary')">
         <RouterLink to="/projects" class="nav-item">
-          <span class="nav-icon">⌘</span> Projects
+          <span class="nav-icon">⌘</span> {{ t("navigation.projects") }}
         </RouterLink>
         <RouterLink to="/settings" class="nav-item">
-          <span class="nav-icon">⚙</span> CLI Settings
-          <span v-if="hasCliIssue" class="status-dot warning" title="CLI needs attention" />
+          <span class="nav-icon">⚙</span> {{ t("navigation.cliSettings") }}
+          <span v-if="hasCliIssue" class="status-dot warning" :title="t('navigation.cliNeedsAttention')" />
         </RouterLink>
       </nav>
 
       <div class="sidebar-section">
-        <div class="section-label"><span>Repositories</span><RouterLink to="/projects">＋</RouterLink></div>
-        <div v-if="projects.loading && !projects.projects.length" class="sidebar-empty">Loading…</div>
+        <div class="section-label"><span>{{ t("navigation.repositories") }}</span><RouterLink to="/projects">＋</RouterLink></div>
+        <div v-if="projects.loading && !projects.projects.length" class="sidebar-empty">{{ t("common.loading") }}</div>
         <RouterLink
           v-for="project in projects.projects"
           :key="project.id"
@@ -125,20 +131,29 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-section">
-        <div class="section-label"><span>Unfinished tasks</span><span class="section-count">{{ unfinished.tasks.length }}</span></div>
-        <div v-if="unfinished.loading && !unfinished.tasks.length" class="sidebar-empty">Loading…</div>
-        <div v-else-if="!unfinished.tasks.length" class="sidebar-empty">All caught up</div>
+        <div class="section-label"><span>{{ t("navigation.unfinishedTasks") }}</span><span class="section-count">{{ unfinished.tasks.length }}</span></div>
+        <div v-if="unfinished.loading && !unfinished.tasks.length" class="sidebar-empty">{{ t("common.loading") }}</div>
+        <div v-else-if="!unfinished.tasks.length" class="sidebar-empty">{{ t("navigation.allCaughtUp") }}</div>
         <UnfinishedTaskList :tasks="unfinished.tasks" :current-task-id="currentTaskId" @select="selectUnfinishedTask" />
       </div>
 
       <div class="sidebar-footer">
         <span class="local-pulse" />
-        <span>127.0.0.1 · local only</span>
+        <span>127.0.0.1 · {{ t("common.localOnly") }}</span>
+        <button
+          type="button"
+          class="theme-toggle locale-toggle"
+          :title="localeTitle"
+          :aria-label="localeTitle"
+          @click="localeController.toggle()"
+        >
+          {{ localeIcon }}
+        </button>
         <button
           type="button"
           class="theme-toggle"
-          :title="theme.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
-          :aria-label="theme.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+          :title="t(theme.theme === 'dark' ? 'navigation.switchToLight' : 'navigation.switchToDark')"
+          :aria-label="t(theme.theme === 'dark' ? 'navigation.switchToLight' : 'navigation.switchToDark')"
           @click="theme.toggle()"
         >
           {{ theme.theme === "dark" ? "☾" : "☀" }}

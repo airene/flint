@@ -9,6 +9,7 @@ import type {
 import { defineStore } from "pinia";
 import { ApiClientError } from "../api/client";
 import { apiEndpoints } from "../api/endpoints";
+import { translate } from "../i18n";
 
 function available(cli: AgentAvailability | undefined): boolean {
   return Boolean(cli?.installed && cli.authentication !== "unauthenticated");
@@ -21,7 +22,7 @@ function provider(settings: SettingsResponse | null, id: Provider | undefined): 
 function clientError(error: unknown): ApiClientError {
   return error instanceof ApiClientError
     ? error
-    : new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : "Unexpected client error.");
+    : new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : translate("errors.unexpectedClient"));
 }
 
 export const useSystemStore = defineStore("system", {

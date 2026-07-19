@@ -1,18 +1,20 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import type { RunHistoryEntry } from "./run-history";
 
 const props = defineProps<{ entries: RunHistoryEntry[]; selectedRunId: string | null }>();
 const emit = defineEmits<{ select: [runId: string] }>();
+const { locale, t } = useI18n();
 
 function timestampLabel(timestamp: string): string {
-  return timestamp ? new Date(timestamp).toLocaleString() : "Time pending";
+  return timestamp ? new Date(timestamp).toLocaleString(locale.value) : t("runHistory.timePending");
 }
 </script>
 
 <template>
-  <section class="panel run-history" aria-label="Run history">
+  <section class="panel run-history" :aria-label="t('runHistory.label')">
     <header class="panel-header">
-      <h2 class="panel-title">Run history <span class="badge">{{ entries.length }} runs</span></h2>
+      <h2 class="panel-title">{{ t("runHistory.label") }} <span class="badge">{{ t("runHistory.runs", { count: entries.length }) }}</span></h2>
     </header>
     <ol v-if="entries.length" class="run-history-list">
       <li v-for="entry in entries" :key="entry.runId">
@@ -21,15 +23,15 @@ function timestampLabel(timestamp: string): string {
           class="run-history-item"
           :class="{ selected: entry.runId === selectedRunId }"
           :aria-pressed="entry.runId === selectedRunId"
-          :aria-label="`Select ${entry.roleLabel} run ${entry.roleOrdinal}`"
+          :aria-label="t('runHistory.select', { role: entry.roleLabel, ordinal: entry.roleOrdinal })"
           @click="emit('select', entry.runId)"
         >
           <span class="run-history-main">
             <span class="run-history-heading">
               <span class="run-history-role">{{ entry.roleLabel }} #{{ entry.roleOrdinal }}</span>
-              <span :class="['badge', entry.status]">{{ entry.status }}</span>
+              <span :class="['badge', entry.status]">{{ t(`statuses.${entry.status}`) }}</span>
             </span>
-            <span class="run-history-prompt">{{ entry.promptSummary || "No prompt provided" }}</span>
+            <span class="run-history-prompt">{{ entry.promptSummary || t("runHistory.noPrompt") }}</span>
           </span>
           <span class="run-history-meta">
             <span>{{ entry.providerLabel }}</span>
@@ -38,7 +40,7 @@ function timestampLabel(timestamp: string): string {
         </button>
       </li>
     </ol>
-    <div v-else class="empty-state"><strong>No runs yet</strong><span>Start an action to build this task's history.</span></div>
+    <div v-else class="empty-state"><strong>{{ t("runHistory.emptyTitle") }}</strong><span>{{ t("runHistory.emptyBody") }}</span></div>
   </section>
 </template>
 

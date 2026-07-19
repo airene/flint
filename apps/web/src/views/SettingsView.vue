@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, watch } from "vue";
 import type { AgentAvailability, AgentRole, CliRecheckRequest, Provider } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import ErrorBanner from "../components/ErrorBanner.vue";
 import NotificationSettings from "../components/NotificationSettings.vue";
 import { browserNotificationController, browserNotificationSettings } from "../realtime/browser-notification-runtime";
 import { useSystemStore } from "../stores/system";
 
 const store = useSystemStore();
+const { t } = useI18n();
 const paths = reactive<Record<Provider | "git", string>>({ codex: "", claude: "", git: "" });
 const initialPaths = reactive<Record<Provider | "git", string>>({ codex: "", claude: "", git: "" });
 const roles = reactive<{ developerProvider: Provider; reviewerProvider: Provider }>({
@@ -17,17 +19,17 @@ const initialRoles = reactive({ ...roles });
 const hydrated = computed(() => Boolean(store.cliStatus) && !store.loading);
 
 const sourceLabels = {
-  environment: "environment",
-  user_config: "user config",
-  project_config: "project config",
-  managed_config: "managed config",
-  system_config: "system config",
-  session_override: "session override",
-  cli_default: "CLI default",
+  environment: "settings.sourceEnvironment",
+  user_config: "settings.sourceUserConfig",
+  project_config: "settings.sourceProjectConfig",
+  managed_config: "settings.sourceManagedConfig",
+  system_config: "settings.sourceSystemConfig",
+  session_override: "settings.sourceSessionOverride",
+  cli_default: "settings.sourceCliDefault",
 } as const;
 
 function sourceLabel(value: AgentAvailability | undefined): string {
-  return value?.modelSource ? sourceLabels[value.modelSource] : "source unavailable";
+  return t(value?.modelSource ? sourceLabels[value.modelSource] : "settings.sourceUnavailable");
 }
 
 function customPath(value: string | null | undefined): string {
@@ -43,13 +45,14 @@ function roleOptions(role: AgentRole) {
 }
 
 function optionLabel(provider: ReturnType<typeof roleOptions>[number]): string {
-  if (!provider.availability.installed) return `${provider.label} (unavailable)`;
-  if (provider.availability.authentication === "unauthenticated") return `${provider.label} (login required)`;
+  if (!provider.availability.installed) return t("settings.unavailableOption", { provider: provider.label });
+  if (provider.availability.authentication === "unauthenticated") return t("settings.loginRequiredOption", { provider: provider.label });
   return provider.label;
 }
 
 function roleDescription(roleList: AgentRole[]): string {
-  return `Available for ${roleList.join(" and ")} tasks.`;
+  const roles = roleList.map((role) => t(role === "developer" ? "settings.developerRole" : "settings.reviewerRole"));
+  return t("settings.availableFor", { roles: roles.join(t("settings.roleJoin")) });
 }
 
 watch(() => store.cliStatus, (status) => {
@@ -81,27 +84,27 @@ onMounted(() => { if (!store.cliStatus) void store.loadCliStatus().catch(() => u
 
 <template>
   <div class="page compact">
-    <header class="page-header"><div><div class="eyebrow">Local runtime</div><h1>CLI Settings</h1><p class="subtitle">Flint uses existing CLI subscription sessions. API keys are removed from every child process environment.</p></div><button class="button primary" :disabled="!hydrated || store.rechecking" @click="saveAndRecheck">{{ store.loading ? 'Loading…' : store.rechecking ? 'Saving & checking…' : 'Save & recheck' }}</button></header>
+    <header class="page-header"><div><div class="eyebrow">{{ t("settings.localRuntime") }}</div><h1>{{ t("settings.heading") }}</h1><p class="subtitle">{{ t("settings.description") }}</p></div><button class="button primary" :disabled="!hydrated || store.rechecking" @click="saveAndRecheck">{{ t(store.loading ? "settings.loading" : store.rechecking ? "settings.saving" : "settings.saveAndRecheck") }}</button></header>
     <ErrorBanner :message="store.error?.message ?? null" @dismiss="store.clearError" />
     <NotificationSettings :controller="browserNotificationController" :settings="browserNotificationSettings" />
     <section class="panel role-settings">
-      <div class="role-settings-copy"><h2>Task roles</h2><p>Defaults apply only when a new task is created. Existing tasks keep their provider and exact session.</p></div>
-      <label for="developer-provider"><span>Developer CLI</span><select id="developer-provider" v-model="roles.developerProvider" class="input" :disabled="!hydrated || store.rechecking"><option v-for="provider in roleOptions('developer')" :key="provider.id" :value="provider.id" :disabled="!ready(provider.availability)">{{ optionLabel(provider) }}</option></select></label>
-      <label for="reviewer-provider"><span>Reviewer CLI</span><select id="reviewer-provider" v-model="roles.reviewerProvider" class="input" :disabled="!hydrated || store.rechecking"><option v-for="provider in roleOptions('reviewer')" :key="provider.id" :value="provider.id" :disabled="!ready(provider.availability)">{{ optionLabel(provider) }}</option></select></label>
+      <div class="role-settings-copy"><h2>{{ t("settings.taskRoles") }}</h2><p>{{ t("settings.taskRolesBody") }}</p></div>
+      <label for="developer-provider"><span>{{ t("settings.developerCli") }}</span><select id="developer-provider" v-model="roles.developerProvider" class="input" :disabled="!hydrated || store.rechecking"><option v-for="provider in roleOptions('developer')" :key="provider.id" :value="provider.id" :disabled="!ready(provider.availability)">{{ optionLabel(provider) }}</option></select></label>
+      <label for="reviewer-provider"><span>{{ t("settings.reviewerCli") }}</span><select id="reviewer-provider" v-model="roles.reviewerProvider" class="input" :disabled="!hydrated || store.rechecking"><option v-for="provider in roleOptions('reviewer')" :key="provider.id" :value="provider.id" :disabled="!ready(provider.availability)">{{ optionLabel(provider) }}</option></select></label>
     </section>
     <div class="stack">
       <section v-for="entry in store.providers" :key="entry.id" class="panel cli-card">
         <div class="cli-icon">{{ entry.label.slice(0, 1) }}</div>
-        <div class="cli-main"><h2>{{ entry.label }}</h2><p>{{ roleDescription(entry.roles) }}</p><div class="runtime-metadata"><div><span>Model</span><code>{{ entry.availability.model ?? 'Unavailable' }}</code><small>{{ sourceLabel(entry.availability) }}</small></div><div v-if="entry.availability.reasoningEffort"><span>Reasoning effort</span><code>{{ entry.availability.reasoningEffort }}</code></div></div><label><span>Custom absolute path</span><input v-model="paths[entry.id]" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="entry.availability.executablePath ?? 'Use PATH lookup'" spellcheck="false"></label><small v-if="entry.availability.message" class="cli-message">{{ entry.availability.message }}</small><small v-if="entry.availability.authentication === 'unauthenticated'" class="login-help">Complete {{ entry.label }} subscription login in a terminal.</small></div>
-        <div class="cli-status"><span :class="['badge', ready(entry.availability) ? 'completed' : 'failed']">{{ !entry.availability.installed ? 'missing' : entry.availability.authentication }}</span><small>{{ entry.availability.version ?? 'Version unavailable' }}</small></div>
+        <div class="cli-main"><h2>{{ entry.label }}</h2><p>{{ roleDescription(entry.roles) }}</p><div class="runtime-metadata"><div><span>{{ t("settings.model") }}</span><code>{{ entry.availability.model ?? t("common.unavailable") }}</code><small>{{ sourceLabel(entry.availability) }}</small></div><div v-if="entry.availability.reasoningEffort"><span>{{ t("settings.reasoningEffort") }}</span><code>{{ entry.availability.reasoningEffort }}</code></div></div><label><span>{{ t("settings.customPath") }}</span><input v-model="paths[entry.id]" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="entry.availability.executablePath ?? t('settings.usePathLookup')" spellcheck="false"></label><small v-if="entry.availability.message" class="cli-message">{{ entry.availability.message }}</small><small v-if="entry.availability.authentication === 'unauthenticated'" class="login-help">{{ t("settings.completeLogin", { provider: entry.label }) }}</small></div>
+        <div class="cli-status"><span :class="['badge', ready(entry.availability) ? 'completed' : 'failed']">{{ t(!entry.availability.installed ? "settings.missing" : `settings.${entry.availability.authentication}`) }}</span><small>{{ entry.availability.version ?? t("common.versionUnavailable") }}</small></div>
       </section>
       <section class="panel cli-card">
         <div class="cli-icon">G</div>
-        <div class="cli-main"><h2>Git</h2><p>Repository status, snapshots and diff evidence.</p><label><span>Custom absolute path</span><input v-model="paths.git" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="store.cliStatus?.git.executablePath ?? 'Use PATH lookup'" spellcheck="false"></label><small v-if="store.cliStatus?.git.message" class="cli-message">{{ store.cliStatus.git.message }}</small></div>
-        <div class="cli-status"><span :class="['badge', store.gitReady ? 'completed' : 'failed']">{{ store.cliStatus?.git.installed ? 'ok' : 'missing' }}</span><small>{{ store.cliStatus?.git.version ?? 'Version unavailable' }}</small></div>
+        <div class="cli-main"><h2>Git</h2><p>{{ t("settings.gitBody") }}</p><label><span>{{ t("settings.customPath") }}</span><input v-model="paths.git" class="input path-input" :disabled="!hydrated || store.rechecking" :placeholder="store.cliStatus?.git.executablePath ?? t('settings.usePathLookup')" spellcheck="false"></label><small v-if="store.cliStatus?.git.message" class="cli-message">{{ store.cliStatus.git.message }}</small></div>
+        <div class="cli-status"><span :class="['badge', store.gitReady ? 'completed' : 'failed']">{{ t(store.cliStatus?.git.installed ? "settings.ok" : "settings.missing") }}</span><small>{{ store.cliStatus?.git.version ?? t("common.versionUnavailable") }}</small></div>
       </section>
     </div>
-    <section class="security-note panel"><div class="panel-body"><h2>Executable overrides</h2><p>Overrides must be absolute paths and are stored in the local <code>app_settings</code> table. Clear a field to return to the server default. Credentials and CLI config contents are never stored by Flint.</p></div></section>
+    <section class="security-note panel"><div class="panel-body"><h2>{{ t("settings.executableOverrides") }}</h2><p>{{ t("settings.executableOverridesBody") }}</p></div></section>
   </div>
 </template>
 

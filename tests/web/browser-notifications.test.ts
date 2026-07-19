@@ -13,7 +13,7 @@ function event(sequence: number, overrides: Partial<AgentEvent> = {}): AgentEven
   return { sequence, timestamp: "2026-07-19T00:00:00.000Z", projectId: "project_1", taskId: "task_1", runId: "run_1", source: "codex", type: "run_completed", payload: { finalMessage: "Finished work" }, ...overrides };
 }
 
-function setup(options: { hidden?: boolean; permission?: NotificationPermissionState; enabled?: boolean; taskId?: string | null } = {}) {
+function setup(options: { hidden?: boolean; permission?: NotificationPermissionState; enabled?: boolean; taskId?: string | null; copy?: unknown } = {}) {
   const storage = new MemoryStorage();
   const settings = new LocalNotificationSettings(storage);
   settings.setEnabled(options.enabled ?? true);
@@ -24,7 +24,7 @@ function setup(options: { hidden?: boolean; permission?: NotificationPermissionS
     requestPermission: async () => "granted" as const,
     create(title: string) { const result: BrowserNotification = { onclick: null }; notices.push({ title, notification: result }); return result; },
   };
-  const controller = new BrowserNotificationController({ settings, notification, document: { hidden: options.hidden ?? true }, navigation: { focusTask(taskId) { focused.push(taskId); } }, currentTaskId: () => options.taskId === undefined ? "task_1" : options.taskId });
+  const controller = new BrowserNotificationController({ settings, notification, document: { hidden: options.hidden ?? true }, navigation: { focusTask(taskId) { focused.push(taskId); } }, currentTaskId: () => options.taskId === undefined ? "task_1" : options.taskId, copy: options.copy } as ConstructorParameters<typeof BrowserNotificationController>[0]);
   return { controller, settings, notices, focused };
 }
 
@@ -90,5 +90,16 @@ describe("BrowserNotificationController", () => {
   test("does not treat an unknown role as a completion eligible for notification", () => {
     const { controller } = setup();
     expect(controller.consumePersistedEvent({ event: event(3), role: "system" as AgentRole })).toBe(false);
+  });
+
+  test("uses injected localized notification copy", () => {
+    const { controller, notices } = setup({
+      copy: {
+        completedBody: () => "Run 已成功完成。",
+        completedTitle: (role: string, taskTitle?: string) => `${role} Run 已完成${taskTitle ? ` — ${taskTitle}` : ""}`,
+      },
+    });
+    expect(controller.consumePersistedEvent({ event: event(9, { payload: {} }), role: "reviewer", taskTitle: "修复登录" })).toBe(true);
+    expect(notices[0]?.title).toBe("Reviewer Run 已完成 — 修复登录");
   });
 });

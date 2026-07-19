@@ -1,4 +1,5 @@
 import { apiErrorSchema, type ApiErrorCode } from "@local-pair-review/shared";
+import { translate } from "../i18n";
 
 export class ApiClientError extends Error {
   readonly status: number;
@@ -73,7 +74,7 @@ async function jsonPayload(response: Response): Promise<unknown> {
     throw new ApiClientError(
       response.status,
       "INTERNAL_ERROR",
-      "The server returned an invalid JSON response.",
+      translate("errors.invalidJson"),
     );
   }
 }
@@ -84,7 +85,7 @@ function transportError(error: unknown): never {
   throw new ApiClientError(
     0,
     "INTERNAL_ERROR",
-    error instanceof Error ? error.message : "Unable to reach the local server.",
+    error instanceof Error ? error.message : translate("errors.unreachable"),
   );
 }
 
@@ -131,7 +132,7 @@ export function createApiClient(options: CreateApiClientOptions = {}): ApiClient
         throw new ApiClientError(
           response.status,
           "INTERNAL_ERROR",
-          `The local server returned HTTP ${response.status}.`,
+          translate("errors.http", { status: response.status }),
         );
       }
 
@@ -140,7 +141,7 @@ export function createApiClient(options: CreateApiClientOptions = {}): ApiClient
         throw new ApiClientError(
           response.status,
           "INTERNAL_ERROR",
-          "The server response did not match the shared API contract.",
+          translate("errors.invalidContract"),
           parsed.error.issues,
         );
       }

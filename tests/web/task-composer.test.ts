@@ -20,8 +20,8 @@ describe("TaskComposer", () => {
     expect(composer).toContain("function retry(localId: string): void");
     expect(composer).toContain("void upload(attachment, attachment.file)");
     expect(composer).toContain('emit("submit", { text: props.modelValue, attachmentIds: readyAttachmentIds.value })');
-    expect(strip).toContain("Uploading {{ attachment.progress }}%");
-    expect(strip).toContain("Upload failed.");
+    expect(strip).toContain('t("attachments.uploading", { progress: attachment.progress })');
+    expect(strip).toContain('t("attachments.failed")');
   });
 
   test("blocks submission until every attachment is ready and fences repeated submits synchronously", () => {
@@ -29,14 +29,14 @@ describe("TaskComposer", () => {
     expect(composer).toContain("submissionLocked.value = true");
     expect(composer).toContain("props.submitting || submissionLocked.value || hasBlockedAttachment.value");
     expect(composer).toContain("submitting?: boolean");
-    expect(composer).toContain("Sending…");
+    expect(composer).toContain('t("common.sending")');
   });
 
   test("shows a capability reason and limits a composed message to four images", () => {
     expect(composer).toContain('v-if="!imagesEnabled"');
-    expect(composer).toContain("{{ imageDisabledReason }}");
+    expect(composer).toContain('imageDisabledReason ?? t("attachments.unsupported")');
     expect(composer).toContain("4 - attachments.value.length");
-    expect(composer).toContain("{{ attachments.length }}/4 images");
+    expect(composer).toContain('t("attachments.count", { count: attachments.length })');
     expect(composer).toContain('class="composer-attachment-status"');
     expect(composer).not.toContain('<p v-if="!imagesEnabled" class="attachment-capability"');
   });

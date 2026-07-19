@@ -1,5 +1,6 @@
 import { BrowserNotificationController, type BrowserNotificationAdapter } from "./browser-notifications";
 import { LocalNotificationSettings } from "../stores/notification-settings";
+import { translate } from "../i18n";
 
 const notificationAdapter: BrowserNotificationAdapter = {
   get permission() {
@@ -32,5 +33,12 @@ export const browserNotificationController = new BrowserNotificationController({
     if (typeof window === "undefined") return null;
     const match = /^\/tasks\/([^/]+)$/u.exec(window.location.pathname);
     return match?.[1] ? decodeURIComponent(match[1]) : null;
+  },
+  copy: {
+    completedBody: () => translate("notifications.completedBody"),
+    completedTitle: (role, taskTitle) => translate(
+      taskTitle ? "notifications.completedTaskTitle" : "notifications.completedTitle",
+      taskTitle ? { role, task: taskTitle } : { role },
+    ),
   },
 });

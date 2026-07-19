@@ -5,6 +5,7 @@ import {
   type AgentEventType,
   type WebSocketSubscribe,
 } from "@local-pair-review/shared";
+import { translate } from "../i18n";
 
 export interface TaskEventSocketMessage {
   data: unknown;
@@ -157,22 +158,22 @@ export class TaskEventController {
 
   private receive(rawMessage: unknown): void {
     if (typeof rawMessage !== "string") {
-      this.reportError(new Error("Task event message must be JSON text"));
+      this.reportError(new Error(translate("errors.taskEventJsonText")));
       return;
     }
 
     let message: unknown;
     try {
       message = JSON.parse(rawMessage);
-    } catch (error) {
-      this.reportError(error);
+    } catch {
+      this.reportError(new Error(translate("errors.taskEventInvalidJson")));
       return;
     }
 
     if (typeof message === "object" && message !== null && "action" in message && message.action === "subscribed") {
       const subscribed = webSocketSubscribedMessageSchema.safeParse(message);
       if (!subscribed.success || subscribed.data.taskId !== this.taskId) {
-        this.reportError(new Error("Invalid task subscription acknowledgement"));
+        this.reportError(new Error(translate("errors.taskSubscriptionInvalid")));
         return;
       }
       this.retryAttempt = 0;
@@ -182,7 +183,7 @@ export class TaskEventController {
 
     const parsed = webSocketEventMessageSchema.safeParse(message);
     if (!parsed.success) {
-      this.reportError(new Error("Invalid task event message"));
+      this.reportError(new Error(translate("errors.taskEventInvalid")));
       return;
     }
 

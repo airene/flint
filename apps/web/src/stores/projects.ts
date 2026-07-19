@@ -7,6 +7,7 @@ import type {
 import { defineStore } from "pinia";
 import { ApiClientError } from "../api/client";
 import { apiEndpoints } from "../api/endpoints";
+import { translate } from "../i18n";
 
 export interface PendingDirtyTask {
   projectId: string;
@@ -17,7 +18,7 @@ export interface PendingDirtyTask {
 function clientError(error: unknown): ApiClientError {
   return error instanceof ApiClientError
     ? error
-    : new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : "Unexpected client error.");
+    : new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : translate("errors.unexpectedClient"));
 }
 
 function dirtyWorkingTreeFiles(error: ApiClientError): string[] | null {

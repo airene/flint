@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { AgentRun, Task } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 
 const props = defineProps<{
   task: Task;
@@ -16,13 +17,14 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ develop: []; review: []; cancel: [runId: string]; complete: []; "open-diff": [] }>();
 const barEl = ref<HTMLElement | null>(null);
+const { t } = useI18n();
 const activeRun = computed(() => props.runs.find((run) => run.status === "queued" || run.status === "running") ?? null);
 const activeRunLabel = computed(() => activeRun.value?.runType === "reviewer" ? props.reviewerLabel : props.developerLabel);
 const statusClass = computed(() => props.task.status === "ready_for_review" || props.task.status === "completed" ? "ready"
   : props.task.status === "developing" || props.task.status === "fixing" ? "running"
     : props.task.status === "reviewing" ? "reviewing"
       : props.task.status === "waiting_for_human" ? "waiting" : "");
-const statusLabel = computed(() => props.task.status === "fixing" ? "running" : props.task.status.replaceAll("_", " "));
+const statusLabel = computed(() => t(`statuses.${props.task.status}`));
 const hasActions = computed(() => props.task.status === "draft"
   || props.task.status === "ready_for_review"
   || props.task.status === "waiting_for_human"
@@ -53,19 +55,19 @@ onBeforeUnmount(() => {
       <p class="subtitle">{{ task.originalPrompt }}</p>
     </div>
     <dl class="task-context">
-      <div><dt>Base commit</dt><dd><code>{{ task.baseCommit.slice(0, 12) }}</code></dd></div>
-      <div><dt>{{ developerLabel }} session</dt><dd><code>{{ task.developerSessionId?.slice(0, 20) ?? "not established" }}</code></dd></div>
-      <div><dt>Events</dt><dd><code>{{ eventCount }} · {{ connected ? "live" : "reconnecting" }}</code></dd></div>
+      <div><dt>{{ t("taskHeader.baseCommit") }}</dt><dd><code>{{ task.baseCommit.slice(0, 12) }}</code></dd></div>
+      <div><dt>{{ t("taskHeader.session", { developer: developerLabel }) }}</dt><dd><code>{{ task.developerSessionId?.slice(0, 20) ?? t("taskHeader.notEstablished") }}</code></dd></div>
+      <div><dt>{{ t("taskHeader.events") }}</dt><dd><code>{{ eventCount }} · {{ t(connected ? "taskHeader.live" : "taskHeader.reconnecting") }}</code></dd></div>
     </dl>
   </header>
   <Teleport to="body">
     <div v-if="hasActions" ref="barEl" class="task-action-bar">
       <div class="button-row task-actions">
-        <button v-if="task.status === 'draft'" class="button primary" :disabled="busy || !developerReady" @click="emit('develop')">Start {{ developerLabel }} development</button>
-        <button v-if="task.status === 'ready_for_review' || task.status === 'waiting_for_human'" class="button primary" :disabled="busy || !reviewerReady" @click="emit('review')">Start {{ reviewerLabel }} review</button>
-        <button v-if="task.status === 'ready_for_review'" class="button" :disabled="busy" @click="emit('complete')">Complete without review</button>
-        <button v-if="task.status === 'waiting_for_human'" class="button" :disabled="busy" @click="emit('complete')">Mark complete</button>
-        <button v-if="activeRun" class="button danger" :disabled="busy" @click="emit('cancel', activeRun.id)">Cancel {{ activeRunLabel }}</button>
+        <button v-if="task.status === 'draft'" class="button primary" :disabled="busy || !developerReady" @click="emit('develop')">{{ t("taskHeader.startDeveloper", { developer: developerLabel }) }}</button>
+        <button v-if="task.status === 'ready_for_review' || task.status === 'waiting_for_human'" class="button primary" :disabled="busy || !reviewerReady" @click="emit('review')">{{ t("taskHeader.startReview", { reviewer: reviewerLabel }) }}</button>
+        <button v-if="task.status === 'ready_for_review'" class="button" :disabled="busy" @click="emit('complete')">{{ t("taskHeader.completeWithoutReview") }}</button>
+        <button v-if="task.status === 'waiting_for_human'" class="button" :disabled="busy" @click="emit('complete')">{{ t("taskHeader.markComplete") }}</button>
+        <button v-if="activeRun" class="button danger" :disabled="busy" @click="emit('cancel', activeRun.id)">{{ t("taskHeader.cancelRun", { role: activeRunLabel }) }}</button>
       </div>
     </div>
   </Teleport>

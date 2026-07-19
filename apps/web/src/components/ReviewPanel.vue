@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { reviewResultSchema, type AgentRun, type FindingSelectionMode, type ReviewFinding } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import { displayFindingsForRun } from "./review-display";
 
 const props = defineProps<{ run: AgentRun | null; findings: ReviewFinding[]; reviewerLabel: string; busy?: boolean; readOnly?: boolean; stale?: boolean }>();
@@ -19,14 +20,15 @@ const result = computed(() => {
   const parsed = reviewResultSchema.safeParse(props.run?.structuredOutput);
   return parsed.success ? parsed.data : null;
 });
+const { t } = useI18n();
 </script>
 
 <template>
   <section class="panel review-panel">
     <header class="panel-header">
-      <h2 class="panel-title">{{ reviewerLabel }} Review</h2>
+      <h2 class="panel-title">{{ t("review.heading", { reviewer: reviewerLabel }) }}</h2>
       <span v-if="run" :class="['badge', run.reviewParseStatus === 'failed' ? 'failed' : run.status === 'completed' ? 'completed' : 'reviewing']">
-        {{ run.reviewParseStatus === 'failed' ? 'parse failed' : run.status }}
+        {{ run.reviewParseStatus === 'failed' ? t("review.parseFailed") : t(`statuses.${run.status}`) }}
       </span>
     </header>
     <template v-if="run">
@@ -35,33 +37,33 @@ const result = computed(() => {
         <div v-if="!readOnly" class="button-row">
           <button class="text-action" @click="emit('selectMode', 'P0')">P0</button>
           <button class="text-action" @click="emit('selectMode', 'P0_P1')">P0+P1</button>
-          <button class="text-action" @click="emit('selectMode', 'all')">All</button>
-          <button class="text-action" @click="emit('selectMode', 'none')">None</button>
+          <button class="text-action" @click="emit('selectMode', 'all')">{{ t("common.all") }}</button>
+          <button class="text-action" @click="emit('selectMode', 'none')">{{ t("common.none") }}</button>
         </div>
       </div>
       <div v-if="result" class="review-result">
-        <span :class="['badge', result.verdict === 'pass' ? 'completed' : 'waiting']">{{ result.verdict.replaceAll('_', ' ') }}</span>
+        <span :class="['badge', result.verdict === 'pass' ? 'completed' : 'waiting']">{{ t(result.verdict === "pass" ? "review.verdictPass" : "review.verdictChangesSuggested") }}</span>
         <p>{{ result.summary }}</p>
       </div>
-      <div v-if="stale" class="stale-review"><strong>Snapshot changed during review.</strong> Findings are preserved, but confirm the current diff before sending feedback.</div>
-      <div v-if="run.reviewParseStatus === 'failed'" class="parse-warning">Structured output could not be parsed. The raw reviewer response remains available in the {{ reviewerLabel }} panel.</div>
+      <div v-if="stale" class="stale-review"><strong>{{ t("review.snapshotChanged") }}</strong> {{ t("review.snapshotChangedBody") }}</div>
+      <div v-if="run.reviewParseStatus === 'failed'" class="parse-warning">{{ t("review.parseWarning", { reviewer: reviewerLabel }) }}</div>
       <div v-if="displayFindings.length" class="finding-list">
         <article v-for="finding in displayFindings" :key="finding.id" :class="['finding', { dismissed: finding.dismissed }]">
           <div class="finding-top">
             <label class="finding-check"><input type="checkbox" :checked="finding.selected" :disabled="readOnly || finding.dismissed || busy" @change="emit('updateFinding', finding.id, { selected: ($event.target as HTMLInputElement).checked })"><span :class="['badge', finding.severity.toLowerCase()]">{{ finding.severity }}</span></label>
-            <button class="location mono" @click="emit('jumpToFinding', finding)">{{ finding.file ?? "general" }}<template v-if="finding.startLine">:{{ finding.startLine }}</template></button>
+            <button class="location mono" @click="emit('jumpToFinding', finding)">{{ finding.file ?? t("review.general") }}<template v-if="finding.startLine">:{{ finding.startLine }}</template></button>
           </div>
           <h3>{{ finding.title }}</h3>
           <p>{{ finding.description }}</p>
-          <div class="suggestion"><strong>Suggested</strong>{{ finding.suggestion }}</div>
-          <input class="note-input" :value="finding.userNote ?? ''" :disabled="readOnly" placeholder="Add a human note…" @change="emit('updateFinding', finding.id, { userNote: ($event.target as HTMLInputElement).value || null })">
-          <button v-if="!readOnly" class="dismiss-action" @click="emit('updateFinding', finding.id, { dismissed: !finding.dismissed, selected: false })">{{ finding.dismissed ? "Restore" : "Dismiss" }}</button>
+          <div class="suggestion"><strong>{{ t("review.suggested") }}</strong>{{ finding.suggestion }}</div>
+          <input class="note-input" :value="finding.userNote ?? ''" :disabled="readOnly" :placeholder="t('review.notePlaceholder')" @change="emit('updateFinding', finding.id, { userNote: ($event.target as HTMLInputElement).value || null })">
+          <button v-if="!readOnly" class="dismiss-action" @click="emit('updateFinding', finding.id, { dismissed: !finding.dismissed, selected: false })">{{ t(finding.dismissed ? "review.restore" : "review.dismiss") }}</button>
         </article>
       </div>
-      <div v-else-if="run.status === 'completed' && run.reviewParseStatus !== 'failed'" class="empty-state"><strong>No findings</strong><span>{{ reviewerLabel }} did not report actionable issues.</span></div>
-      <div v-else class="empty-state"><strong>Review in progress</strong><span>Findings will appear after structured output is parsed.</span></div>
+      <div v-else-if="run.status === 'completed' && run.reviewParseStatus !== 'failed'" class="empty-state"><strong>{{ t("review.noFindings") }}</strong><span>{{ t("review.noFindingsBody", { reviewer: reviewerLabel }) }}</span></div>
+      <div v-else class="empty-state"><strong>{{ t("review.inProgress") }}</strong><span>{{ t("review.inProgressBody") }}</span></div>
     </template>
-    <div v-else class="empty-state"><strong>No review yet</strong><span>Start a read-only {{ reviewerLabel }} review when development is ready.</span></div>
+    <div v-else class="empty-state"><strong>{{ t("review.noReview") }}</strong><span>{{ t("review.noReviewBody", { reviewer: reviewerLabel }) }}</span></div>
   </section>
 </template>
 

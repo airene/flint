@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentEvent, AgentRun } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import FinalResponse from "./FinalResponse.vue";
 
 const props = defineProps<{
@@ -8,6 +9,7 @@ const props = defineProps<{
   run: AgentRun;
   events: AgentEvent[];
 }>();
+const { locale, t } = useI18n();
 
 const messages = computed(() => props.events.filter((event) => (
   event.runId === props.run.id
@@ -36,30 +38,30 @@ function eventText(event: AgentEvent): string {
   <section class="panel agent-panel">
     <header class="panel-header">
       <h2 class="panel-title"><span :class="['agent-orb', run.provider]" />{{ title }}</h2>
-      <span :class="['badge', run.status === 'completed' ? 'completed' : run.status === 'running' ? 'running' : run.status]">{{ run.status }}</span>
+      <span :class="['badge', run.status === 'completed' ? 'completed' : run.status === 'running' ? 'running' : run.status]">{{ t(`statuses.${run.status}`) }}</span>
     </header>
     <div class="panel-body agent-summary">
       <div class="run-meta mono">
-        <span>{{ run.runType }}</span><span>·</span><span>{{ run.provider }}</span><span>·</span><span>{{ run.externalSessionId ?? "session pending" }}</span>
+        <span>{{ run.runType }}</span><span>·</span><span>{{ run.provider }}</span><span>·</span><span>{{ run.externalSessionId ?? t("agent.sessionPending") }}</span>
       </div>
       <div v-if="!['queued', 'running'].includes(run.status)" class="terminal-meta mono">
-        <span>exit {{ run.exitCode ?? "n/a" }}</span><span>·</span><span>{{ run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString() : run.status }}</span>
+        <span>{{ t("agent.exit", { code: run.exitCode ?? t("agent.notAvailable") }) }}</span><span>·</span><span>{{ run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString(locale) : t(`statuses.${run.status}`) }}</span>
       </div>
       <div class="prompt-block">
-        <span class="mini-label">Prompt</span>
+        <span class="mini-label">{{ t("agent.prompt") }}</span>
         <p>{{ run.prompt }}</p>
       </div>
       <div v-if="run.finalMessage" class="message-block">
-        <span class="mini-label">Final response</span>
+        <span class="mini-label">{{ t("agent.finalResponse") }}</span>
         <FinalResponse :content="run.finalMessage" />
       </div>
       <div v-if="run.errorMessage" class="message-block error-text">
-        <span class="mini-label">Error · exit {{ run.exitCode ?? "?" }}</span>
+        <span class="mini-label">{{ t("agent.errorExit", { code: run.exitCode ?? "?" }) }}</span>
         <p>{{ run.errorMessage }}</p>
-        <p v-if="permissionBlocked" class="permission-help">Claude developer runs use acceptEdits, which does not automatically authorize Bash. Run the blocked command manually or adjust the task instructions.</p>
+        <p v-if="permissionBlocked" class="permission-help">{{ t("agent.permissionHelp") }}</p>
       </div>
       <details v-if="messages.length" class="event-details">
-        <summary>{{ messages.length }} recent stream events</summary>
+        <summary>{{ t("agent.recentEvents", { count: messages.length }) }}</summary>
         <div class="event-lines mono">
           <div v-for="event in messages" :key="`${event.taskId}:${event.sequence}`" class="event-line">
             <span>{{ event.sequence }}</span><span>{{ event.type }}</span><code>{{ eventText(event) }}</code>

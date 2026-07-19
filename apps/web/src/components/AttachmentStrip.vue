@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+
 export type ComposerAttachmentStatus = "uploading" | "ready" | "failed";
 
 export interface ComposerAttachment {
@@ -21,20 +23,21 @@ const emit = defineEmits<{
   remove: [localId: string];
   retry: [localId: string];
 }>();
+const { t } = useI18n();
 </script>
 
 <template>
-  <ul v-if="attachments.length" class="attachment-strip" aria-label="Attached images">
+  <ul v-if="attachments.length" class="attachment-strip" :aria-label="t('attachments.label')">
     <li v-for="attachment in attachments" :key="attachment.localId" class="attachment-card">
       <img :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview">
       <div class="attachment-meta">
         <span class="attachment-name">{{ attachment.name }}</span>
-        <span v-if="attachment.status === 'uploading'" class="attachment-status">Uploading {{ attachment.progress }}%</span>
-        <span v-else-if="attachment.status === 'failed'" class="attachment-status attachment-error">{{ attachment.error ?? 'Upload failed.' }}</span>
-        <span v-else class="attachment-status">Ready</span>
+        <span v-if="attachment.status === 'uploading'" class="attachment-status">{{ t("attachments.uploading", { progress: attachment.progress }) }}</span>
+        <span v-else-if="attachment.status === 'failed'" class="attachment-status attachment-error">{{ attachment.error ?? t("attachments.failed") }}</span>
+        <span v-else class="attachment-status">{{ t("attachments.ready") }}</span>
       </div>
-      <button v-if="attachment.status === 'failed'" type="button" class="attachment-action" :disabled="disabled" @click="emit('retry', attachment.localId)">Retry</button>
-      <button type="button" class="attachment-action" :disabled="disabled" :aria-label="`Remove ${attachment.name}`" @click="emit('remove', attachment.localId)">Remove</button>
+      <button v-if="attachment.status === 'failed'" type="button" class="attachment-action" :disabled="disabled" @click="emit('retry', attachment.localId)">{{ t("attachments.retry") }}</button>
+      <button type="button" class="attachment-action" :disabled="disabled" :aria-label="t('attachments.removeNamed', { name: attachment.name })" @click="emit('remove', attachment.localId)">{{ t("attachments.remove") }}</button>
     </li>
   </ul>
 </template>

@@ -60,6 +60,12 @@ GIT_EXECUTABLE=/absolute/path/to/git
 
 这些路径也可以在 **CLI 设置**中保存并重新检查。通过 UI 设置的路径会经过绝对路径校验，并持久化到本地 `app_settings` 表中；清空字段即可恢复启动时的默认值。打包时可以使用 `LOCAL_PAIR_REVIEW_WEB_ROOT` 覆盖构建后的 `apps/web/dist` 目录。
 
+### 界面语言
+
+Web UI 使用 `vue-i18n` 提供英文和简体中文，默认及 fallback 语言均为英文。侧栏底部、主题切换旁的语言图标可即时切换；选择会以 `flint.locale` 保存在浏览器 `localStorage` 中，并在刷新后恢复。
+
+国际化只覆盖前端界面文案。CLI、Developer、Reviewer、Task、Run、Git Diff、Session 等必要技术术语会保留；Server 返回消息、Agent 输出、Activity 原始内容和仓库内容按原文展示。
+
 ### 任务角色
 
 **CLI 设置**提供 `Developer CLI` 与 `Reviewer CLI` 两个全局默认值。当前 Codex 和 Claude 都支持两个角色，默认组合为 Codex Developer / Claude Reviewer，也允许同一个 provider 同时担任两个角色。

@@ -101,6 +101,28 @@ test("shows the configured CLI models on Settings", async ({ page }) => {
   await expect(page.getByText("default", { exact: true })).toBeVisible();
 });
 
+test("defaults to English and persists the Chinese language toggle", async ({ page }) => {
+  await page.goto("/projects");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Switch to Chinese" }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page).toHaveTitle("Flint · 本地协作审查");
+  await expect(page.getByRole("heading", { name: "仓库" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("flint.locale"))).toBe("zh-CN");
+
+  await page.goto("/tasks/missing-i18n-task");
+  await expect(page.getByText("Task 不可用", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.getByRole("button", { name: "切换到英文" })).toBeVisible();
+  await page.getByRole("button", { name: "切换到英文" }).click();
+  await expect(page.getByText("Task unavailable", { exact: true })).toBeVisible();
+  await page.goto("/projects");
+  await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible();
+});
+
 test("saves registry-driven role defaults and snapshots dynamic task panel titles", async ({ page, request }) => {
   try {
     await page.goto("/settings");

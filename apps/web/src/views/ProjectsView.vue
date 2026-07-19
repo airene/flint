@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import ErrorBanner from "../components/ErrorBanner.vue";
 import { useProjectsStore } from "../stores/projects";
 
 const store = useProjectsStore();
 const router = useRouter();
 const rootPath = ref("");
+const { locale, t } = useI18n();
 
 async function addProject(): Promise<void> {
   if (!rootPath.value.trim()) return;
@@ -21,24 +23,24 @@ async function addProject(): Promise<void> {
 <template>
   <div class="page compact">
     <header class="page-header">
-      <div><div class="eyebrow">Workspace</div><h1>Repositories</h1><p class="subtitle">Register local Git repositories. Flint never moves, deletes, commits, or pushes your files.</p></div>
+      <div><div class="eyebrow">{{ t("projects.workspace") }}</div><h1>{{ t("projects.heading") }}</h1><p class="subtitle">{{ t("projects.description") }}</p></div>
     </header>
     <ErrorBanner :message="store.error?.message ?? null" @dismiss="store.clearError" />
     <section class="panel add-project">
       <div class="panel-body add-row">
-        <div class="field grow"><label for="root-path">Git repository path</label><input id="root-path" v-model="rootPath" class="input mono" placeholder="/absolute/path/to/repository" @keyup.enter="addProject"></div>
-        <button class="button primary" :disabled="store.loading || !rootPath.trim()" @click="addProject">Register repository</button>
+        <div class="field grow"><label for="root-path">{{ t("projects.path") }}</label><input id="root-path" v-model="rootPath" class="input mono" :placeholder="t('projects.pathPlaceholder')" @keyup.enter="addProject"></div>
+        <button class="button primary" :disabled="store.loading || !rootPath.trim()" @click="addProject">{{ t("projects.register") }}</button>
       </div>
     </section>
 
     <div v-if="store.projects.length" class="project-grid">
       <RouterLink v-for="project in store.projects" :key="project.id" :to="`/projects/${project.id}`" class="project-card panel">
         <div class="project-letter">{{ project.name.slice(0, 1).toUpperCase() }}</div>
-        <div class="project-copy"><h2>{{ project.name }}</h2><p class="mono truncate">{{ project.rootPath }}</p><span>{{ project.lastOpenedAt ? `Opened ${new Date(project.lastOpenedAt).toLocaleDateString()}` : 'Not opened yet' }}</span></div>
+        <div class="project-copy"><h2>{{ project.name }}</h2><p class="mono truncate">{{ project.rootPath }}</p><span>{{ project.lastOpenedAt ? t("projects.opened", { date: new Date(project.lastOpenedAt).toLocaleDateString(locale) }) : t("projects.notOpened") }}</span></div>
         <span class="card-arrow">→</span>
       </RouterLink>
     </div>
-    <section v-else class="panel empty-state repositories-empty"><strong>No repositories registered</strong><span>Add an absolute path to a local Git repository to begin.</span></section>
+    <section v-else class="panel empty-state repositories-empty"><strong>{{ t("projects.emptyTitle") }}</strong><span>{{ t("projects.emptyBody") }}</span></section>
   </div>
 </template>
 

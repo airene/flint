@@ -19,10 +19,11 @@ import { ApiClientError } from "../api/client";
 import { apiEndpoints } from "../api/endpoints";
 import { TaskEventController } from "../realtime/task-events";
 import { browserNotificationController } from "../realtime/browser-notification-runtime";
+import { translate } from "../i18n";
 import { shouldApplyRunUpdate, WorkspaceRefreshGuard } from "./workspace-refresh-guard";
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : "Unexpected local server error.";
+  return error instanceof Error ? error.message : translate("errors.unexpectedServer");
 }
 
 function webSocketUrl(): string {
@@ -218,7 +219,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
       onError(problem) {
         if (connectionGeneration !== generation || task.value?.id !== taskId) return;
         connected.value = false;
-        error.value = `Activity stream: ${message(problem)}`;
+        error.value = translate("errors.activityStream", { message: message(problem) });
       },
     });
     controller.start(taskId, 0);

@@ -73,6 +73,7 @@ import {
   type UnfinishedTaskListResponse,
   type UpdateFindingRequest,
 } from "@local-pair-review/shared";
+import { translate } from "../i18n";
 import { ApiClientError, apiClient, type ApiClient } from "./client";
 
 function id(value: string): string {
@@ -223,17 +224,17 @@ export async function uploadAttachmentDraft(input: UploadAttachmentDraftInput): 
       body: input.file,
     });
   } catch (error) {
-    throw new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : "Image upload failed.");
+    throw new ApiClientError(0, "INTERNAL_ERROR", error instanceof Error ? error.message : translate("errors.imageUpload"));
   }
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const parsed = apiErrorSchema.safeParse(payload);
     throw parsed.success
       ? new ApiClientError(response.status, parsed.data.code, parsed.data.message, parsed.data.details)
-      : new ApiClientError(response.status, "INTERNAL_ERROR", `Image upload failed with HTTP ${response.status}.`);
+      : new ApiClientError(response.status, "INTERNAL_ERROR", translate("errors.imageUploadHttp", { status: response.status }));
   }
   if (!payload || typeof payload !== "object" || typeof (payload as { id?: unknown }).id !== "string") {
-    throw new ApiClientError(response.status, "INTERNAL_ERROR", "The attachment response was invalid.");
+    throw new ApiClientError(response.status, "INTERNAL_ERROR", translate("errors.invalidAttachment"));
   }
   input.onProgress(100);
   return { id: (payload as { id: string }).id };

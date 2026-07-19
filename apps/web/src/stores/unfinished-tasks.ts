@@ -31,6 +31,19 @@ export function unfinishedTaskStatusLabel(task: UnfinishedTaskSummary): string {
   }
 }
 
+export function unfinishedTaskStatusKey(task: UnfinishedTaskSummary): string | null {
+  switch (task.attention) {
+    case "pending_approval": return "statuses.pendingApproval";
+    case "needs_attention": return "statuses.needsAttention";
+    case "running": return "statuses.running";
+    case "waiting_for_human": return "statuses.waitingForYou";
+    case "ready_for_review": return "statuses.ready_for_review";
+    case "pending_start": return "statuses.readyToStart";
+    case "other": return task.status in { draft: 1, developing: 1, fixing: 1, reviewing: 1, waiting_for_human: 1, ready_for_review: 1, completed: 1 }
+      ? `statuses.${task.status}` : null;
+  }
+}
+
 export const useUnfinishedTasksStore = defineStore("unfinishedTasks", {
   state: () => ({
     tasks: [] as UnfinishedTaskSummary[],

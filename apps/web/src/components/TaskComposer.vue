@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import AttachmentStrip, { type ComposerAttachment } from "./AttachmentStrip.vue";
 import FileMentionInput from "./FileMentionInput.vue";
 
@@ -39,8 +40,8 @@ const props = withDefaults(defineProps<{
   disabled: false,
   submitting: false,
   imagesEnabled: true,
-  imageDisabledReason: "This provider does not support image attachments for this action.",
-  submitLabel: "Send",
+  imageDisabledReason: undefined,
+  submitLabel: undefined,
   placeholder: undefined,
   ariaLabel: undefined,
   rows: 3,
@@ -50,6 +51,7 @@ const emit = defineEmits<{
   "update:modelValue": [value: string];
   submit: [payload: ComposerSubmission];
 }>();
+const { t } = useI18n();
 
 const attachments = ref<ComposerAttachment[]>([]);
 const submissionLocked = ref(false);
@@ -89,7 +91,7 @@ async function upload(attachment: ComposerAttachment, file: File): Promise<void>
     attachment.progress = 100;
   } catch (error) {
     attachment.status = "failed";
-    attachment.error = error instanceof Error ? error.message : "Image upload failed.";
+    attachment.error = error instanceof Error ? error.message : t("attachments.uploadFailed");
   }
 }
 
@@ -100,7 +102,7 @@ function addImages(files: File[]): void {
     if (!file.type.startsWith("image/")) continue;
     const attachment: ComposerAttachment = {
       localId: `local-${nextLocalId++}`,
-      name: file.name || "Pasted image",
+      name: file.name || t("attachments.pastedImage"),
       previewUrl: URL.createObjectURL(file),
       status: "uploading",
       progress: 0,
@@ -157,10 +159,10 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
     <AttachmentStrip :attachments="attachments" :disabled="interactionDisabled" @remove="remove" @retry="retry" />
     <div class="composer-actions">
       <div class="composer-attachment-status">
-        <span v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason }}</span>
-        <span class="attachment-count">{{ attachments.length }}/4 images</span>
+        <span v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason ?? t("attachments.unsupported") }}</span>
+        <span class="attachment-count">{{ t("attachments.count", { count: attachments.length }) }}</span>
       </div>
-      <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? 'Sending…' : submitLabel }}</button>
+      <button type="button" class="button-primary" :disabled="submitDisabled" @click="submit">{{ submitting ? t("common.sending") : submitLabel ?? t("common.send") }}</button>
     </div>
   </section>
 </template>

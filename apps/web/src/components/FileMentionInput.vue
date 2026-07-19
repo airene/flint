@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { apiEndpoints } from "../api/endpoints";
 import { activeFileMention, replaceFileMention, type ActiveFileMention } from "./file-mention";
 
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   submit: [];
   paste: [event: ClipboardEvent];
 }>();
+const { t } = useI18n();
 
 const control = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
 const open = ref(false);
@@ -204,10 +206,10 @@ onBeforeUnmount(() => {
       @input="onInput" @paste="onPaste" @keydown="onKeydown" @keyup="onCaretKeyup" @click="refreshMention()" @blur="onBlur"
       @compositionstart="onCompositionStart" @compositionend="onCompositionEnd"
     >
-    <div v-if="open" :id="listboxId" class="file-mention-menu" role="listbox" aria-label="Repository files">
-      <div v-if="loading" class="file-mention-status" role="status">Loading repository files…</div>
-      <div v-else-if="failed" class="file-mention-status" role="status">File suggestions unavailable.</div>
-      <div v-else-if="files.length === 0" class="file-mention-status" role="status">No matching files.</div>
+    <div v-if="open" :id="listboxId" class="file-mention-menu" role="listbox" :aria-label="t('composer.repositoryFiles')">
+      <div v-if="loading" class="file-mention-status" role="status">{{ t("composer.loadingFiles") }}</div>
+      <div v-else-if="failed" class="file-mention-status" role="status">{{ t("composer.filesUnavailable") }}</div>
+      <div v-else-if="files.length === 0" class="file-mention-status" role="status">{{ t("composer.noFiles") }}</div>
       <button
         v-for="(path, index) in files" v-else :id="`${listboxId}-${index}`" :key="path"
         type="button" role="option" class="file-mention-option" :class="{ selected: index === selectedIndex }"

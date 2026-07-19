@@ -6,8 +6,10 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import "monaco-editor/min/vs/editor/editor.main.css";
 import { useThemeStore } from "../stores/theme";
+import { useI18n } from "vue-i18n";
 
 const { theme } = storeToRefs(useThemeStore());
+const { t } = useI18n();
 const monacoTheme = (): string => (theme.value === "light" ? "vs" : "vs-dark");
 
 (globalThis as typeof globalThis & { MonacoEnvironment?: { getWorker(): Worker } }).MonacoEnvironment ??= {
@@ -106,12 +108,12 @@ onBeforeUnmount(() => {
 <template>
   <section class="panel diff-panel">
     <header class="panel-header">
-      <h2 class="panel-title">Git Diff <span class="badge">{{ files.length }} files</span></h2>
-      <button class="button ghost" type="button" :disabled="loading" @click="emit('refresh')">↻ Refresh</button>
+      <h2 class="panel-title">Git Diff <span class="badge">{{ t("diff.fileCount", { count: files.length }) }}</span></h2>
+      <button class="button ghost" type="button" :disabled="loading" @click="emit('refresh')">↻ {{ t("diff.refresh") }}</button>
     </header>
     <div v-if="repositoryError" class="empty-state repository-unavailable">
-      <strong>Repository unavailable</strong>
-      <span>Task history remains available. {{ repositoryError }}</span>
+      <strong>{{ t("task.repositoryUnavailable") }}</strong>
+      <span>{{ t("diff.repositoryHistoryAvailable", { error: repositoryError }) }}</span>
     </div>
     <div v-else class="diff-layout">
       <aside class="file-list scroll-area">
@@ -120,12 +122,12 @@ onBeforeUnmount(() => {
           <span class="truncate">{{ file.path }}</span>
           <span v-if="file.binary" class="binary-tag">BIN</span>
         </button>
-        <div v-if="!files.length" class="empty-state"><span>No working tree changes.</span></div>
+        <div v-if="!files.length" class="empty-state"><span>{{ t("diff.empty") }}</span></div>
       </aside>
       <div class="editor-wrap">
-        <div v-if="diffError" class="empty-state editor-empty"><strong>Diff unavailable</strong><span>{{ diffError }}</span></div>
-        <div v-else-if="diff?.file.binary" class="empty-state editor-empty"><strong>Binary file</strong><span>Content preview is unavailable; the file remains part of the snapshot.</span></div>
-        <div v-else-if="!selectedPath" class="empty-state editor-empty"><strong>Select a file</strong><span>Original and working-tree content will appear side by side.</span></div>
+        <div v-if="diffError" class="empty-state editor-empty"><strong>{{ t("diff.unavailable") }}</strong><span>{{ diffError }}</span></div>
+        <div v-else-if="diff?.file.binary" class="empty-state editor-empty"><strong>{{ t("diff.binary") }}</strong><span>{{ t("diff.binaryBody") }}</span></div>
+        <div v-else-if="!selectedPath" class="empty-state editor-empty"><strong>{{ t("diff.selectFile") }}</strong><span>{{ t("diff.selectFileBody") }}</span></div>
         <div ref="editorHost" :class="['monaco-host', { hidden: diffError || diff?.file.binary || !selectedPath }]" />
       </div>
     </div>

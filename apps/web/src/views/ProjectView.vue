@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import ErrorBanner from "../components/ErrorBanner.vue";
 import TaskComposer, { type ComposerSubmission } from "../components/TaskComposer.vue";
 import { uploadAttachmentDraft } from "../api/endpoints";
@@ -11,6 +12,7 @@ const route = useRoute();
 const router = useRouter();
 const store = useProjectsStore();
 const system = useSystemStore();
+const { t } = useI18n();
 const title = ref("");
 const prompt = ref("");
 const developerLabel = computed(() => system.providerLabel(system.cliStatus?.roles.developerProvider));
@@ -19,7 +21,7 @@ const developerInitialImagesEnabled = computed(() => Boolean(
   system.providerById(system.cliStatus?.roles.developerProvider)?.capabilities?.developerInitialImage,
 ));
 const developerImageDisabledReason = computed(() => (
-  `${developerLabel.value} cannot receive images on an initial run. Text tasks remain available.`
+  t("project.initialImagesUnavailable", { developer: developerLabel.value })
 ));
 
 async function load(): Promise<void> {
@@ -50,7 +52,7 @@ async function createTask(submission?: ComposerSubmission, confirmDirtyWorkingTr
 async function removeProject(): Promise<void> {
   if (!store.currentProject) return;
   const hasTasks = store.tasks.length > 0;
-  if (!window.confirm(hasTasks ? "Remove this project and all Flint history? Local repository files will not be touched." : "Remove this project from Flint?")) return;
+  if (!window.confirm(t(hasTasks ? "project.removeWithHistory" : "project.removeWithoutHistory"))) return;
   try { await store.deleteProject(store.currentProject.id, hasTasks); await router.push("/projects"); } catch { /* rendered */ }
 }
 
@@ -63,33 +65,33 @@ function cancelDirtyConfirmation(): void {
 <template>
   <div class="page compact">
     <header v-if="store.currentProject" class="page-header">
-      <div><div class="eyebrow">Repository</div><h1>{{ store.currentProject.name }}</h1><p class="subtitle mono">{{ store.currentProject.rootPath }}</p></div>
-      <button class="button danger" @click="removeProject">Remove</button>
+      <div><div class="eyebrow">{{ t("project.repository") }}</div><h1>{{ store.currentProject.name }}</h1><p class="subtitle mono">{{ store.currentProject.rootPath }}</p></div>
+      <button class="button danger" @click="removeProject">{{ t("common.remove") }}</button>
     </header>
     <ErrorBanner :message="store.error?.message ?? null" @dismiss="store.clearError" />
 
     <section class="panel new-task">
-      <header class="panel-header"><h2 class="panel-title">New task</h2><span class="badge">base = current HEAD</span></header>
+      <header class="panel-header"><h2 class="panel-title">{{ t("project.newTask") }}</h2><span class="badge">{{ t("project.baseCurrentHead") }}</span></header>
       <div class="panel-body task-form">
-        <div class="field"><label for="task-title">Title</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" placeholder="Validate checkout input"></div>
-        <div class="field"><label for="task-prompt">{{ developerLabel }} prompt</label><TaskComposer id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" :upload-image="uploadAttachmentDraft" :disabled="Boolean(store.pendingDirtyTask)" :images-enabled="developerInitialImagesEnabled" :image-disabled-reason="developerImageDisabledReason" :submit-label="`Create & start ${developerLabel}`" placeholder="Describe the change and acceptance criteria…" @submit="createTask($event, false)" /></div>
-        <div class="create-row"><p class="help">Sending creates the task and immediately starts the {{ developerLabel }} session in this repository. If the working tree is dirty, Flint asks for explicit confirmation first.</p></div>
+        <div class="field"><label for="task-title">{{ t("project.title") }}</label><input id="task-title" v-model="title" class="input" :disabled="Boolean(store.pendingDirtyTask)" :placeholder="t('project.titlePlaceholder')"></div>
+        <div class="field"><label for="task-prompt">{{ t("project.prompt", { developer: developerLabel }) }}</label><TaskComposer id="task-prompt" v-model="prompt" :project-id="store.currentProject?.id ?? String(route.params.projectId)" :upload-image="uploadAttachmentDraft" :disabled="Boolean(store.pendingDirtyTask)" :images-enabled="developerInitialImagesEnabled" :image-disabled-reason="developerImageDisabledReason" :submit-label="t('project.createAndStart', { developer: developerLabel })" :placeholder="t('project.promptPlaceholder')" @submit="createTask($event, false)" /></div>
+        <div class="create-row"><p class="help">{{ t("project.createHelp", { developer: developerLabel }) }}</p></div>
       </div>
     </section>
 
     <section v-if="store.pendingDirtyTask?.projectId === store.currentProject?.id" class="dirty-confirm">
-      <div><strong>Working tree has existing changes</strong><p>They will be included in the review snapshot together with Agent changes. Confirming creates the task and immediately starts {{ developerLabel }}.</p><ul><li v-for="file in store.dirtyWorkingTreeFiles" :key="file" class="mono">{{ file }}</li></ul></div>
-      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">Cancel</button><button class="button danger" @click="createTask(undefined, true)">Create & start anyway</button></div>
+      <div><strong>{{ t("project.dirtyTitle") }}</strong><p>{{ t("project.dirtyBody", { developer: developerLabel }) }}</p><ul><li v-for="file in store.dirtyWorkingTreeFiles" :key="file" class="mono">{{ file }}</li></ul></div>
+      <div class="button-row"><button class="button" @click="cancelDirtyConfirmation">{{ t("common.cancel") }}</button><button class="button danger" @click="createTask(undefined, true)">{{ t("project.createAnyway") }}</button></div>
     </section>
 
     <section class="tasks-section">
-      <div class="section-heading"><h2>Tasks</h2><span class="badge">{{ store.tasks.length }}</span></div>
+      <div class="section-heading"><h2>{{ t("project.tasks") }}</h2><span class="badge">{{ store.tasks.length }}</span></div>
       <div v-if="store.tasks.length" class="task-list panel">
         <RouterLink v-for="task in store.tasks" :key="task.id" :to="`/tasks/${task.id}`" class="task-row">
-          <span :class="['task-state', task.status]" /><div><strong>{{ task.title }}</strong><small>{{ task.originalPrompt }}</small></div><span :class="['badge', task.status === 'ready_for_review' || task.status === 'completed' ? 'ready' : task.status === 'waiting_for_human' ? 'waiting' : task.status === 'developing' || task.status === 'fixing' ? 'running' : '']">{{ task.status.replaceAll('_',' ') }}</span><span class="card-arrow">→</span>
+          <span :class="['task-state', task.status]" /><div><strong>{{ task.title }}</strong><small>{{ task.originalPrompt }}</small></div><span :class="['badge', task.status === 'ready_for_review' || task.status === 'completed' ? 'ready' : task.status === 'waiting_for_human' ? 'waiting' : task.status === 'developing' || task.status === 'fixing' ? 'running' : '']">{{ t(`statuses.${task.status}`) }}</span><span class="card-arrow">→</span>
         </RouterLink>
       </div>
-      <div v-else class="panel empty-state"><strong>No tasks yet</strong><span>Create a focused task to start the {{ developerLabel }} → {{ reviewerLabel }} review loop.</span></div>
+      <div v-else class="panel empty-state"><strong>{{ t("project.noTasks") }}</strong><span>{{ t("project.noTasksBody", { developer: developerLabel, reviewer: reviewerLabel }) }}</span></div>
     </section>
   </div>
 </template>

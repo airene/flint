@@ -21,6 +21,11 @@ export interface BrowserNotificationNavigation {
   focusTask(taskId: string): void;
 }
 
+export interface BrowserNotificationCopy {
+  completedBody(): string;
+  completedTitle(role: "Developer" | "Reviewer", taskTitle?: string): string;
+}
+
 export interface PersistedRunEvent {
   event: AgentEvent;
   role: AgentRole;
@@ -35,15 +40,16 @@ export interface BrowserNotificationControllerOptions {
   document: BrowserDocumentAdapter;
   navigation: BrowserNotificationNavigation;
   currentTaskId: () => string | null;
+  copy?: BrowserNotificationCopy;
 }
 
-function completionBody(event: AgentEvent): string {
+function completionBody(event: AgentEvent, copy?: BrowserNotificationCopy): string {
   const payload = event.payload;
   if (payload && typeof payload === "object" && "finalMessage" in payload) {
     const finalMessage = payload.finalMessage;
     if (typeof finalMessage === "string" && finalMessage.trim()) return finalMessage.trim();
   }
-  return "Your run completed successfully.";
+  return copy?.completedBody() ?? "Your run completed successfully.";
 }
 
 /**
@@ -79,9 +85,10 @@ export class BrowserNotificationController {
     if (this.options.notification.permission !== "granted") return false;
 
     const roleLabel = role === "developer" ? "Developer" : "Reviewer";
-    const title = input.taskTitle ? `${roleLabel} run completed — ${input.taskTitle}` : `${roleLabel} run completed`;
+    const title = this.options.copy?.completedTitle(roleLabel, input.taskTitle)
+      ?? (input.taskTitle ? `${roleLabel} run completed — ${input.taskTitle}` : `${roleLabel} run completed`);
     const notification = this.options.notification.create(title, {
-      body: completionBody(event),
+      body: completionBody(event, this.options.copy),
       tag: `flint-task-${event.taskId}-event-${event.sequence}`,
     });
     notification.onclick = () => this.options.navigation.focusTask(event.taskId);

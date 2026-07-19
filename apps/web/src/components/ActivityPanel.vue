@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { AgentEvent, ApprovalRequest } from "@local-pair-review/shared";
+import { useI18n } from "vue-i18n";
 import ApprovalCard from "./ApprovalCard.vue";
 import type { ApprovalCardDecision } from "./approval-card";
 
@@ -12,6 +13,7 @@ const props = withDefaults(defineProps<{
 }>(), { approvals: () => [], approvalErrors: () => ({}) });
 const emit = defineEmits<{ decideApproval: [approvalId: string, decision: ApprovalCardDecision] }>();
 const filter = ref("all");
+const { locale, t } = useI18n();
 
 interface EventView {
   title: string;
@@ -48,26 +50,26 @@ function toolInputSummary(input: unknown): string | undefined {
 function usageSummary(parsed: Record<string, unknown> | null): string | undefined {
   const usage = record(parsed?.usage);
   if (typeof usage?.input_tokens !== "number" || typeof usage.output_tokens !== "number") return undefined;
-  return `${usage.input_tokens} in / ${usage.output_tokens} out tokens`;
+  return t("activity.usage", { input: usage.input_tokens, output: usage.output_tokens });
 }
 
 function messageView(parsed: Record<string, unknown> | null, item: Record<string, unknown> | null): EventView {
-  if (item?.type === "reasoning") return { title: "Thinking", detail: firstLine(item.text) };
-  if (item) return { title: "Message", detail: firstLine(item.text) };
+  if (item?.type === "reasoning") return { title: t("activity.thinking"), detail: firstLine(item.text) };
+  if (item) return { title: t("activity.message"), detail: firstLine(item.text) };
   const blocks = claudeBlocks(parsed);
   const text = blocks.find((block) => block.type === "text");
-  if (text) return { title: "Message", detail: firstLine(text.text) };
+  if (text) return { title: t("activity.message"), detail: firstLine(text.text) };
   const toolUse = blocks.find((block) => block.type === "tool_use");
-  if (toolUse) return { title: `Tool: ${typeof toolUse.name === "string" ? toolUse.name : "unknown"}`, detail: toolInputSummary(toolUse.input) };
-  if (blocks.some((block) => block.type === "thinking")) return { title: "Thinking" };
-  return { title: "Message" };
+  if (toolUse) return { title: t("activity.tool", { name: typeof toolUse.name === "string" ? toolUse.name : t("activity.unknown") }), detail: toolInputSummary(toolUse.input) };
+  if (blocks.some((block) => block.type === "thinking")) return { title: t("activity.thinking") };
+  return { title: t("activity.message") };
 }
 
 function toolView(parsed: Record<string, unknown> | null, item: Record<string, unknown> | null): EventView {
-  if (item?.type === "web_search") return { title: "Web search", detail: firstLine(item.query) };
+  if (item?.type === "web_search") return { title: t("activity.webSearch"), detail: firstLine(item.query) };
   if (item?.type === "mcp_tool_call") {
     const name = [item.server, item.tool].filter((part) => typeof part === "string").join(".");
-    return { title: name ? `Tool: ${name}` : "Tool call" };
+    return { title: name ? t("activity.tool", { name }) : t("activity.toolCall") };
   }
   const result = claudeBlocks(parsed).find((block) => block.type === "tool_result");
   if (result) {
@@ -75,11 +77,11 @@ function toolView(parsed: Record<string, unknown> | null, item: Record<string, u
       ? result.content
       : JSON.stringify(result.content ?? "");
     if (/permission denied|permission required|not allowed|requires approval/i.test(content)) {
-      return { title: "Command blocked by CLI permissions", detail: firstLine(content), warning: true };
+      return { title: t("activity.commandBlocked"), detail: firstLine(content), warning: true };
     }
-    return { title: "Tool result", detail: firstLine(content) };
+    return { title: t("activity.toolResult"), detail: firstLine(content) };
   }
-  return { title: "Tool call" };
+  return { title: t("activity.toolCall") };
 }
 
 function view(event: AgentEvent): EventView {
@@ -87,45 +89,46 @@ function view(event: AgentEvent): EventView {
   const parsed = record(payload?.parsed) ?? payload;
   const item = record(parsed?.item);
   switch (event.type) {
-    case "run_queued": return { title: "Run queued" };
-    case "run_started": return { title: "Run started" };
-    case "run_completed": return { title: "Run completed" };
-    case "run_failed": return { title: "Run failed", detail: firstLine(payload?.message ?? parsed?.errorMessage) };
-    case "run_cancelled": return { title: "Run cancelled" };
-    case "run_interrupted": return { title: "Run interrupted" };
-    case "session_started": return { title: "Session established" };
-    case "turn_started": return { title: "Turn started" };
-    case "turn_completed": return { title: "Turn completed", detail: usageSummary(parsed) };
-    case "turn_failed": return { title: "Turn failed", detail: firstLine(record(parsed?.error)?.message ?? payload?.raw) };
+    case "run_queued": return { title: t("activity.runQueued") };
+    case "run_started": return { title: t("activity.runStarted") };
+    case "run_completed": return { title: t("activity.runCompleted") };
+    case "run_failed": return { title: t("activity.runFailed"), detail: firstLine(payload?.message ?? parsed?.errorMessage) };
+    case "run_cancelled": return { title: t("activity.runCancelled") };
+    case "run_interrupted": return { title: t("activity.runInterrupted") };
+    case "session_started": return { title: t("activity.sessionEstablished") };
+    case "turn_started": return { title: t("activity.turnStarted") };
+    case "turn_completed": return { title: t("activity.turnCompleted"), detail: usageSummary(parsed) };
+    case "turn_failed": return { title: t("activity.turnFailed"), detail: firstLine(record(parsed?.error)?.message ?? payload?.raw) };
     case "message": return messageView(parsed, item);
     case "tool": return toolView(parsed, item);
     case "command": {
       const failed = typeof item?.exit_code === "number" && item.exit_code !== 0;
-      return { title: failed ? `Command · exit ${item?.exit_code}` : "Command", detail: firstLine(item?.command) };
+      return { title: failed ? t("activity.commandExit", { code: item?.exit_code }) : t("activity.command"), detail: firstLine(item?.command) };
     }
     case "file_changed": {
       const changes = Array.isArray(item?.changes) ? item.changes.map(record) : [];
       const paths = changes.map((change) => change?.path).filter((path): path is string => typeof path === "string");
       const listed = paths.slice(0, 3).join(", ");
       return {
-        title: "Files changed",
-        detail: paths.length > 3 ? `${listed} +${paths.length - 3} more` : listed || undefined,
+        title: t("activity.filesChanged"),
+        detail: paths.length > 3 ? `${listed} ${t("activity.more", { count: paths.length - 3 })}` : listed || undefined,
       };
     }
-    case "plan": return { title: "Plan", detail: firstLine(item?.text) };
+    case "plan": return { title: t("activity.plan"), detail: firstLine(item?.text) };
     case "review_parsed": {
-      const count = typeof parsed?.findingCount === "number" ? `${parsed.findingCount} findings` : undefined;
-      const verdict = typeof parsed?.verdict === "string" ? parsed.verdict : undefined;
-      return { title: "Review findings parsed", detail: [count, verdict].filter(Boolean).join(" · ") || undefined };
+      const count = typeof parsed?.findingCount === "number" ? t("activity.findings", { count: parsed.findingCount }) : undefined;
+      const verdict = parsed?.verdict === "pass" ? t("review.verdictPass")
+        : parsed?.verdict === "changes_suggested" ? t("review.verdictChangesSuggested") : undefined;
+      return { title: t("activity.reviewFindingsParsed"), detail: [count, verdict].filter(Boolean).join(" · ") || undefined };
     }
-    case "review_parse_failed": return { title: "Review output needs manual inspection" };
-    case "message_queued": return { title: "Message queued" };
-    case "message_delivered": return { title: "Message delivered" };
-    case "message_failed": return { title: "Message delivery failed" };
-    case "approval_requested": return { title: "Approval requested" };
-    case "approval_resolved": return { title: "Approval resolved" };
+    case "review_parse_failed": return { title: t("activity.reviewManualInspection") };
+    case "message_queued": return { title: t("activity.messageQueued") };
+    case "message_delivered": return { title: t("activity.messageDelivered") };
+    case "message_failed": return { title: t("activity.messageFailed") };
+    case "approval_requested": return { title: t("activity.approvalRequested") };
+    case "approval_resolved": return { title: t("activity.approvalResolved") };
     case "raw": return {
-      title: typeof parsed?.type === "string" ? `Unparsed: ${parsed.type}` : "Unparsed output",
+      title: typeof parsed?.type === "string" ? t("activity.unparsed", { type: parsed.type }) : t("activity.unparsedOutput"),
       detail: firstLine(payload?.raw),
     };
   }
@@ -141,9 +144,9 @@ const visible = computed(() => props.events
 <template>
   <section class="panel activity-panel">
     <header class="panel-header">
-      <h2 class="panel-title">Activity <span :class="['connection-dot', { connected }]" /></h2>
-      <select v-model="filter" class="mini-select" aria-label="Filter activity source">
-        <option value="all">All sources</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="system">System</option>
+      <h2 class="panel-title">{{ t("activity.heading") }} <span :class="['connection-dot', { connected }]" /></h2>
+      <select v-model="filter" class="mini-select" :aria-label="t('activity.filter')">
+        <option value="all">{{ t("activity.allSources") }}</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="system">System</option>
       </select>
     </header>
     <div v-if="approvals.length" class="approval-list">
@@ -158,11 +161,11 @@ const visible = computed(() => props.events
         <div class="timeline-content">
           <strong>{{ row.view.title }}</strong>
           <span v-if="row.view.detail" class="detail">{{ row.view.detail }}</span>
-          <small>{{ row.event.source }} · #{{ row.event.sequence }} · {{ new Date(row.event.timestamp).toLocaleTimeString() }}</small>
+          <small>{{ row.event.source }} · #{{ row.event.sequence }} · {{ new Date(row.event.timestamp).toLocaleTimeString(locale) }}</small>
         </div>
       </div>
     </div>
-    <div v-else class="empty-state"><strong>No activity for this run yet</strong><span>Persisted agent events will appear here.</span></div>
+    <div v-else class="empty-state"><strong>{{ t("activity.emptyTitle") }}</strong><span>{{ t("activity.emptyBody") }}</span></div>
   </section>
 </template>
 
