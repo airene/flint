@@ -8,12 +8,12 @@ import type {
   Provider,
   ReviewParseStatus,
   Task,
-  TaskStatus,
 } from "@local-pair-review/shared";
 import { AgentProcessError } from "../utils/process-supervisor";
 import { redactSensitive } from "../utils/redact";
 import { createRunEvent } from "../utils/agent-event";
 import type { EventService } from "./event.service";
+import { taskStatusPolicyForRun, type TaskStatusPolicy } from "./task-run-state";
 
 export interface FinishRunInput {
   runId: string;
@@ -35,20 +35,22 @@ export interface AgentRunPersistencePort {
 }
 
 export interface TaskRunStatePort {
-  /** Must atomically insert the queued Run, check locks, and transition Task. */
-  queue(run: AgentRun, options?: { snapshotHash?: string }): Promise<AgentRun>;
-  /** Must atomically finish the Run and transition Task to its success state. */
+  /** Must atomically insert the queued Run, bind a delivery batch when supplied, check locks, and transition Task. */
+  queue(run: AgentRun, options?: { snapshotHash?: string; deliveryBatchId?: string }): Promise<AgentRun>;
+  /** Must atomically finish the Run and either transition or preserve current Task state according to policy. */
   succeed(input: FinishRunInput & {
     taskId: string;
     runType: AgentRunType;
-    taskStatusAtStart: TaskStatus;
+    /** preserve_current means terminal persistence must not update Task.status. */
+    taskStatusPolicy: TaskStatusPolicy;
   }): Promise<AgentRun>;
-  /** Must atomically finish the Run and apply the spec's Task fallback. */
+  /** Must atomically finish the Run and either apply the fallback or preserve current Task state according to policy. */
   fail(input: FinishRunInput & {
     taskId: string;
     runType: AgentRunType;
     sessionId: string | null;
-    taskStatusAtStart: TaskStatus;
+    /** preserve_current means terminal persistence must not update Task.status. */
+    taskStatusPolicy: TaskStatusPolicy;
   }): Promise<AgentRun>;
 }
 
@@ -61,6 +63,8 @@ export interface StartAgentRunInput {
   snapshotHash?: string;
   /** Absolute paths for images already claimed by this Task or message. */
   imagePaths?: readonly string[];
+  /** Conversation batch associated atomically with the queued Run. */
+  deliveryBatchId?: string;
   signal?: AbortSignal;
 }
 
@@ -143,7 +147,10 @@ export class AgentRunService {
       finishedAt: null,
     };
 
-    const persisted = await this.taskState.queue(run, input.snapshotHash ? { snapshotHash: input.snapshotHash } : {});
+    const persisted = await this.taskState.queue(run, {
+      ...(input.snapshotHash ? { snapshotHash: input.snapshotHash } : {}),
+      ...(input.deliveryBatchId ? { deliveryBatchId: input.deliveryBatchId } : {}),
+    });
     const driver = this.drivers[provider];
     this.activeDrivers.set(run.id, driver);
     const completion = Promise.resolve().then(() => this.execute(persisted, input, driver));
@@ -208,7 +215,7 @@ export class AgentRunService {
         runId: run.id,
         taskId: run.taskId,
         runType: run.runType,
-        taskStatusAtStart: input.task.status,
+        taskStatusPolicy: taskStatusPolicyForRun(run.runType),
         patch,
       });
       try {
@@ -226,7 +233,7 @@ export class AgentRunService {
         taskId: run.taskId,
         runType: run.runType,
         sessionId: capturedSession,
-        taskStatusAtStart: input.task.status,
+        taskStatusPolicy: taskStatusPolicyForRun(run.runType),
         patch: {
           status,
           reviewParseStatus: run.reviewParseStatus,

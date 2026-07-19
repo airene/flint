@@ -291,16 +291,19 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         await publishMessageEvent(persisted, "message_queued");
         return persisted;
       },
-      async transitionMessage(messageId, from, patch) {
-        const transitioned = await ports.transitionMessage(messageId, from, patch);
-        if (transitioned?.status === "delivered") await publishMessageEvent(transitioned, "message_delivered");
-        if (transitioned?.status === "failed") await publishMessageEvent(transitioned, "message_failed");
-        return transitioned;
+      listMessagesInFifoOrder: (taskId) => ports.listMessagesInFifoOrder(taskId),
+      listOpenDeliveryBatches: (taskId) => ports.listOpenDeliveryBatches(taskId),
+      reserveDeliveryBatch: (input) => ports.reserveDeliveryBatch(input),
+      async settleDeliveryBatch(input) {
+        const settled = await ports.settleDeliveryBatch(input);
+        for (const message of settled) {
+          await publishMessageEvent(message, message.status === "delivered" ? "message_delivered" : "message_failed");
+        }
+        return settled;
       },
       getTask: (taskId) => ports.getTask(taskId),
       getRun: (runId) => ports.getRun(runId),
       listRuns: (taskId) => ports.listRuns(taskId),
-      listMessages: (taskId) => ports.listMessages(taskId),
       attachmentPaths: (messageIds) => ports.attachmentPaths(messageIds),
       discardIncompleteFormalFindings: (runId) => ports.discardIncompleteFormalFindings(runId),
     },
@@ -443,7 +446,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
 
   try {
     const recovered = await ports.recoverInterrupted();
-    for (const run of recovered) await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
+    for (const run of recovered) {
+      for (const approval of await approvals.expireRun(run)) await publishApprovalEvent(approval);
+      await events.publish(eventFor(run, "run_interrupted", new Date().toISOString()));
+    }
+    for (const taskId of await ports.listOpenConversationTaskIds()) conversations.resume(taskId);
   } catch (error) {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     try { ports.releaseApplicationLease(); } finally { database.close(); }

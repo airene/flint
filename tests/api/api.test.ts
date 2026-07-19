@@ -1084,6 +1084,12 @@ describe("local server API assembly", () => {
       externalSessionId: null, processId: 999_999, exitCode: null, prompt: "recover",
       finalMessage: null, structuredOutput: null, errorMessage: null, startedAt: timestamp, finishedAt: null,
     }).run();
+    database.db.insert(approvalRequests).values({
+      id: "approval-recovery", projectId: "project-recovery", taskId: "task-recovery", runId: "run-recovery",
+      providerRequestId: "provider-recovery", toolName: "shell", actionSummary: "Recover approval",
+      workingDirectory: rootPath, status: "pending", decision: null, reason: null,
+      createdAt: timestamp, resolvedAt: null,
+    }).run();
     database.close();
     await rm(rootPath, { recursive: true, force: true });
 
@@ -1093,14 +1099,14 @@ describe("local server API assembly", () => {
       claudeExecutable: claudeFixture,
       environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
     });
-    const server = createServer({ application });
-    cleanups.push(async () => { await server.stop(); });
-    const baseUrl = `http://127.0.0.1:${server.port}`;
+    cleanups.push(async () => { await application.shutdown(); });
 
-    expect((await request<Task>(baseUrl, "/api/tasks/task-recovery")).body.status).toBe("ready_for_review");
-    expect((await request<AgentRun>(baseUrl, "/api/runs/run-recovery")).body).toMatchObject({
+    expect((await applicationRequest<Task>(application, "/api/tasks/task-recovery")).body.status).toBe("ready_for_review");
+    expect((await applicationRequest<AgentRun>(application, "/api/runs/run-recovery")).body).toMatchObject({
       status: "interrupted", processId: null, externalSessionId: null,
     });
+    expect((await applicationRequest<ApprovalRequest[]>(application, "/api/tasks/task-recovery/approvals")).body)
+      .toEqual([expect.objectContaining({ id: "approval-recovery", status: "expired", resolvedAt: expect.any(String) })]);
   });
 
   test("graceful shutdown terminates an active process and persists interrupted", async () => {

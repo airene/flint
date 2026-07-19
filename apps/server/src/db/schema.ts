@@ -79,6 +79,24 @@ export const taskMessages = sqliteTable("task_messages", {
   index("task_messages_source_review_run_id_index").on(table.sourceReviewRunId),
 ]);
 
+export const conversationDeliveryBatches = sqliteTable("conversation_delivery_batches", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  messageIds: text("message_ids", { mode: "json" }).$type<string[]>().notNull(),
+  targetRole: text("target_role", { enum: ["developer", "reviewer"] }).notNull(),
+  sourceReviewRunId: text("source_review_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  deliveryMode: text("delivery_mode", { enum: ["queue", "interrupt"] }).notNull(),
+  runId: text("run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  interruptedReviewRunId: text("interrupted_review_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["open", "settled"] }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("conversation_delivery_batches_task_order_index").on(table.taskId, table.createdAt, table.id),
+  uniqueIndex("conversation_delivery_batches_run_unique").on(table.runId),
+]);
+
 export const taskAttachments = sqliteTable("task_attachments", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),

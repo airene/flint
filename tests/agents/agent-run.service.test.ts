@@ -138,6 +138,8 @@ class MemoryRunPersistence implements AgentRunPersistencePort {
 
 class RecordingTaskState implements TaskRunStatePort {
   readonly queuedSnapshots: Array<string | undefined> = [];
+  readonly queuedDeliveryBatchIds: Array<string | undefined> = [];
+  readonly terminalPolicies: Array<"transition" | "preserve_current"> = [];
 
   constructor(
     private readonly order: string[],
@@ -145,20 +147,26 @@ class RecordingTaskState implements TaskRunStatePort {
     private readonly failSucceed = false,
   ) {}
 
-  async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
+  async queue(
+    run: AgentRun,
+    options: { snapshotHash?: string; deliveryBatchId?: string } = {},
+  ): Promise<AgentRun> {
     this.queuedSnapshots.push(options.snapshotHash);
+    this.queuedDeliveryBatchIds.push(options.deliveryBatchId);
     this.order.push(`task:queued:${run.runType}`);
     return this.persistence.create(run);
   }
 
-  async succeed(input: FinishRunInput & { taskId: string; runType: AgentRun["runType"] }): Promise<AgentRun> {
+  async succeed(input: Parameters<TaskRunStatePort["succeed"]>[0]): Promise<AgentRun> {
     this.order.push(`task:succeeded:${input.runType}`);
+    this.terminalPolicies.push(input.taskStatusPolicy);
     if (this.failSucceed) throw new Error("terminal transaction failed");
     return this.persistence.finish(input);
   }
 
-  async fail(input: FinishRunInput & { taskId: string; runType: AgentRun["runType"]; sessionId: string | null }): Promise<AgentRun> {
+  async fail(input: Parameters<TaskRunStatePort["fail"]>[0]): Promise<AgentRun> {
     this.order.push(`task:${input.patch.status}:${input.runType}:${input.sessionId ?? "none"}`);
+    this.terminalPolicies.push(input.taskStatusPolicy);
     return this.persistence.finish(input);
   }
 }
@@ -405,7 +413,7 @@ describe("AgentRunService", () => {
 
   test("resumes developer follow-up in the exact supplied session", async () => {
     const order: string[] = [];
-    const { agentRuns, requests } = service(order, {
+    const { agentRuns, requests, taskState } = service(order, {
       sessionId: "developer-session-exact",
       finalMessage: "Fixed",
       structuredOutput: null,
@@ -416,6 +424,7 @@ describe("AgentRunService", () => {
       runType: "developer_followup",
       prompt: "Please adjust this",
       sessionId: "developer-session-exact",
+      deliveryBatchId: "delivery-batch-exact",
     })).completion;
 
     expect(requests[0]).toMatchObject({
@@ -424,12 +433,13 @@ describe("AgentRunService", () => {
     });
     expect(order).toContain("task:queued:developer_followup");
     expect(order).toContain("task:succeeded:developer_followup");
+    expect(taskState.queuedDeliveryBatchIds).toEqual(["delivery-batch-exact"]);
     expect(terminal).toMatchObject({ status: "completed", reviewParseStatus: null });
   });
 
   test("resumes reviewer follow-up read-only without formal review output", async () => {
     const order: string[] = [];
-    const { agentRuns, requests } = service(order, new AgentProcessError("failed", "unused"), {
+    const { agentRuns, requests, taskState } = service(order, new AgentProcessError("failed", "unused"), {
       sessionId: "review-session-exact",
       finalMessage: "Explanation",
       structuredOutput: {
@@ -458,5 +468,25 @@ describe("AgentRunService", () => {
       structuredOutput: null,
       reviewParseStatus: null,
     });
+    expect(taskState.terminalPolicies).toEqual(["preserve_current"]);
+  });
+
+  test("uses the workflow-neutral Task policy when reviewer follow-up fails", async () => {
+    const order: string[] = [];
+    const { agentRuns, taskState } = service(
+      order,
+      new AgentProcessError("failed", "unused"),
+      new AgentProcessError("failed", "review follow-up failed"),
+    );
+
+    const terminal = await (await agentRuns.start({
+      task: { ...task(), status: "ready_for_review" },
+      runType: "reviewer_followup",
+      prompt: "Explain",
+      sessionId: "review-session-exact",
+    })).completion;
+
+    expect(terminal.status).toBe("failed");
+    expect(taskState.terminalPolicies).toEqual(["preserve_current"]);
   });
 });

@@ -50,6 +50,18 @@ const currentSchema = `
   );
   CREATE INDEX IF NOT EXISTS task_messages_task_id_index ON task_messages(task_id);
   CREATE INDEX IF NOT EXISTS task_messages_source_review_run_id_index ON task_messages(source_review_run_id);
+  CREATE TABLE IF NOT EXISTS conversation_delivery_batches (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, message_ids TEXT NOT NULL,
+    target_role TEXT NOT NULL, source_review_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    delivery_mode TEXT NOT NULL, run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    interrupted_review_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS conversation_delivery_batches_task_order_index
+    ON conversation_delivery_batches(task_id, created_at, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS conversation_delivery_batches_run_unique
+    ON conversation_delivery_batches(run_id);
   CREATE TABLE IF NOT EXISTS task_attachments (
     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
@@ -133,6 +145,7 @@ const requiredTables = [
   "app_settings",
   "application_leases",
   "approval_requests",
+  "conversation_delivery_batches",
   "feedback_deliveries",
   "feedback_drafts",
   "projects",
@@ -153,6 +166,8 @@ const requiredIndexes = [
   "agent_runs_task_id_index",
   "approval_requests_run_provider_request_unique",
   "approval_requests_task_status_index",
+  "conversation_delivery_batches_run_unique",
+  "conversation_delivery_batches_task_order_index",
   "feedback_deliveries_task_id_index",
   "feedback_drafts_task_id_index",
   "review_findings_task_id_index",

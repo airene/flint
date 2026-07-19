@@ -23,6 +23,7 @@ import {
   agentRuns,
   approvalRequests,
   applicationLeases,
+  conversationDeliveryBatches,
   feedbackDeliveries,
   feedbackDrafts,
   reviewFindings,
@@ -37,6 +38,11 @@ import type { AgentRunPersistencePort, FinishRunInput, TaskRunStatePort } from "
 import type { EventPersistencePort, PersistAgentEventInput } from "../services/event.service";
 import { StaleFeedbackLeaseError, type FeedbackDeliveryPersistencePort, type ReserveFeedbackResult } from "../services/feedback.service";
 import type { ReviewPersistencePort } from "../services/review.service";
+import type {
+  ConversationDeliveryBatch,
+  ReserveDeliveryBatchInput,
+  SettleDeliveryBatchInput,
+} from "../services/conversation.service";
 import { GitService } from "../services/git.service";
 import { CompletedTaskReadOnlyError, ProjectWriteRunConflictError } from "../services/task.service";
 import { NotFoundError } from "./errors";
@@ -205,7 +211,7 @@ export class DatabasePorts implements
     )).run();
   }
 
-  async queue(run: AgentRun, options: { snapshotHash?: string } = {}): Promise<AgentRun> {
+  async queue(run: AgentRun, options: { snapshotHash?: string; deliveryBatchId?: string } = {}): Promise<AgentRun> {
     try {
       return this.database.db.transaction((transaction) => {
         this.assertApplicationOwner();
@@ -235,6 +241,26 @@ export class DatabasePorts implements
           ownerInstanceId: this.instanceId,
           leaseExpiresAt: this.leaseExpiresAt(),
         }).run();
+        if (options.deliveryBatchId) {
+          const batch = transaction.select().from(conversationDeliveryBatches)
+            .where(eq(conversationDeliveryBatches.id, options.deliveryBatchId)).get();
+          if (!batch
+            || batch.projectId !== run.projectId
+            || batch.taskId !== run.taskId
+            || batch.status !== "open"
+            || batch.runId !== null
+            || (batch.targetRole === "reviewer") !== (run.runType === "reviewer_followup")) {
+            throw new PersistenceOwnershipError("Conversation delivery batch");
+          }
+          transaction.update(conversationDeliveryBatches).set({
+            runId: run.id,
+            updatedAt: this.now(),
+          }).where(and(
+            eq(conversationDeliveryBatches.id, options.deliveryBatchId),
+            eq(conversationDeliveryBatches.status, "open"),
+            sql`${conversationDeliveryBatches.runId} is null`,
+          )).run();
+        }
         if (run.runType === "reviewer" && options.snapshotHash) {
           transaction.insert(reviewRunSnapshots).values({
             runId: run.id,
@@ -294,11 +320,12 @@ export class DatabasePorts implements
     }, { behavior: "immediate" });
   }
 
-  async succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType }): Promise<AgentRun> {
-    return this.finish(input, taskStatusForRunSuccess(input.runType));
+  async succeed(input: FinishRunInput & { taskId: string; runType: AgentRunType; taskStatusPolicy: "transition" | "preserve_current" }): Promise<AgentRun> {
+    return this.finish(input, input.taskStatusPolicy === "preserve_current" ? null : taskStatusForRunSuccess(input.runType));
   }
 
-  async fail(input: FinishRunInput & { taskId: string; runType: AgentRunType; sessionId: string | null }): Promise<AgentRun> {
+  async fail(input: FinishRunInput & { taskId: string; runType: AgentRunType; sessionId: string | null; taskStatusPolicy: "transition" | "preserve_current" }): Promise<AgentRun> {
+    if (input.taskStatusPolicy === "preserve_current") return this.finish(input, null);
     const task = await this.getTask(input.taskId);
     if (!task) throw new NotFoundError("Task");
     let workingTreeChanged = true;
@@ -316,7 +343,7 @@ export class DatabasePorts implements
     return this.finish(input, target);
   }
 
-  private finish(input: FinishRunInput & { taskId: string }, taskStatus: TaskStatus): AgentRun {
+  private finish(input: FinishRunInput & { taskId: string }, taskStatus: TaskStatus | null): AgentRun {
     return this.database.db.transaction((transaction) => {
       this.assertApplicationOwner();
       this.assertRunOwner(input.runId);
@@ -329,7 +356,9 @@ export class DatabasePorts implements
         eq(agentRuns.id, input.runId),
         inArray(agentRuns.status, [...activeStatuses]),
       )).run();
-      transaction.update(tasks).set({ status: taskStatus, updatedAt: this.now() }).where(eq(tasks.id, input.taskId)).run();
+      if (taskStatus) {
+        transaction.update(tasks).set({ status: taskStatus, updatedAt: this.now() }).where(eq(tasks.id, input.taskId)).run();
+      }
       transaction.delete(runLeases).where(and(
         eq(runLeases.runId, input.runId),
         eq(runLeases.ownerInstanceId, this.instanceId),
@@ -493,6 +522,91 @@ export class DatabasePorts implements
   async listMessages(taskId: string): Promise<TaskMessage[]> {
     return await this.database.db.select().from(taskMessages).where(eq(taskMessages.taskId, taskId))
       .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+  }
+
+  async listMessagesInFifoOrder(taskId: string): Promise<TaskMessage[]> {
+    return this.listMessages(taskId);
+  }
+
+  async listOpenDeliveryBatches(taskId: string): Promise<ConversationDeliveryBatch[]> {
+    return await this.database.db.select().from(conversationDeliveryBatches).where(and(
+      eq(conversationDeliveryBatches.taskId, taskId),
+      eq(conversationDeliveryBatches.status, "open"),
+    )).orderBy(
+      asc(conversationDeliveryBatches.createdAt),
+      asc(conversationDeliveryBatches.id),
+    ).all() as ConversationDeliveryBatch[];
+  }
+
+  async listOpenConversationTaskIds(): Promise<string[]> {
+    return (await this.database.db.selectDistinct({ taskId: conversationDeliveryBatches.taskId })
+      .from(conversationDeliveryBatches)
+      .where(eq(conversationDeliveryBatches.status, "open"))
+      .orderBy(asc(conversationDeliveryBatches.taskId)).all()).map(({ taskId }) => taskId);
+  }
+
+  async reserveDeliveryBatch(input: ReserveDeliveryBatchInput): Promise<ConversationDeliveryBatch | null> {
+    if (input.messageIds.length === 0 || new Set(input.messageIds).size !== input.messageIds.length) return null;
+    return this.database.db.transaction((transaction) => {
+      const existing = transaction.select().from(conversationDeliveryBatches)
+        .where(eq(conversationDeliveryBatches.id, input.id)).get();
+      if (existing) return existing.status === "open" ? existing as ConversationDeliveryBatch : null;
+      const task = transaction.select({ projectId: tasks.projectId }).from(tasks)
+        .where(eq(tasks.id, input.taskId)).get();
+      if (!task || task.projectId !== input.projectId) throw new PersistenceOwnershipError("Conversation delivery batch");
+      const selected = transaction.select().from(taskMessages).where(inArray(taskMessages.id, input.messageIds))
+        .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+      if (selected.length !== input.messageIds.length
+        || selected.some((message) => message.projectId !== input.projectId
+          || message.taskId !== input.taskId
+          || message.status !== "queued"
+          || message.targetRole !== input.targetRole
+          || message.sourceReviewRunId !== input.sourceReviewRunId)) return null;
+      const orderedIds = selected.map((message) => message.id);
+      if (orderedIds.some((id, index) => id !== input.messageIds[index])) return null;
+      transaction.insert(conversationDeliveryBatches).values({ ...input, runId: null, status: "open" }).run();
+      transaction.update(taskMessages).set({
+        status: "delivering",
+        updatedAt: input.updatedAt,
+        deliveredAt: null,
+        errorMessage: null,
+      }).where(and(
+        inArray(taskMessages.id, input.messageIds),
+        eq(taskMessages.status, "queued"),
+      )).run();
+      return { ...input, runId: null };
+    }, { behavior: "immediate" });
+  }
+
+  async settleDeliveryBatch(input: SettleDeliveryBatchInput): Promise<TaskMessage[]> {
+    return this.database.db.transaction((transaction) => {
+      const batch = transaction.select().from(conversationDeliveryBatches)
+        .where(eq(conversationDeliveryBatches.id, input.batchId)).get();
+      if (!batch) throw new NotFoundError("Conversation delivery batch");
+      const messageIds = batch.messageIds as string[];
+      if (batch.status === "open") {
+        transaction.update(taskMessages).set({
+          status: input.status,
+          updatedAt: input.updatedAt,
+          deliveredAt: input.deliveredAt,
+          errorMessage: input.errorMessage,
+        }).where(and(
+          inArray(taskMessages.id, messageIds),
+          eq(taskMessages.status, "delivering"),
+        )).run();
+        transaction.update(conversationDeliveryBatches).set({
+          status: "settled",
+          updatedAt: input.updatedAt,
+        }).where(and(
+          eq(conversationDeliveryBatches.id, input.batchId),
+          eq(conversationDeliveryBatches.status, "open"),
+        )).run();
+      }
+      const messages = transaction.select().from(taskMessages).where(inArray(taskMessages.id, messageIds))
+        .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+      if (messages.length !== messageIds.length) throw new PersistenceOwnershipError("Conversation delivery batch messages");
+      return messages;
+    }, { behavior: "immediate" });
   }
 
   async transitionMessage(

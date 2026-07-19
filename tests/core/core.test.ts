@@ -218,6 +218,7 @@ describe("run ownership", () => {
         runId: "run-owned",
         taskId: task.id,
         runType: "developer_initial",
+        taskStatusPolicy: "transition",
         patch: {
           status: "completed",
           reviewParseStatus: null,
@@ -272,6 +273,7 @@ describe("database schema policy", () => {
     "app_settings",
     "application_leases",
     "approval_requests",
+    "conversation_delivery_batches",
     "feedback_deliveries",
     "feedback_drafts",
     "projects",
@@ -529,6 +531,63 @@ describe("interactive workflow persistence", () => {
       .rejects.toThrow("is not active");
   });
 
+  test("atomically reserves, binds, and settles durable conversation batches while preserving reviewer follow-up Task state", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Conversation", originalPrompt: "Prompt" });
+    database.sqlite.run("update tasks set status = 'ready_for_review', developer_session_id = 'developer-session' where id = ?", [task.id]);
+    const ports = new DatabasePorts(database);
+    const message = (id: string, createdAt: string): TaskMessage => ({
+      id, projectId: project.id, taskId: task.id, targetRole: "developer", sourceReviewRunId: null,
+      text: id, deliveryMode: "queue", status: "queued", createdAt, updatedAt: createdAt,
+      deliveredAt: null, errorMessage: null,
+    });
+    await ports.createMessage(message("message-1", "2026-07-19T00:00:01.000Z"));
+    await ports.createMessage(message("message-2", "2026-07-19T00:00:02.000Z"));
+    const batch = await ports.reserveDeliveryBatch({
+      id: "batch-1", projectId: project.id, taskId: task.id, messageIds: ["message-1", "message-2"],
+      targetRole: "developer", sourceReviewRunId: null, deliveryMode: "queue", interruptedReviewRunId: null,
+      createdAt: "2026-07-19T00:00:03.000Z", updatedAt: "2026-07-19T00:00:03.000Z",
+    });
+    expect(batch).toMatchObject({ id: "batch-1", runId: null });
+    expect((await ports.listMessages(task.id)).map(({ status }) => status)).toEqual(["delivering", "delivering"]);
+
+    const followup = queuedRun(task, "developer_followup", "conversation-run");
+    await ports.queue(followup, { deliveryBatchId: "batch-1" });
+    expect(await ports.listOpenDeliveryBatches(task.id)).toEqual([
+      expect.objectContaining({ id: "batch-1", runId: followup.id, messageIds: ["message-1", "message-2"] }),
+    ]);
+    await ports.succeed({
+      runId: followup.id, taskId: task.id, runType: "developer_followup", taskStatusPolicy: "transition",
+      patch: {
+        status: "completed", reviewParseStatus: null, exitCode: 0, finalMessage: "done",
+        structuredOutput: null, errorMessage: null, finishedAt: "2026-07-19T00:00:04.000Z",
+      },
+    });
+    const settled = await ports.settleDeliveryBatch({
+      batchId: "batch-1", status: "delivered", updatedAt: "2026-07-19T00:00:05.000Z",
+      deliveredAt: "2026-07-19T00:00:05.000Z", errorMessage: null,
+    });
+    expect(settled.map(({ status }) => status)).toEqual(["delivered", "delivered"]);
+    expect(await ports.listOpenDeliveryBatches(task.id)).toEqual([]);
+
+    database.sqlite.run("update tasks set status = 'waiting_for_human' where id = ?", [task.id]);
+    const reviewerFollowup = {
+      ...queuedRun(task, "reviewer_followup", "reviewer-followup-preserve"),
+      provider: "claude" as const,
+      externalSessionId: "reviewer-session",
+    };
+    await ports.queue(reviewerFollowup);
+    await ports.succeed({
+      runId: reviewerFollowup.id, taskId: task.id, runType: "reviewer_followup", taskStatusPolicy: "preserve_current",
+      patch: {
+        status: "completed", reviewParseStatus: null, exitCode: 0, finalMessage: "clarified",
+        structuredOutput: null, errorMessage: null, finishedAt: "2026-07-19T00:00:06.000Z",
+      },
+    });
+    expect((await taskService.get(task.id))?.status).toBe("waiting_for_human");
+  });
+
   test("lists unfinished summaries and finds only the exact task provider session", async () => {
     const { database, projects, tasks: taskService } = services();
     const project = await projects.add(repository());
@@ -727,6 +786,7 @@ describe("tasks", () => {
       taskId: task.id,
       runType: "developer_initial",
       sessionId: null,
+      taskStatusPolicy: "transition",
       patch: {
         status: "failed",
         reviewParseStatus: null,
