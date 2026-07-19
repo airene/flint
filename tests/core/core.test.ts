@@ -15,8 +15,7 @@ import {
   DatabasePorts,
   StaleRunOwnershipError,
 } from "../../apps/server/src/api/database-ports";
-import { createDatabase } from "../../apps/server/src/db/database";
-import { projects as projectRows, tasks as taskRows } from "../../apps/server/src/db/schema";
+import * as databaseModule from "../../apps/server/src/db/database";
 import { ProjectService, ConfirmationRequiredError, DuplicateProjectError } from "../../apps/server/src/services/project.service";
 import { AppSettingsService } from "../../apps/server/src/services/app-settings.service";
 import {
@@ -28,6 +27,7 @@ import {
 import { taskStatusForRunFailure, taskStatusForRunSuccess } from "../../apps/server/src/services/task-run-state";
 
 const temporaryDirectories: string[] = [];
+const { createDatabase } = databaseModule;
 
 function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), "local-pair-review-core-"));
@@ -237,6 +237,109 @@ describe("run ownership", () => {
       primary.close();
     }
   });
+
+  test("records sessions against the persisted Run task and classification", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const runTask = await taskService.create(project.id, { title: "Run owner", originalPrompt: "Prompt" });
+    const callerTask = await taskService.create(project.id, { title: "Caller input", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database);
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'claude', 'reviewer_followup', 'running', 'follow up')",
+      ["reviewer-followup", runTask.id, project.id],
+    );
+
+    await ports.recordSession("reviewer-followup", callerTask.id, "developer_followup", "reviewer-session");
+    expect(await ports.getRun("reviewer-followup")).toMatchObject({ externalSessionId: "reviewer-session" });
+    expect((await taskService.get(runTask.id))?.developerSessionId).toBeNull();
+    expect((await taskService.get(callerTask.id))?.developerSessionId).toBeNull();
+
+    database.sqlite.run("update agent_runs set status = 'completed' where id = 'reviewer-followup'");
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'codex', 'developer_followup', 'running', 'continue')",
+      ["developer-followup", runTask.id, project.id],
+    );
+    await ports.recordSession("developer-followup", callerTask.id, "reviewer_followup", "developer-session");
+    expect((await taskService.get(runTask.id))?.developerSessionId).toBe("developer-session");
+    expect((await taskService.get(callerTask.id))?.developerSessionId).toBeNull();
+  });
+});
+
+describe("database schema policy", () => {
+  const expectedTables = [
+    "agent_events",
+    "agent_runs",
+    "app_settings",
+    "application_leases",
+    "approval_requests",
+    "feedback_deliveries",
+    "feedback_drafts",
+    "projects",
+    "review_findings",
+    "review_run_snapshots",
+    "run_leases",
+    "task_attachments",
+    "task_messages",
+    "tasks",
+  ];
+
+  test("creates the complete current schema atomically with an explicit version", () => {
+    const database = createDatabase(join(temporaryDirectory(), "fresh.db"));
+    expect(database.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect((database.sqlite.query(
+      "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name",
+    ).all() as Array<{ name: string }>).map(({ name }) => name)).toEqual(expectedTables);
+    expect((database.sqlite.query(
+      "select sql from sqlite_schema where type = 'index' and name = 'active_write_run_per_project_unique'",
+    ).get() as { sql: string }).sql).toContain("developer_followup");
+    database.close();
+  });
+
+  test("rejects a non-empty database with an unknown version without mutating it", () => {
+    const databasePath = join(temporaryDirectory(), "unknown-version.db");
+    const legacy = new Database(databasePath);
+    legacy.exec("CREATE TABLE legacy_records (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    legacy.query("INSERT INTO legacy_records VALUES (?, ?)").run("legacy-1", "preserve-me");
+    legacy.exec("PRAGMA user_version = 99");
+    legacy.close();
+
+    expect(() => createDatabase(databasePath)).toThrow("schema version");
+    const unchanged = new Database(databasePath);
+    expect(unchanged.query("SELECT * FROM legacy_records").all()).toEqual([{
+      id: "legacy-1",
+      value: "preserve-me",
+    }]);
+    expect(unchanged.query("SELECT name FROM sqlite_schema WHERE name = 'projects'").get()).toBeNull();
+    expect(unchanged.query("PRAGMA user_version").get()).toEqual({ user_version: 99 });
+    unchanged.close();
+  });
+
+  test("explicit rebuild removes legacy data and produces the complete current schema", () => {
+    const databasePath = join(temporaryDirectory(), "rebuild.db");
+    const legacy = new Database(databasePath);
+    legacy.exec("CREATE TABLE legacy_records (id TEXT PRIMARY KEY)");
+    legacy.query("INSERT INTO legacy_records VALUES (?)").run("legacy-1");
+    legacy.exec("PRAGMA user_version = 99");
+    legacy.close();
+
+    const rebuild = (databaseModule as unknown as {
+      rebuildDatabase?: (path: string, options: { confirmed: boolean }) => ReturnType<typeof createDatabase>;
+    }).rebuildDatabase;
+    expect(rebuild).toBeDefined();
+    if (!rebuild) return;
+    expect(() => rebuild("", { confirmed: true })).toThrow("explicit SQLite database file path");
+    expect(() => rebuild(":memory:", { confirmed: true })).toThrow("explicit SQLite database file path");
+    expect(() => rebuild(databasePath, { confirmed: false })).toThrow("--yes");
+    const rebuilt = rebuild(databasePath, { confirmed: true });
+    expect(rebuilt.sqlite.query("SELECT name FROM sqlite_schema WHERE name = 'legacy_records'").get()).toBeNull();
+    expect((rebuilt.sqlite.query(
+      "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name",
+    ).all() as Array<{ name: string }>).map(({ name }) => name)).toEqual(expectedTables);
+    expect(rebuilt.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(rebuilt.sqlite.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    expect(rebuilt.sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    rebuilt.close();
+  });
 });
 
 describe("interactive workflow persistence", () => {
@@ -305,6 +408,77 @@ describe("interactive workflow persistence", () => {
       id: "message-expired",
       createdAt: "2026-07-18T00:00:00.000Z",
     }, [expired.id])).rejects.toThrow("expired");
+  });
+
+  test("compares attachment expiry timestamps as instants across timezone offsets", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Timestamp", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database, undefined, { now: () => "2026-07-19T01:00:00+01:00" });
+    const attachment: TaskAttachment = {
+      id: "attachment-offset",
+      projectId: project.id,
+      taskId: null,
+      messageId: null,
+      state: "draft",
+      storagePath: "/data/drafts/attachment-offset.png",
+      mediaType: "image/png",
+      sizeBytes: 128,
+      checksum: "sha256:attachment-offset",
+      createdAt: "2026-07-19T00:00:00.000Z",
+      expiresAt: "2026-07-19T00:30:00.000Z",
+      claimedAt: null,
+    };
+    const message: TaskMessage = {
+      id: "message-offset",
+      projectId: project.id,
+      taskId: task.id,
+      targetRole: "developer",
+      sourceReviewRunId: null,
+      text: "Use the still-valid image",
+      deliveryMode: "queue",
+      status: "queued",
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      deliveredAt: null,
+      errorMessage: null,
+    };
+
+    await ports.createAttachmentDraft(attachment);
+    expect(await ports.createMessage(message, [attachment.id])).toEqual(message);
+  });
+
+  test("requires reviewer messages to target a matching completed formal Review Run", async () => {
+    const { database, projects, tasks: taskService } = services();
+    const project = await projects.add(repository());
+    const task = await taskService.create(project.id, { title: "Reviewer follow-up", originalPrompt: "Prompt" });
+    const ports = new DatabasePorts(database);
+    const message: TaskMessage = {
+      id: "reviewer-message",
+      projectId: project.id,
+      taskId: task.id,
+      targetRole: "reviewer",
+      sourceReviewRunId: null,
+      text: "Explain this finding",
+      deliveryMode: "queue",
+      status: "queued",
+      createdAt: "2026-07-19T00:00:01.000Z",
+      updatedAt: "2026-07-19T00:00:01.000Z",
+      deliveredAt: null,
+      errorMessage: null,
+    };
+
+    await expect(ports.createMessage(message)).rejects.toThrow("formal completed Review Run");
+    database.sqlite.run(
+      "insert into agent_runs (id, task_id, project_id, provider, run_type, status, prompt) values (?, ?, ?, 'claude', 'reviewer', 'running', 'review')",
+      ["formal-review", task.id, project.id],
+    );
+    await expect(ports.createMessage({ ...message, sourceReviewRunId: "formal-review" }))
+      .rejects.toThrow("formal completed Review Run");
+
+    database.sqlite.run("update agent_runs set status = 'completed' where id = 'formal-review'");
+    expect(await ports.createMessage({ ...message, sourceReviewRunId: "formal-review" }))
+      .toMatchObject({ id: message.id, sourceReviewRunId: "formal-review" });
   });
 
   test("resolves an approval decision once and returns the original result on duplicate decisions", async () => {
@@ -399,76 +573,6 @@ describe("interactive workflow persistence", () => {
 });
 
 describe("tasks", () => {
-  test("migrates legacy tasks with the original Codex developer and Claude reviewer defaults", async () => {
-    const databasePath = join(temporaryDirectory(), "legacy.db");
-    const legacy = new Database(databasePath);
-    legacy.exec(`
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE,
-        default_developer TEXT NOT NULL DEFAULT 'codex', default_reviewer TEXT NOT NULL DEFAULT 'claude',
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_opened_at TEXT
-      );
-      CREATE TABLE tasks (
-        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, original_prompt TEXT NOT NULL,
-        working_directory TEXT NOT NULL, base_commit TEXT NOT NULL, latest_snapshot_hash TEXT, status TEXT NOT NULL,
-        developer_session_id TEXT, reviewer_session_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        completed_at TEXT
-      );
-      INSERT INTO projects VALUES ('project_legacy', 'Legacy', '/tmp/legacy', 'codex', 'claude', '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z', NULL);
-      INSERT INTO tasks VALUES ('task_legacy', 'project_legacy', 'Legacy task', 'Prompt', '/tmp/legacy', 'abc123', NULL, 'draft', NULL, NULL, '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z', NULL);
-    `);
-    legacy.close();
-
-    const migrated = createDatabase(databasePath);
-    try {
-      expect(migrated.sqlite.query("select developer_provider, reviewer_provider from tasks where id = 'task_legacy'").get())
-        .toEqual({ developer_provider: "codex", reviewer_provider: "claude" });
-
-      const timestamp = "2026-07-19T00:00:00.000Z";
-      await migrated.db.insert(projectRows).values({
-        id: "project_current",
-        name: "Current",
-        rootPath: "/tmp/current",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        lastOpenedAt: null,
-      }).run();
-      await migrated.db.insert(taskRows).values({
-        id: "task_current",
-        projectId: "project_current",
-        title: "Current task",
-        originalPrompt: "Prompt",
-        workingDirectory: "/tmp/current",
-        baseCommit: "def456",
-        latestSnapshotHash: null,
-        status: "draft",
-        developerProvider: "codex",
-        reviewerProvider: "claude",
-        developerSessionId: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        completedAt: null,
-      }).run();
-      expect(await new ProjectService(migrated).get("project_current")).toEqual({
-        id: "project_current",
-        name: "Current",
-        rootPath: "/tmp/current",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        lastOpenedAt: null,
-      });
-      expect(await new TaskService(migrated).get("task_current")).toMatchObject({
-        id: "task_current",
-        developerProvider: "codex",
-        reviewerProvider: "claude",
-        developerSessionId: null,
-      });
-      createDatabase(databasePath).close();
-    } finally {
-      migrated.close();
-    }
-  });
-
   test("persists global role defaults and snapshots them when creating a task", async () => {
     const root = repository();
     const database = createDatabase(join(temporaryDirectory(), "settings.db"));

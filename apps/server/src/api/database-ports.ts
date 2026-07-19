@@ -98,6 +98,12 @@ function rowEvent(row: typeof agentEvents.$inferSelect): AgentEvent {
   };
 }
 
+function attachmentExpired(expiresAt: string, now: string): boolean {
+  const expiry = Date.parse(expiresAt);
+  const current = Date.parse(now);
+  return !Number.isFinite(expiry) || !Number.isFinite(current) || expiry <= current;
+}
+
 export class DatabasePorts implements
   AgentRunPersistencePort,
   TaskRunStatePort,
@@ -257,11 +263,15 @@ export class DatabasePorts implements
     }, { behavior: "immediate" });
   }
 
-  async recordSession(runId: string, taskId: string, runType: AgentRunType, sessionId: string): Promise<void> {
+  async recordSession(runId: string, _taskId: string, _runType: AgentRunType, sessionId: string): Promise<void> {
     this.database.db.transaction((transaction) => {
       this.assertApplicationOwner();
       this.assertRunOwner(runId);
-      const run = transaction.select({ status: agentRuns.status }).from(agentRuns)
+      const run = transaction.select({
+        status: agentRuns.status,
+        taskId: agentRuns.taskId,
+        runType: agentRuns.runType,
+      }).from(agentRuns)
         .where(eq(agentRuns.id, runId)).get();
       if (!run || !activeStatuses.includes(run.status as typeof activeStatuses[number])) {
         throw new StaleRunOwnershipError(runId);
@@ -270,9 +280,9 @@ export class DatabasePorts implements
         eq(agentRuns.id, runId),
         inArray(agentRuns.status, [...activeStatuses]),
       )).run();
-      if (runType !== "reviewer" && runType !== "reviewer_followup") {
+      if (run.runType !== "reviewer" && run.runType !== "reviewer_followup") {
         transaction.update(tasks).set({ developerSessionId: sessionId, updatedAt: this.now() })
-          .where(eq(tasks.id, taskId)).run();
+          .where(eq(tasks.id, run.taskId)).run();
       }
     }, { behavior: "immediate" });
   }
@@ -401,7 +411,7 @@ export class DatabasePorts implements
         if (!attachment
           || attachment.projectId !== projectId
           || attachment.state !== "draft"
-          || attachment.expiresAt <= claimedAt) {
+          || attachmentExpired(attachment.expiresAt, claimedAt)) {
           throw new AttachmentClaimConflictError(attachmentId);
         }
         transaction.update(taskAttachments).set({
@@ -430,17 +440,22 @@ export class DatabasePorts implements
         .where(eq(tasks.id, message.taskId)).get();
       if (!task) throw new NotFoundError("Task");
       if (task.projectId !== message.projectId) throw new PersistenceOwnershipError("Message");
+      if (message.targetRole === "reviewer" && !message.sourceReviewRunId) {
+        throw new PersistenceOwnershipError("Reviewer message target must reference a formal completed Review Run");
+      }
       if (message.sourceReviewRunId) {
         const source = transaction.select({
           projectId: agentRuns.projectId,
           taskId: agentRuns.taskId,
           runType: agentRuns.runType,
+          status: agentRuns.status,
         }).from(agentRuns).where(eq(agentRuns.id, message.sourceReviewRunId)).get();
         if (!source
           || source.projectId !== message.projectId
           || source.taskId !== message.taskId
-          || source.runType !== "reviewer") {
-          throw new PersistenceOwnershipError("Source Review Run");
+          || source.runType !== "reviewer"
+          || (message.targetRole === "reviewer" && source.status !== "completed")) {
+          throw new PersistenceOwnershipError("Reviewer message target must reference a formal completed Review Run");
         }
       }
       transaction.insert(taskMessages).values(message).run();
@@ -450,7 +465,7 @@ export class DatabasePorts implements
         if (!attachment
           || attachment.projectId !== message.projectId
           || attachment.state !== "draft"
-          || attachment.expiresAt <= claimedAt) {
+          || attachmentExpired(attachment.expiresAt, claimedAt)) {
           throw new AttachmentClaimConflictError(attachmentId);
         }
         transaction.update(taskAttachments).set({
