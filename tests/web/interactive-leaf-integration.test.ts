@@ -6,6 +6,7 @@ const app = await Bun.file(new URL("../../apps/web/src/App.vue", import.meta.url
 const workspace = await Bun.file(new URL("../../apps/web/src/stores/task-workspace.ts", import.meta.url)).text();
 const taskView = await Bun.file(new URL("../../apps/web/src/views/TaskView.vue", import.meta.url)).text();
 const activityPanel = await Bun.file(new URL("../../apps/web/src/components/ActivityPanel.vue", import.meta.url)).text();
+const taskHeader = await Bun.file(new URL("../../apps/web/src/components/TaskHeader.vue", import.meta.url)).text();
 
 describe("completed interactive leaf integration", () => {
   test("uses the attachment composer for initial Task creation and gates images by provider capability", () => {
@@ -42,5 +43,7 @@ describe("completed interactive leaf integration", () => {
     expect(workspace).toContain('apiEndpoints.listApprovals');
     expect(activityPanel).toContain('import ApprovalCard');
     expect(activityPanel).toContain('approvalErrors[approval.id]');
+    expect(taskHeader).not.toContain('continuationPrompt');
+    expect(taskHeader).not.toContain('import FileMentionInput');
   });
 });

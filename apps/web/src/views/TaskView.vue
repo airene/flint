@@ -242,6 +242,7 @@ async function jumpToFinding(finding: ReviewFinding): Promise<void> {
         <TaskComposer
           :key="composerKey" v-model="composerText" :project-id="workspace.task.projectId"
           :upload-image="uploadAttachmentDraft" :disabled="Boolean(composerDisabledReason)"
+          :aria-label="`${composerTargetRole === 'reviewer' ? reviewerLabel : developerLabel} ${composerTargetRole} follow-up message`"
           :images-enabled="composerImagesEnabled"
           :image-disabled-reason="`${composerProvider ?? 'Provider'} cannot receive images in this resumed session.`"
           placeholder="Send a persisted follow-up…" @submit="sendMessage"

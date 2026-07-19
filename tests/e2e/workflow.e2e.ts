@@ -54,7 +54,7 @@ test("records a repository as opened when its workspace is visited", async ({ pa
   await expect(page.getByText("Not opened yet", { exact: true })).toHaveCount(0);
 });
 
-test("inserts file mentions in new-task and Continue Developer prompts without changing closed-menu Enter behavior", async ({ page }) => {
+test("inserts file mentions in new-task and persisted Developer follow-ups without changing closed-menu Enter behavior", async ({ page }) => {
   const repository = await createRepository();
   await page.goto("/projects");
   await page.locator("#root-path").fill(repository);
@@ -72,7 +72,7 @@ test("inserts file mentions in new-task and Continue Developer prompts without c
   await page.getByRole("button", { name: "Create & start Codex" }).click();
   await expect(page.getByText("ready for review", { exact: true })).toBeVisible();
 
-  const continuation = page.getByLabel("Codex continuation message");
+  const continuation = page.getByLabel("Codex developer follow-up message");
   await continuation.fill("Recheck @inp");
   await continuation.press("Enter");
   await expect(page.getByRole("button", { name: "Select Developer run 2" })).toHaveCount(0);
@@ -83,6 +83,7 @@ test("inserts file mentions in new-task and Continue Developer prompts without c
   await expect(continuation).toHaveValue("Recheck @src/input.ts ");
   await expect(page.getByRole("button", { name: "Select Developer run 2" })).toHaveCount(0);
   await continuation.press("Enter");
+  await page.locator(".conversation-panel").getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("button", { name: "Select Developer run 2" })).toBeVisible();
 });
 
@@ -154,6 +155,13 @@ test("keeps same-provider Developer and Reviewer stream events isolated by run",
     await expect(runDetail.locator(".event-lines")).not.toContainText("Fake Codex completed the requested change.");
     await expect(activity).toContainText("Codex review");
     await expect(activity).not.toContainText("Fake Codex completed the requested change.");
+
+    const reviewerFollowup = page.getByLabel("Codex reviewer follow-up message");
+    await reviewerFollowup.fill("Clarify the selected formal review without changing Task state.");
+    await page.locator(".conversation-panel").getByRole("button", { name: "Send" }).click();
+    await expect(page.getByRole("button", { name: "Select Reviewer run 2" })).toBeVisible();
+    await expect(page.getByText("waiting for human", { exact: true })).toBeVisible();
+    await expect(page.locator(".message-list")).toContainText("delivered");
   } finally {
     await request.post("/api/system/settings", {
       data: { developerProvider: "codex", reviewerProvider: "claude" },

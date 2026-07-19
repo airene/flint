@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
   imagesEnabled?: boolean;
   imageDisabledReason?: string;
   placeholder?: string;
+  ariaLabel?: string;
   rows?: number;
 }>(), {
   multiline: true,
@@ -36,6 +37,7 @@ const props = withDefaults(defineProps<{
   imagesEnabled: true,
   imageDisabledReason: "This provider does not support image attachments for this action.",
   placeholder: undefined,
+  ariaLabel: undefined,
   rows: 3,
 });
 
@@ -129,7 +131,7 @@ onBeforeUnmount(() => { for (const attachment of attachments.value) revokePrevie
   <section class="task-composer">
     <FileMentionInput
       :model-value="modelValue" :project-id="projectId" :multiline="multiline" :rows="rows"
-      :disabled="disabled" :placeholder="placeholder" @update:model-value="emit('update:modelValue', $event)"
+      :disabled="disabled" :placeholder="placeholder" :aria-label="ariaLabel" @update:model-value="emit('update:modelValue', $event)"
       @paste="onPaste" @submit="submit"
     />
     <p v-if="!imagesEnabled" class="attachment-capability" role="status">{{ imageDisabledReason }}</p>
