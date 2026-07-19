@@ -2,11 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, copyFile, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentEvent, AgentRun, ApprovalRequest, ReviewFinding, Task, TaskMessage } from "@local-pair-review/shared";
+import type { AgentEvent, AgentRun, ApprovalRequest, ReviewFinding, Task, TaskAttachmentMetadata, TaskMessage } from "@local-pair-review/shared";
 import { createApplication } from "../../apps/server/src/api/application";
 import { ApplicationAlreadyRunningError } from "../../apps/server/src/api/database-ports";
 import { createDatabase } from "../../apps/server/src/db/database";
-import { agentEvents, agentRuns, approvalRequests, projects, tasks } from "../../apps/server/src/db/schema";
+import { agentEvents, agentRuns, approvalRequests, projects, taskMessages, tasks } from "../../apps/server/src/db/schema";
 import { createServer, type LocalPairReviewServer } from "../../apps/server/src/server";
 
 const codexFixture = resolve(import.meta.dir, "../fixtures/bin/codex");
@@ -492,8 +492,13 @@ describe("local server API assembly", () => {
       const project = await applicationRequest<{ id: string }>(application, "/api/projects", {
         method: "POST", body: JSON.stringify({ rootPath }),
       });
+      const initialUpload = await application.handle(new Request(
+        `http://127.0.0.1/api/projects/${project.body.id}/attachment-drafts`,
+        { method: "POST", headers: { "content-type": "image/png" }, body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+      ));
+      const initialDraft = await initialUpload.json() as { id: string };
       const task = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
-        method: "POST", body: JSON.stringify({ title: "Conversation", originalPrompt: "Build it" }),
+        method: "POST", body: JSON.stringify({ title: "Conversation", originalPrompt: "Build it", attachmentIds: [initialDraft.id] }),
       });
       await applicationRequest(application, `/api/tasks/${task.body.id}/develop`, { method: "POST", body: "{}" });
       await waitForApplicationTask(application, task.body.id, "ready_for_review");
@@ -511,6 +516,27 @@ describe("local server API assembly", () => {
       });
       expect(developerMessage.status).toBe(202);
       await waitForApplicationMessage(application, task.body.id, developerMessage.body.id, "delivered");
+      const attachmentHistory = await applicationRequest<TaskAttachmentMetadata[]>(
+        application,
+        `/api/tasks/${task.body.id}/attachments`,
+      );
+      expect(attachmentHistory).toMatchObject({
+        status: 200,
+        body: [
+          { id: initialDraft.id, taskId: task.body.id, messageId: null },
+          { id: draft.id, taskId: task.body.id, messageId: developerMessage.body.id },
+        ],
+      });
+      expect(Object.keys(attachmentHistory.body[0]!).sort()).toEqual([
+        "claimedAt", "createdAt", "id", "mediaType", "messageId", "projectId", "sizeBytes", "taskId",
+      ]);
+      const otherTask = await applicationRequest<Task>(application, `/api/projects/${project.body.id}/tasks`, {
+        method: "POST", body: JSON.stringify({ title: "Other conversation", originalPrompt: "Keep attachments isolated" }),
+      });
+      expect((await applicationRequest<TaskAttachmentMetadata[]>(
+        application,
+        `/api/tasks/${otherTask.body.id}/attachments`,
+      )).body).toEqual([]);
       const developerInvocation = JSON.parse(await Bun.file(invocationLog).text()) as { args: string[] };
       expect(developerInvocation.args.slice(0, 3)).toEqual(["exec", "resume", "codex-session-fake-123"]);
       expect(developerInvocation.args).toContain("--image");
@@ -585,6 +611,138 @@ describe("local server API assembly", () => {
       });
       expect((await applicationRequest<ApprovalRequest[]>(application, `/api/tasks/${task.body.id}/approvals`)).body[0])
         .toMatchObject({ status: "pending", decision: null });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("publishes resolution and refreshed unfinished attention when a durable resolving approval succeeds on retry", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-approval-retry-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const databasePath = join(dataDirectory, "app.sqlite");
+    const timestamp = "2026-07-19T00:00:00.000Z";
+    const database = createDatabase(databasePath);
+    const baseCommit = new TextDecoder().decode(
+      Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: rootPath }).stdout,
+    ).trim();
+    database.db.insert(projects).values({
+      id: "project-approval-retry", name: "approval-retry", rootPath,
+      createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
+    }).run();
+    database.db.insert(tasks).values({
+      id: "task-approval-retry", projectId: "project-approval-retry", title: "retry", originalPrompt: "retry",
+      workingDirectory: rootPath, baseCommit, latestSnapshotHash: null, status: "ready_for_review",
+      developerSessionId: "codex-session-fake-123", createdAt: timestamp, updatedAt: timestamp, completedAt: null,
+    }).run();
+    database.db.insert(agentRuns).values({
+      id: "run-approval-retry", taskId: "task-approval-retry", projectId: "project-approval-retry", provider: "codex",
+      runType: "developer_initial", status: "completed", reviewParseStatus: null,
+      externalSessionId: "codex-session-fake-123", processId: null, exitCode: 0, prompt: "retry",
+      finalMessage: "done", structuredOutput: null, errorMessage: null, startedAt: timestamp, finishedAt: timestamp,
+    }).run();
+    database.db.insert(approvalRequests).values({
+      id: "approval-retry", projectId: "project-approval-retry", taskId: "task-approval-retry", runId: "run-approval-retry",
+      providerRequestId: "provider-approval-retry", toolName: "shell", actionSummary: "Run tests",
+      workingDirectory: rootPath, status: "resolving", decision: "allow_once", reason: null,
+      createdAt: timestamp, resolvedAt: null,
+    }).run();
+    database.close();
+
+    const application = await createApplication({
+      databasePath,
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+      approvalControls: {
+        codex: {
+          capabilities: { approvals: true },
+          async resolveApproval() {},
+        },
+      },
+    });
+    try {
+      const taskEvents: AgentEvent[] = [];
+      const unfinished: Array<{ type: string; task?: { id: string; pendingApprovalCount: number; attention: string } }> = [];
+      const taskSocket = {
+        getBufferedAmount: () => 0,
+        send(data: string) {
+          const parsed = JSON.parse(data);
+          if (parsed.action === "event") taskEvents.push(parsed.event);
+          return data.length;
+        },
+        close() {},
+      };
+      const unfinishedSocket = {
+        getBufferedAmount: () => 0,
+        send(data: string) {
+          const parsed = JSON.parse(data);
+          if (parsed.type === "unfinished_task_upsert") unfinished.push(parsed);
+          return data.length;
+        },
+        close() {},
+      };
+      application.socketOpen(taskSocket);
+      application.socketOpen(unfinishedSocket);
+      await application.socketMessage(taskSocket, JSON.stringify({ action: "subscribe", taskId: "task-approval-retry", afterSequence: 0 }));
+      await application.socketMessage(unfinishedSocket, JSON.stringify({ action: "subscribe_unfinished" }));
+
+      const response = await applicationRequest<ApprovalRequest>(application, "/api/approvals/approval-retry/decision", {
+        method: "POST", body: JSON.stringify({ decision: "deny", reason: "ignored retry" }),
+      });
+
+      expect(response).toMatchObject({ status: 200, body: { status: "resolved", decision: "allow_once" } });
+      expect(taskEvents.at(-1)).toMatchObject({ type: "approval_resolved", payload: { approvalId: "approval-retry" } });
+      expect(unfinished.at(-1)).toMatchObject({
+        type: "unfinished_task_upsert",
+        task: { id: "task-approval-retry", pendingApprovalCount: 0, attention: "ready_for_review" },
+      });
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test("resumes a queue-only conversation after restart before any delivery batch was reserved", async () => {
+    const rootPath = await repository();
+    const dataDirectory = await mkdtemp(join(tmpdir(), "local-pair-review-message-restart-"));
+    cleanups.push(() => rm(dataDirectory, { recursive: true, force: true }));
+    const databasePath = join(dataDirectory, "app.sqlite");
+    const timestamp = "2026-07-19T00:00:00.000Z";
+    const database = createDatabase(databasePath);
+    const baseCommit = new TextDecoder().decode(
+      Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: rootPath }).stdout,
+    ).trim();
+    database.db.insert(projects).values({
+      id: "project-message-restart", name: "message-restart", rootPath,
+      createdAt: timestamp, updatedAt: timestamp, lastOpenedAt: null,
+    }).run();
+    database.db.insert(tasks).values({
+      id: "task-message-restart", projectId: "project-message-restart", title: "restart", originalPrompt: "restart",
+      workingDirectory: rootPath, baseCommit, latestSnapshotHash: null, status: "ready_for_review",
+      developerSessionId: "codex-session-fake-123", createdAt: timestamp, updatedAt: timestamp, completedAt: null,
+    }).run();
+    database.db.insert(taskMessages).values({
+      id: "message-crash-window", projectId: "project-message-restart", taskId: "task-message-restart",
+      targetRole: "developer", sourceReviewRunId: null, text: "Resume this durable message", deliveryMode: "queue",
+      status: "queued", createdAt: timestamp, updatedAt: timestamp, deliveredAt: null, errorMessage: null,
+    }).run();
+    database.close();
+
+    const application = await createApplication({
+      databasePath,
+      codexExecutable: codexFixture,
+      claudeExecutable: claudeFixture,
+      gitExecutable: "git",
+      environment: { ...process.env, FAKE_CLI_SCENARIO: "normal" },
+    });
+    try {
+      expect(await waitForApplicationMessage(
+        application,
+        "task-message-restart",
+        "message-crash-window",
+        "delivered",
+      )).toMatchObject({ status: "delivered" });
     } finally {
       await application.shutdown();
     }

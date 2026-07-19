@@ -155,6 +155,18 @@ export const taskAttachmentSchema = z.object({
 });
 export type TaskAttachment = z.infer<typeof taskAttachmentSchema>;
 
+export const taskAttachmentMetadataSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  taskId: z.string().min(1),
+  messageId: z.string().min(1).nullable(),
+  mediaType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+  sizeBytes: z.number().int().positive().max(10 * 1024 * 1024),
+  createdAt: z.string().min(1),
+  claimedAt: z.string().min(1),
+}).strict();
+export type TaskAttachmentMetadata = z.infer<typeof taskAttachmentMetadataSchema>;
+
 export const approvalRequestSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -385,6 +397,8 @@ export const taskMessageResponseSchema = taskMessageSchema;
 export type TaskMessageResponse = z.infer<typeof taskMessageResponseSchema>;
 export const taskMessageListResponseSchema = z.array(taskMessageSchema);
 export type TaskMessageListResponse = z.infer<typeof taskMessageListResponseSchema>;
+export const taskAttachmentListResponseSchema = z.array(taskAttachmentMetadataSchema);
+export type TaskAttachmentListResponse = z.infer<typeof taskAttachmentListResponseSchema>;
 export const approvalResponseSchema = approvalRequestSchema;
 export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
 export const approvalListResponseSchema = z.array(approvalRequestSchema);

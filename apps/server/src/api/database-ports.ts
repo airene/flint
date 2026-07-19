@@ -13,6 +13,7 @@ import type {
   ReviewFinding,
   Task,
   TaskAttachment,
+  TaskAttachmentMetadata,
   TaskMessage,
   TaskStatus,
   UnfinishedTaskSummary,
@@ -521,7 +522,7 @@ export class DatabasePorts implements
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {
     return await this.database.db.select().from(taskMessages).where(eq(taskMessages.taskId, taskId))
-      .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+      .orderBy(asc(sql`rowid`)).all() as TaskMessage[];
   }
 
   async listMessagesInFifoOrder(taskId: string): Promise<TaskMessage[]> {
@@ -539,10 +540,16 @@ export class DatabasePorts implements
   }
 
   async listOpenConversationTaskIds(): Promise<string[]> {
-    return (await this.database.db.selectDistinct({ taskId: conversationDeliveryBatches.taskId })
-      .from(conversationDeliveryBatches)
-      .where(eq(conversationDeliveryBatches.status, "open"))
-      .orderBy(asc(conversationDeliveryBatches.taskId)).all()).map(({ taskId }) => taskId);
+    return (this.database.sqlite.query(`
+      SELECT task_id AS taskId
+      FROM conversation_delivery_batches
+      WHERE status = 'open'
+      UNION
+      SELECT task_id AS taskId
+      FROM task_messages
+      WHERE status = 'queued'
+      ORDER BY taskId
+    `).all() as Array<{ taskId: string }>).map(({ taskId }) => taskId);
   }
 
   async reserveDeliveryBatch(input: ReserveDeliveryBatchInput): Promise<ConversationDeliveryBatch | null> {
@@ -555,7 +562,7 @@ export class DatabasePorts implements
         .where(eq(tasks.id, input.taskId)).get();
       if (!task || task.projectId !== input.projectId) throw new PersistenceOwnershipError("Conversation delivery batch");
       const selected = transaction.select().from(taskMessages).where(inArray(taskMessages.id, input.messageIds))
-        .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+        .orderBy(asc(sql`rowid`)).all() as TaskMessage[];
       if (selected.length !== input.messageIds.length
         || selected.some((message) => message.projectId !== input.projectId
           || message.taskId !== input.taskId
@@ -603,7 +610,7 @@ export class DatabasePorts implements
         )).run();
       }
       const messages = transaction.select().from(taskMessages).where(inArray(taskMessages.id, messageIds))
-        .orderBy(asc(taskMessages.createdAt), asc(taskMessages.id)).all() as TaskMessage[];
+        .orderBy(asc(sql`rowid`)).all() as TaskMessage[];
       if (messages.length !== messageIds.length) throw new PersistenceOwnershipError("Conversation delivery batch messages");
       return messages;
     }, { behavior: "immediate" });
@@ -640,6 +647,22 @@ export class DatabasePorts implements
       eq(taskAttachments.state, "claimed"),
     )).orderBy(asc(taskAttachments.createdAt), asc(taskAttachments.id)).all() as TaskAttachment[];
     return rows.filter((attachment) => attachment.messageId === null).map((attachment) => attachment.storagePath);
+  }
+
+  async listTaskAttachments(taskId: string): Promise<TaskAttachmentMetadata[]> {
+    return await this.database.db.select({
+      id: taskAttachments.id,
+      projectId: taskAttachments.projectId,
+      taskId: taskAttachments.taskId,
+      messageId: taskAttachments.messageId,
+      mediaType: taskAttachments.mediaType,
+      sizeBytes: taskAttachments.sizeBytes,
+      createdAt: taskAttachments.createdAt,
+      claimedAt: taskAttachments.claimedAt,
+    }).from(taskAttachments).where(and(
+      eq(taskAttachments.taskId, taskId),
+      eq(taskAttachments.state, "claimed"),
+    )).orderBy(asc(sql`rowid`)).all() as TaskAttachmentMetadata[];
   }
 
   async discardIncompleteFormalFindings(runId: string): Promise<void> {
