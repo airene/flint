@@ -1,18 +1,18 @@
 import type {
   AgentAvailability,
-  AgentDriver,
   AgentRole,
   CliExecutableSetting,
   Provider,
   ProviderDescriptor,
 } from "@local-pair-review/shared";
+import type { ControlledAgentDriver } from "./agent-control";
 
 export interface ProviderRegistryEntry {
   id: Provider;
   label: string;
   executableSetting: CliExecutableSetting;
   roles: AgentRole[];
-  driver: AgentDriver;
+  driver: ControlledAgentDriver;
 }
 
 export interface ProviderRegistry {
@@ -25,7 +25,7 @@ const definitions: Omit<ProviderRegistryEntry, "driver">[] = [
   { id: "claude", label: "Claude Code", executableSetting: "claudeExecutable", roles: ["developer", "reviewer"] },
 ];
 
-export function createProviderRegistry(drivers: Record<Provider, AgentDriver>): ProviderRegistry {
+export function createProviderRegistry(drivers: Record<Provider, ControlledAgentDriver>): ProviderRegistry {
   const entries = definitions.map((definition) => ({ ...definition, driver: drivers[definition.id] }));
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
@@ -39,6 +39,7 @@ export function createProviderRegistry(drivers: Record<Provider, AgentDriver>): 
       return entries.map(({ driver: _driver, ...entry }) => ({
         ...entry,
         roles: [...entry.roles],
+        capabilities: { ..._driver.capabilities },
         availability: availability[entry.id],
       }));
     },

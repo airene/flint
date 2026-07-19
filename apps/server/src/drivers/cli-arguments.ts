@@ -40,7 +40,7 @@ const DENIED_REVIEW_TOOLS = [
 ] as const;
 
 function isReviewer(runType: AgentRunType): boolean {
-  return runType === "reviewer";
+  return runType === "reviewer" || runType === "reviewer_followup";
 }
 
 export function buildCodexArgs(
@@ -48,14 +48,16 @@ export function buildCodexArgs(
   runType: AgentRunType,
   sessionId?: string,
   reviewSchemaPath?: string,
+  imagePaths: readonly string[] = [],
 ): string[] {
   const sandbox = isReviewer(runType) ? "read-only" : "workspace-write";
   const schemaArguments = isReviewer(runType) && reviewSchemaPath
     ? ["--output-schema", reviewSchemaPath]
     : [];
+  const imageArguments = imagePaths.flatMap((path) => ["--image", path]);
   return sessionId
-    ? [executable, "exec", "resume", sessionId, "--json", "-c", `sandbox_mode="${sandbox}"`, ...schemaArguments, "-"]
-    : [executable, "exec", "--json", "--sandbox", sandbox, ...schemaArguments, "-"];
+    ? [executable, "exec", "resume", sessionId, "--json", "-c", `sandbox_mode="${sandbox}"`, ...schemaArguments, ...imageArguments, "-"]
+    : [executable, "exec", "--json", "--sandbox", sandbox, ...schemaArguments, ...imageArguments, "-"];
 }
 
 export function buildClaudeArgs(executable: string, runType: AgentRunType, sessionId?: string): string[] {

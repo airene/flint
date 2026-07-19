@@ -4,9 +4,19 @@ import { checkClaudeAvailability } from "./cli-availability";
 import { parseClaudeEventLine } from "./claude-event.parser";
 import { StreamingCliDriver } from "./streaming-cli.driver";
 import type { StreamingDriverOptions } from "./streaming-cli.driver";
+import type { AgentControlStartRequest } from "./agent-control";
 
 export class ClaudeCliDriver extends StreamingCliDriver implements AgentDriver {
   readonly provider = "claude" as const;
+  readonly capabilities = {
+    developerInitialImage: false,
+    developerResumeImage: false,
+    reviewerInitialImage: false,
+    reviewerResumeImage: false,
+    liveMessages: false,
+    interrupt: true,
+    approvals: false,
+  } as const;
 
   constructor(options: StreamingDriverOptions) {
     super(options);
@@ -16,11 +26,11 @@ export class ClaudeCliDriver extends StreamingCliDriver implements AgentDriver {
     return checkClaudeAvailability(this.executablePath, this.environment, this.availabilityWorkingDirectory);
   }
 
-  start(request: AgentStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
+  start(request: AgentControlStartRequest, emit: (event: AgentEvent) => Promise<void>): Promise<AgentStartResult> {
     return this.run(request, emit);
   }
 
-  protected arguments(request: AgentStartRequest): string[] {
+  protected arguments(request: AgentControlStartRequest): string[] {
     return buildClaudeArgs(this.executablePath, request.runType, request.sessionId);
   }
 
