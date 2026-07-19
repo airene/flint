@@ -575,7 +575,8 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         if (index === -1) messages.value.push(sent); else messages.value[index] = sent;
         if (input.attachmentIds.length) {
           const claimed = await apiEndpoints.listAttachments(context.taskId).catch(() => null);
-          if (claimed && isCurrent(context)) attachments.value = claimed;
+          if (!isCurrent(context)) return undefined;
+          if (claimed) attachments.value = claimed;
         }
         return sent;
       } catch (problem) {

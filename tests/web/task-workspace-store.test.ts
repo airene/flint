@@ -385,6 +385,30 @@ describe("task workspace message delivery", () => {
     expect(attachmentReads).toBe(1);
     expect(workspace.attachments).toEqual([claimedAttachment()]);
   });
+
+  test("does not report a stale image send as successful after switching tasks", async () => {
+    let resolveAttachments!: (attachments: TaskAttachmentMetadata[]) => void;
+    let attachmentReadStarted = false;
+    const attachmentRead = new Promise<TaskAttachmentMetadata[]>((resolve) => { resolveAttachments = resolve; });
+    Object.assign(apiEndpoints, {
+      sendMessage: async () => queuedMessage(),
+      listAttachments: async () => {
+        attachmentReadStarted = true;
+        return await attachmentRead;
+      },
+    });
+    const workspace = useTaskWorkspaceStore(createPinia());
+    workspace.task = task();
+
+    const sending = workspace.sendMessage({ ...messageInput(), attachmentIds: [claimedAttachment().id] });
+    for (let attempt = 0; attempt < 10 && !attachmentReadStarted; attempt += 1) await Bun.sleep(0);
+    workspace.dispose();
+    workspace.task = { ...task(), id: "task-2" };
+    resolveAttachments([claimedAttachment()]);
+
+    expect(await sending).toBeUndefined();
+    expect(workspace.attachments).toEqual([]);
+  });
 });
 
 describe("task workspace completion notifications", () => {
