@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import type { AgentEvent, AgentRun, CreateTaskMessageRequest, ReviewFinding, Task, TaskMessage } from "@local-pair-review/shared";
+import type { AgentEvent, AgentRun, CreateTaskMessageRequest, ReviewFinding, Task, TaskAttachmentMetadata, TaskMessage } from "@local-pair-review/shared";
 import { ApiClientError } from "../../apps/web/src/api/client";
 import { apiEndpoints } from "../../apps/web/src/api/endpoints";
 import { browserNotificationController } from "../../apps/web/src/realtime/browser-notification-runtime";
@@ -145,10 +145,25 @@ function queuedMessage(): TaskMessage {
   };
 }
 
+function claimedAttachment(): TaskAttachmentMetadata {
+  return {
+    id: "attachment-1",
+    projectId: "project-1",
+    taskId: "task-1",
+    messageId: "message-1",
+    mediaType: "image/png",
+    sizeBytes: 1024,
+    createdAt: "2026-07-18T00:00:03.000Z",
+    claimedAt: "2026-07-18T00:00:04.000Z",
+  };
+}
+
+const LIVE_COMPLETION_TIMESTAMP = new Date(Date.now() + 60_000).toISOString();
+
 function completionEvent(runId = "developer-followup-1"): AgentEvent {
   return {
     sequence: 1,
-    timestamp: "2026-07-18T00:00:05.000Z",
+    timestamp: LIVE_COMPLETION_TIMESTAMP,
     projectId: "project-1",
     taskId: "task-1",
     runId,
@@ -352,6 +367,24 @@ describe("task workspace message delivery", () => {
     expect(await workspace.sendMessage(messageInput())).toEqual(queuedMessage());
     expect(calls).toBe(2);
   });
+
+  test("refreshes claimed attachment metadata after an image message succeeds", async () => {
+    let attachmentReads = 0;
+    Object.assign(apiEndpoints, {
+      sendMessage: async () => queuedMessage(),
+      listAttachments: async () => {
+        attachmentReads += 1;
+        return [claimedAttachment()];
+      },
+    });
+    const workspace = useTaskWorkspaceStore(createPinia());
+    workspace.task = task();
+
+    await workspace.sendMessage({ ...messageInput(), attachmentIds: [claimedAttachment().id] });
+
+    expect(attachmentReads).toBe(1);
+    expect(workspace.attachments).toEqual([claimedAttachment()]);
+  });
 });
 
 describe("task workspace completion notifications", () => {
@@ -376,7 +409,9 @@ describe("task workspace completion notifications", () => {
 
     expect(runReads).toBe(2);
     expect(workspace.runs).toEqual([completedRun]);
-    expect(consumed).toEqual([{ event: completionEvent(), role: "developer", taskTitle: task().title }]);
+    expect(consumed).toHaveLength(1);
+    expect(consumed[0]).toMatchObject({ event: completionEvent(), role: "developer", taskTitle: task().title });
+    expect((consumed[0] as PersistedRunEvent & { pageOpenedAt?: number }).pageOpenedAt).toBeInteger();
     workspace.dispose();
   });
 

@@ -58,6 +58,26 @@ describe("BrowserNotificationController", () => {
     }
   });
 
+  test("marks completions from before the page-open boundary seen without notifying", () => {
+    const { controller, settings, notices } = setup();
+    const pageOpenedAt = Date.parse("2026-07-19T00:00:01.000Z");
+
+    expect(controller.consumePersistedEvent({
+      event: event(1, { timestamp: "2026-07-19T00:00:00.000Z" }),
+      role: "developer",
+      pageOpenedAt,
+    })).toBe(false);
+    expect(settings.cursorFor("task_1")).toBe(1);
+    expect(notices).toHaveLength(0);
+
+    expect(controller.consumePersistedEvent({
+      event: event(2, { timestamp: "2026-07-19T00:00:02.000Z" }),
+      role: "developer",
+      pageOpenedAt,
+    })).toBe(true);
+    expect(notices).toHaveLength(1);
+  });
+
   test("persists task-scoped dedupe cursors across controller instances", () => {
     const storage = new MemoryStorage();
     const settings = new LocalNotificationSettings(storage);

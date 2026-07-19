@@ -25,6 +25,8 @@ export interface PersistedRunEvent {
   event: AgentEvent;
   role: AgentRole;
   taskTitle?: string;
+  /** Events persisted at or before this page-open boundary are history, not new completions. */
+  pageOpenedAt?: number;
 }
 
 export interface BrowserNotificationControllerOptions {
@@ -69,6 +71,10 @@ export class BrowserNotificationController {
     // after the page becomes hidden or the preference changes must not alert late.
     if (!this.options.settings.markSeen(event.taskId, event.sequence)) return false;
     if (event.type !== "run_completed" || (role !== "developer" && role !== "reviewer")) return false;
+    if (input.pageOpenedAt !== undefined) {
+      const completedAt = Date.parse(event.timestamp);
+      if (!Number.isFinite(completedAt) || completedAt <= input.pageOpenedAt) return false;
+    }
     if (!this.options.settings.isEnabled() || !this.options.document.hidden) return false;
     if (this.options.notification.permission !== "granted") return false;
 

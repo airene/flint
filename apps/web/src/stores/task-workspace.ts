@@ -72,6 +72,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   let feedbackDraftTimer: ReturnType<typeof setTimeout> | null = null;
   let feedbackDraftQueue: Promise<void> = Promise.resolve();
   let notificationQueue: Promise<void> = Promise.resolve();
+  let notificationPageOpenedAt = Number.POSITIVE_INFINITY;
   let messageSendInFlight: {
     context: ActionContext;
     operation: Promise<TaskMessage | undefined>;
@@ -175,7 +176,12 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     }
     if (!run || !isCurrent(context)) return;
     const role = run.runType.startsWith("reviewer") ? "reviewer" : "developer";
-    browserNotificationController.consumePersistedEvent({ event, role, taskTitle: task.value!.title });
+    browserNotificationController.consumePersistedEvent({
+      event,
+      role,
+      taskTitle: task.value!.title,
+      pageOpenedAt: notificationPageOpenedAt,
+    });
   }
 
   function queueNotificationEvent(event: AgentEvent, context: ActionContext): void {
@@ -309,6 +315,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
   async function load(taskId: string): Promise<void> {
     void flushFeedbackDraft();
     const loadGeneration = ++generation;
+    notificationPageOpenedAt = Date.now();
     controller?.stop();
     controller = null;
     connected.value = false;
@@ -566,6 +573,10 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
         if (!isCurrent(context)) return undefined;
         const index = messages.value.findIndex((candidate) => candidate.id === sent.id);
         if (index === -1) messages.value.push(sent); else messages.value[index] = sent;
+        if (input.attachmentIds.length) {
+          const claimed = await apiEndpoints.listAttachments(context.taskId).catch(() => null);
+          if (claimed && isCurrent(context)) attachments.value = claimed;
+        }
         return sent;
       } catch (problem) {
         if (isCurrent(context)) error.value = message(problem);
@@ -622,6 +633,7 @@ export const useTaskWorkspaceStore = defineStore("task-workspace", () => {
     sendingMessage.value = false;
     messageSendInFlight = null;
     notificationQueue = Promise.resolve();
+    notificationPageOpenedAt = Number.POSITIVE_INFINITY;
   }
 
   return {
