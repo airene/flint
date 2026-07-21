@@ -1,56 +1,159 @@
-# Flint — 本地结对评审
+# Flint
 
-Flint 是一个完全在本地运行的工作流，让你可以在现有 Git 仓库中协调可配置的 Developer CLI 与只读 Reviewer CLI。默认组合是 Codex Developer 与 Claude Reviewer；也可以在 **CLI 设置**中将 Codex 或 Claude 分配给任一角色。Flint 保留了人工 review 和 feedback gate：Finding 永远不会自动发送，feedback 也只会恢复任务已持久化的精确 Developer session。
+> A local-first control room for AI coding agents.
 
-## 安装与 CLI 前置条件
+**Let one AI build. Let another challenge it. You decide what ships.**
 
-Flint 需要 Bun 1.3 或更高版本、Git，以及至少一个受支持且已登录的 Agent CLI。当前支持 Codex CLI 与 Claude Code，两者都可以担任 Developer 或 Reviewer；如需自由组合角色，请同时安装并登录两个 CLI。当前 checkout 已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。Codex 与 Claude 的版本会在运行时自动检测，并显示在 **CLI 设置**中；本 README 不假定用户安装了某个特定版本。
+[简体中文](./README_CN.md)
+
+[![GitHub stars](https://img.shields.io/github/stars/airene/flint?style=flat-square&logo=github)](https://github.com/airene/flint/stargazers)
+[![MIT License](https://img.shields.io/github/license/airene/flint?style=flat-square)](./LICENSE)
+[![Bun 1.3+](https://img.shields.io/badge/Bun-1.3%2B-black?style=flat-square&logo=bun)](https://bun.sh/)
+
+Flint is an open-source, local-first workspace for running a **Developer agent** and an independent, read-only **Reviewer agent** against your existing Git repositories. Use Codex CLI or Claude Code in either role, inspect every proposed change, curate the review findings, and send only the feedback you approve back to the exact developer session.
+
+It is both a practical multi-agent development workflow and a reference project for developers building AI coding tools with Bun, TypeScript, Vue, SQLite, WebSockets, and real coding-agent CLIs.
+
+If this is the kind of AI coding workflow you want to see grow, [give Flint a star](https://github.com/airene/flint) and follow the project.
+
+## Why Flint?
+
+- **Independent AI code review** — separate code generation from review instead of asking one agent to judge its own work.
+- **Human-controlled feedback** — findings are never forwarded automatically; you select, edit, or reject them first.
+- **Local by design** — repositories, prompts, activity, reviews, and task history stay on your machine.
+- **Real session continuity** — feedback resumes the exact persisted Developer session, not a guessed “latest” session.
+- **Provider-flexible roles** — Codex CLI and Claude Code can each act as Developer or Reviewer.
+- **A useful foundation for builders** — study a working AI coding agent orchestration stack without starting from a toy chat interface.
+
+## Who is it for?
+
+Flint is for developers who:
+
+- want an AI coding workflow with a second agent checking the first;
+- need automated code review without an uncontrolled agent-to-agent loop;
+- prefer subscription-authenticated CLIs over managing API keys;
+- want to learn how to build local AI developer tools, coding-agent control planes, or multi-agent systems.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Choose a local Git repository"] --> B["Developer agent edits the workspace"]
+    B --> C["Reviewer agent inspects changes read-only"]
+    C --> D["You select and edit findings"]
+    D --> E["Flint resumes the exact Developer session"]
+    E --> C
+    C --> F["You mark the task complete"]
+```
+
+1. Register an existing local Git repository.
+2. Create a task and start its configured Developer CLI.
+3. Inspect the activity stream and Git diff.
+4. Run the configured Reviewer CLI inside a strict read-only permission envelope.
+5. Select findings, add your own notes, and edit the feedback preview.
+6. Send approved feedback back to the exact Developer session, review again, or complete the task.
+
+Flint never starts an automatic Developer/Reviewer loop. Every run and every feedback delivery remains an explicit human decision.
+
+## Quick start
+
+### Requirements
+
+- [Bun](https://bun.sh/) 1.3 or newer
+- Git
+- At least one authenticated agent CLI:
+  - [OpenAI Codex CLI](https://github.com/openai/codex)
+  - [Claude Code](https://code.claude.com/docs/en/overview)
+
+Both CLIs are supported in both roles. Install and authenticate both if you want to mix providers freely. Flint uses your existing CLI subscription sessions and does not require OpenAI or Anthropic API keys.
+
+### Install and run
 
 ```bash
+git clone https://github.com/airene/flint.git
+cd flint
 bun install
+bun run dev
+```
+
+Open the URL printed by Vite, register a repository by its absolute path, and create your first task.
+
+Authenticate the CLI or CLIs you plan to use before starting Flint:
+
+```bash
 codex login
 claude auth login
 ```
 
-请为计划使用的 CLI 完成正常订阅登录。Flint 不需要 OpenAI 或 Anthropic API key，并会在启动子进程前移除常见的 API 凭据环境变量。
+The API listens only on `127.0.0.1:3000`. During development, Vite proxies `/api` and `/ws` to the local server.
 
-## 运行、测试与构建
-
-一条命令同时启动 API server 和 Vite UI：
-
-```bash
-bun run dev
-```
-
-API 仅监听 `127.0.0.1:3000`；开发期间，Vite 会将 `/api` 和 `/ws` 代理到该地址。
-
-如需以单进程方式运行 production build，先完成构建，再启动打包后的 Bun server。Vue SPA、API 和 WebSocket 会通过同一个 loopback origin 提供服务：
+### Production build
 
 ```bash
 bun run build
 bun apps/server/dist/index.js
 ```
 
-```bash
-bun test
-bun run test:e2e
-bun run typecheck
-bun run build
+The built Vue app, API, and WebSocket endpoint are served from one loopback-only Bun process.
+
+## Built for users and AI-tool builders
+
+Flint is deliberately more than a prompt box. It demonstrates the less glamorous parts of reliable AI coding infrastructure:
+
+- spawning and supervising real Codex and Claude CLI processes;
+- normalizing streamed agent events while retaining raw events;
+- persisting tasks, runs, findings, feedback, and exact external session IDs;
+- enforcing different permission envelopes for writable and read-only roles;
+- reconciling agent activity with Git state and stale review snapshots;
+- recovering interrupted work without silently retrying or spending subscription quota.
+
+### Architecture
+
+```text
+Vue 3 Web UI
+  ├─ projects, tasks, activity, Git diff, review, feedback
+  └─ HTTP + WebSocket
+              │
+              ▼
+Bun Local Server
+  ├─ workflow and task services
+  ├─ Git integration
+  ├─ SQLite persistence with Drizzle ORM
+  └─ agent driver registry
+       ├─ Codex CLI driver
+       └─ Claude Code driver
 ```
 
-`bun run test:e2e` 会使用 Fake Codex 和 Claude fixture 启动相互隔离的 Bun server 与 Vite 实例。测试会创建一次性的 Git 仓库，不会访问任何订阅服务。
+| Layer | Technology |
+| --- | --- |
+| Runtime | Bun + TypeScript |
+| Frontend | Vue 3, Vite, Pinia, Vue Router, Monaco Editor |
+| Server | `Bun.serve()`, WebSocket, `Bun.spawn()` |
+| Storage | Local SQLite + Drizzle ORM |
+| Agents | Codex CLI and Claude Code |
+| Validation | Zod, Bun tests, Playwright |
 
-当前 checkout 的验证状态：自动 typecheck、Bun tests、Fake CLI browser E2E 和 production build 均已通过。已验证 Bun `1.3.14` 和 Git `2.50.1 (Apple Git-155)`。真实 Codex 和 Claude smoke test **尚未执行**，因为它们需要用户明确授权；CLI 版本及真实测试结果将在获得授权后确认。
+## Role configuration
 
-## 配置与本地数据
+In **CLI Settings**, choose global defaults for `Developer CLI` and `Reviewer CLI`. The default combination is Codex Developer and Claude Reviewer, but either provider can fill either role, including using the same provider for both.
 
-默认情况下，Flint 将 SQLite 数据保存在 `~/.local-pair-review/data/app.db`。如需运行独立的本地实例，可以覆盖该路径：
+Role selections apply only to new tasks. A task preserves the providers and exact Developer session selected when it was created, so later settings changes cannot redirect existing work.
+
+## Local data and configuration
+
+Flint stores its SQLite database at:
+
+```text
+~/.local-pair-review/data/app.db
+```
+
+Override the database for an isolated instance:
 
 ```bash
 LOCAL_PAIR_REVIEW_DATABASE=/absolute/path/to/data.sqlite bun run dev
 ```
 
-CLI executable 的覆盖值必须使用绝对路径：
+Executable overrides must be absolute paths:
 
 ```bash
 CODEX_EXECUTABLE=/absolute/path/to/codex
@@ -58,64 +161,64 @@ CLAUDE_EXECUTABLE=/absolute/path/to/claude
 GIT_EXECUTABLE=/absolute/path/to/git
 ```
 
-这些路径也可以在 **CLI 设置**中保存并重新检查。通过 UI 设置的路径会经过绝对路径校验，并持久化到本地 `app_settings` 表中；清空字段即可恢复启动时的默认值。打包时可以使用 `LOCAL_PAIR_REVIEW_WEB_ROOT` 覆盖构建后的 `apps/web/dist` 目录。
+These paths can also be saved and rechecked in **CLI Settings**. Use `LOCAL_PAIR_REVIEW_WEB_ROOT` to override the built `apps/web/dist` directory when packaging Flint.
 
-### 界面语言
+The web UI supports English and Simplified Chinese through `vue-i18n`. Your language choice is stored in browser `localStorage` as `flint.locale`.
 
-Web UI 使用 `vue-i18n` 提供英文和简体中文，默认及 fallback 语言均为英文。侧栏底部、主题切换旁的语言图标可即时切换；选择会以 `flint.locale` 保存在浏览器 `localStorage` 中，并在刷新后恢复。
+## Security model
 
-国际化只覆盖前端界面文案。CLI、Developer、Reviewer、Task、Run、Git Diff、Session 等必要技术术语会保留；Server 返回消息、Agent 输出、Activity 原始内容和仓库内容按原文展示。
+Flint is intentionally local-only:
 
-### 任务角色
+- the server binds to loopback and rejects non-local browser requests;
+- child processes receive an explicit working directory and argument array—Flint does not execute shell command strings;
+- common API credential environment variables are removed before agent processes start;
+- diagnostic output is redacted before it is stored or displayed;
+- Flint never enables Claude Code's `bypassPermissions` mode.
 
-**CLI 设置**提供 `Developer CLI` 与 `Reviewer CLI` 两个全局默认值。当前 Codex 和 Claude 都支持两个角色，默认组合为 Codex Developer / Claude Reviewer，也允许同一个 provider 同时担任两个角色。
+Role permissions are different by design:
 
-角色设置只影响之后创建的新任务。任务创建时会固化当时的 Developer 与 Reviewer provider；之后修改全局设置不会改变已有任务使用的 provider 或精确 session。
+| Role | Codex CLI | Claude Code |
+| --- | --- | --- |
+| Developer | `workspace-write` sandbox | `acceptEdits` with the user's own permission configuration |
+| Reviewer | `read-only` sandbox + structured review schema | `plan` mode + a narrow read-only tool allowlist + review JSON schema |
 
-## 安全与权限
+Reviewer edit/write tools, destructive Git operations, commits, and pushes are blocked at the CLI boundary.
 
-Flint 的设计目标就是仅在本地运行。Server 只绑定 loopback 地址并拒绝非本地浏览器请求；启动子进程时使用参数数组和明确的 working directory，绝不会调用 shell command string，也不会修改当前进程的 working directory。
+### Unattended CLI approvals
 
-Developer 在已注册的项目目录中以允许修改工作区的权限运行：Codex 使用 `workspace-write` sandbox，Claude 使用 `acceptEdits` 和用户自己的权限配置，Flint 不会为 Claude 启用 `bypassPermissions`。
+Flint runs each CLI as an unattended batch process: it writes the prompt to stdin once, closes stdin, and then reads the event stream. It cannot answer an interactive per-operation approval prompt during that run.
 
-Reviewer 始终受只读约束：Codex 使用 `read-only` sandbox 与结构化 review schema；Claude 使用 `plan` permission mode、范围严格的只读 tool allowlist 和 review JSON schema。Reviewer 的 edit/write、破坏性 Git 操作、commit 和 push 会在 CLI 层被禁止。子进程环境中的 API 凭据会被移除，诊断输出也会在存储或展示前完成脱敏。
+Configure each Developer CLI to auto-approve operations that are already inside Flint's permission envelope:
 
-## 无人值守运行与 CLI 审批配置
+- **Codex** — configure automatic approval in `~/.codex/config.toml`, for example `approval_policy = "never"`. The `workspace-write` sandbox still applies.
+- **Claude Code** — enable auto-accept in your Claude configuration so tools allowed by `acceptEdits` do not block the run.
 
-Flint 以无人值守的批处理方式驱动 CLI：prompt 通过 stdin 一次性写入后立即关闭，Flint 之后只**单向**读取 CLI 的事件流，**无法在运行途中应答 CLI 弹出的逐操作审批提示**。因此权限封套完全在启动参数里给定：
+The in-app approval relay is currently dormant until the drivers support bidirectional stdin and approval-event responses.
 
-- **Developer** — Codex `--sandbox workspace-write`；Claude `--permission-mode acceptEdits`。
-- **Reviewer** — Codex `--sandbox read-only` + 结构化 review schema；Claude `--permission-mode plan` + 只读 tool allowlist。
+## Development and verification
 
-这些参数只约束「能做什么」，并不改变 CLI「是否会停下来征求批准」。为避免 Developer run 因等待一个 Flint 无法应答的审批而挂起，需要在**各 CLI 自己的配置文件**里开启自动放行：
+```bash
+bun test
+bun run typecheck
+bun run test:e2e
+bun run build
+```
 
-- **Codex**（`~/.codex/config.toml`）— 配置为自动审批（例如 `approval_policy = "never"`），让其在上述 sandbox 约束内自动执行，不再逐操作询问。
-- **Claude Code**（`~/.claude`）— 开启 auto / 自动接受，放行 Developer 所需工具，与 Flint 传入的 `acceptEdits` 配合，使非编辑类工具调用也不阻塞。
+The E2E suite uses fake Codex and Claude fixtures plus isolated temporary Git repositories. It does not access your agent subscriptions.
 
-> 应用内的 Approvals 中继目前处于休眠状态（详见 `approval.service.ts` 的 `TODO(approvals)`）：需要一个保持 stdin 双向、能解析审批事件并回传决定的驱动才能启用。在此之前，上述 CLI 侧配置是让无人值守运行不被审批阻塞的方式。
-
-## 工作流程
-
-1. 注册本地 Git 仓库的绝对路径。
-2. 以当前 `HEAD` 为 baseline，通过 **Create & start** 创建一个范围明确的 Task；确认后会**立即启动**任务固化的 Developer CLI（消耗对应订阅额度），Flint 会在 CLI 输出 session ID 后立即精确持久化。若工作区存在未提交变更，会先要求明确确认。
-3. 开发准备完成后，启动任务固化的只读 Reviewer CLI；如果 Task 只是一个问题或明确不需要 Review，也可以确认后直接标记完成。
-4. 选择或忽略 Finding、添加人工备注、生成 feedback preview，并在需要时进行编辑。
-5. 明确发送编辑后的 feedback，恢复对应的精确 Developer session。
-6. 根据需要再次发起 review，或手动将 Task 标记为完成。
-
-## MVP 限制
-
-Flint 不提供自动 Developer/Reviewer 循环、用户系统、远程访问、worktree、commit、Pull Request 或 push。除非通过你明确创建并启动（Create & start）、继续或恢复的 Developer CLI，否则 Flint 不会修改仓库。发送 feedback 前如果检测到 stale review snapshot，系统会要求人工确认。被中断或失败的 Run 会继续保留，并提供手动恢复入口；后台不会静默重试或消耗订阅额度。
-
-## 真实 CLI smoke test
-
-以下命令有意排除在常规测试和 CI 之外：
+Real-CLI smoke tests are intentionally excluded from normal tests and CI because they consume authenticated CLI sessions:
 
 ```bash
 bun run smoke:codex
 bun run smoke:claude
 ```
 
-每条命令都会创建一个专用的临时 Git 仓库，输出解析后的 executable 路径、检测到的版本、authentication mode 和仓库路径，然后等待你输入精确确认文本 `RUN`。在收到确认前，不会执行任何真实订阅命令。
+Each command creates a dedicated temporary repository and waits for the exact confirmation text `RUN` before invoking a real CLI. These smoke tests have not been run for the current documented checkout.
 
-Codex smoke test 要求生成可见的 Diff，并且只有在初始 Run 返回 session ID 后才会使用精确 ID 执行 resume。Claude smoke test 会验证 structured result 和精确 session ID，同时证明仓库 snapshot 在只读权限下没有发生变化。两项测试都只会删除各自创建的临时仓库。
+## Current scope
+
+Flint does not currently provide automatic agent loops, remote access, user accounts, worktrees, commits, pull requests, pushes, or cloud synchronization. Only an explicitly started or resumed Developer run can modify a registered repository. Interrupted and failed runs remain visible with manual recovery paths; Flint does not silently retry them.
+
+## License
+
+[MIT](./LICENSE) © 2026 Airene Fang
